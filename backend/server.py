@@ -15,6 +15,7 @@ from .render import RenderError, RenderPlan, export_plan, render
 from .package import MetadataPackage, build_thumbnail_commands, extract_thumbnails, write_metadata_package
 from .upload import UnconfiguredYouTubeClient, UploadManager
 from .calibration import calibrate_pacing
+from .learning import analyze_source_output
 
 ROOT = Path(__file__).resolve().parents[1]
 DB = Database(os.environ.get("AICUT_DB", ROOT / "aicut.db"))
@@ -48,6 +49,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.json(DB.list_uploads())
             elif path == "/api/calibrations":
                 self.json(DB.list_calibrations())
+            elif path == "/api/learning/source-output":
+                self.json(DB.list_source_output_pairs())
             else:
                 self.serve_static(path)
         except KeyError as error:
@@ -70,6 +73,15 @@ class ApiHandler(BaseHTTPRequestHandler):
                     {"pacing": result.params, "evaluation": result.to_dict()}, result.f1 * 100,
                 )
                 self.json(profile, HTTPStatus.CREATED)
+            elif path == "/api/learning/source-output":
+                cuts = payload.get("cuts")
+                if cuts is None and payload.get("episode_id"):
+                    cuts = DB.get_timeline(payload["episode_id"])
+                analysis = analyze_source_output(payload["source_duration_sec"], cuts or [])
+                pair = DB.save_source_output_pair(
+                    payload["source_ref"], payload["output_ref"], analysis, payload.get("project_id"),
+                )
+                self.json(pair, HTTPStatus.CREATED)
             elif path.startswith("/api/projects/") and path.endswith("/run"):
                 project_id = path.split("/")[3]
                 DB.get_project(project_id)

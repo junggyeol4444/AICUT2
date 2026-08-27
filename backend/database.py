@@ -316,6 +316,35 @@ class Database:
             result.append(value)
         return result
 
+    def save_source_output_pair(
+        self, source_ref: str, output_ref: str, analysis: dict[str, Any], project_id: str | None = None
+    ) -> dict[str, Any]:
+        pair_id = str(uuid.uuid4())
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO source_output_pairs VALUES(?,?,?,?,?,?)",
+                (pair_id, project_id, source_ref, output_ref, json.dumps(analysis, ensure_ascii=False), now()),
+            )
+            row = connection.execute("SELECT * FROM source_output_pairs WHERE pair_id=?", (pair_id,)).fetchone()
+        value = dict(row)
+        value["selection_analysis"] = json.loads(value.pop("selection_analysis_json"))
+        return value
+
+    def list_source_output_pairs(self, project_id: str | None = None) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            if project_id:
+                rows = connection.execute(
+                    "SELECT * FROM source_output_pairs WHERE project_id=? ORDER BY created_at DESC", (project_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute("SELECT * FROM source_output_pairs ORDER BY created_at DESC").fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            value["selection_analysis"] = json.loads(value.pop("selection_analysis_json"))
+            result.append(value)
+        return result
+
     def logs(self, project_id: str | None = None) -> list[dict[str, Any]]:
         with self.connect() as connection:
             if project_id:
