@@ -1,0 +1,41 @@
+{
+  "events": [
+    {
+      "event_id": "event-operation",
+      "summary": "잠입 작전이 우발 행동으로 노출된 뒤 반전 성공",
+      "people": ["JUNE", "MISO"],
+      "relations": [],
+      "mentions": [
+        { "start_sec": 1022, "end_sec": 1061, "role": "최초언급" },
+        { "start_sec": 2581, "end_sec": 2662, "role": "갈등" },
+        { "start_sec": 3827, "end_sec": 3878, "role": "결과" }
+      ]
+    }
+  ],
+  "candidates": [
+    {
+      "candidate_id": "candidate-operation",
+      "summary": "완벽한 잠입 작전이 무너진 이유",
+      "event_ids": ["event-operation"],
+      "required_context": "작전 목표",
+      "independence_score": 0.94,
+      "decision": "MAKE",
+      "decision_reason": "도입, 갈등, 반전과 결과가 완결됨"
+    }
+  ],
+  "episodes": [
+    {
+      "episode_id": "episode-operation",
+      "candidate_ids": ["candidate-operation"],
+      "structure": { "strategy": "결과 선공개 후 원인 회수" },
+      "target_type": "LONG",
+      "planned_duration_sec": 522,
+      "metadata": { "title_options": ["완벽한 작전이 무너진 이유"] },
+      "timeline": [
+        { "source_start_sec": 2581, "source_end_sec": 2600, "scene_role": "결과 예고", "pacing_mode": "TRIM", "speaker_tag": "JUNE", "visual_effect": { "type": "zoom" } },
+        { "source_start_sec": 1022, "source_end_sec": 1061, "scene_role": "배경", "pacing_mode": "KEEP", "speaker_tag": "MISO" },
+        { "source_start_sec": 3827, "source_end_sec": 3878, "scene_role": "결과", "pacing_mode": "KEEP", "speaker_tag": "JUNE" }
+      ]
+    }
+  ]
+}
