@@ -40,6 +40,8 @@ export const api = {
   }),
   uploads: () => request('/uploads'),
   runUpload: uploadId => request(`/uploads/${uploadId}/run`, { method: 'POST', body: '{}' }),
+  calibrations: () => request('/calibrations'),
+  calibrate: payload => request('/calibrations', { method: 'POST', body: JSON.stringify(payload) }),
   logs: projectId => request(projectId ? `/projects/${projectId}/logs` : '/logs'),
 };
 

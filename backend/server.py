@@ -14,6 +14,7 @@ from .pipeline import PipelineManager
 from .render import RenderError, RenderPlan, export_plan, render
 from .package import MetadataPackage, build_thumbnail_commands, extract_thumbnails, write_metadata_package
 from .upload import UnconfiguredYouTubeClient, UploadManager
+from .calibration import calibrate_pacing
 
 ROOT = Path(__file__).resolve().parents[1]
 DB = Database(os.environ.get("AICUT_DB", ROOT / "aicut.db"))
@@ -45,6 +46,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.json(DB.logs())
             elif path == "/api/uploads":
                 self.json(DB.list_uploads())
+            elif path == "/api/calibrations":
+                self.json(DB.list_calibrations())
             else:
                 self.serve_static(path)
         except KeyError as error:
@@ -60,6 +63,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if not payload.get("file_path"):
                     return self.json({"error": "file_path_required"}, HTTPStatus.BAD_REQUEST)
                 self.json(DB.create_project(payload), HTTPStatus.CREATED)
+            elif path == "/api/calibrations":
+                result = calibrate_pacing(payload.get("samples", []))
+                profile = DB.save_calibration(
+                    payload.get("channel_ref", "default"), payload.get("name", "Pacing profile"),
+                    {"pacing": result.params, "evaluation": result.to_dict()}, result.f1 * 100,
+                )
+                self.json(profile, HTTPStatus.CREATED)
             elif path.startswith("/api/projects/") and path.endswith("/run"):
                 project_id = path.split("/")[3]
                 DB.get_project(project_id)

@@ -286,6 +286,36 @@ class Database:
             row = connection.execute("SELECT * FROM upload_jobs WHERE upload_id=?", (upload_id,)).fetchone()
         return dict(row)
 
+    def save_calibration(
+        self, channel_ref: str, name: str, params: dict[str, Any], eval_score: float
+    ) -> dict[str, Any]:
+        profile_id = str(uuid.uuid4())
+        timestamp = now()
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO calibration_profiles VALUES(?,?,?,?,?,?)",
+                (profile_id, channel_ref, name, json.dumps(params, ensure_ascii=False), timestamp, eval_score),
+            )
+            row = connection.execute("SELECT * FROM calibration_profiles WHERE profile_id=?", (profile_id,)).fetchone()
+        value = dict(row)
+        value["params"] = json.loads(value.pop("params_json"))
+        return value
+
+    def list_calibrations(self, channel_ref: str | None = None) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            if channel_ref:
+                rows = connection.execute(
+                    "SELECT * FROM calibration_profiles WHERE channel_ref=? ORDER BY measured_at DESC", (channel_ref,),
+                ).fetchall()
+            else:
+                rows = connection.execute("SELECT * FROM calibration_profiles ORDER BY measured_at DESC").fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            value["params"] = json.loads(value.pop("params_json"))
+            result.append(value)
+        return result
+
     def logs(self, project_id: str | None = None) -> list[dict[str, Any]]:
         with self.connect() as connection:
             if project_id:

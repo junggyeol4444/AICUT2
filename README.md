@@ -24,6 +24,8 @@
 
 업로드 실행기는 중복 실행을 차단하고 성공 시 YouTube 영상 ID를 기록합니다. 쿼터 초과는 임의의 24시간 후가 아니라 `America/Los_Angeles` 시간대의 다음 자정으로 계산해 `RETRY_QUEUED`에 저장합니다. 실제 업로드는 OAuth 구현체를 `UploadClient` 계약에 연결해야 하며, 자격 증명이 없는 기본 런타임은 명시적으로 실패합니다.
 
+호흡 캘리브레이션은 사람이 라벨링한 `KEEP/TRIM/CUT` 샘플에서 무음 레벨, 무음 길이와 직전 텐션 후보를 전수 평가해 F1과 정확도가 가장 높은 조합을 채널 프로파일로 저장합니다. 화자 전환과 의미 있는 반응은 기계적인 무음 제거보다 항상 우선하며, 측정하지 않은 임계값을 운영 프로파일에 넣지 않습니다. 입력 계약 예시는 `tests/fixtures/pacing-samples.json`에 있습니다.
+
 ## 실행
 
 ```bash
@@ -69,5 +71,6 @@ npm run build
 - `backend/render.py` — 비선형 컷, 고정 crop 줌, 컷별 afade 및 concat 렌더 계획
 - `backend/package.py` — 메타데이터 패키지, 챕터 검증 및 썸네일 후보 추출
 - `backend/upload.py` — 검수된 비공개 업로드 실행, 중복 방지 및 PT 자정 쿼터 재시도
+- `backend/calibration.py` — 사람 라벨 기반 호흡 파라미터 스윕과 정밀도·재현율 평가
 - `tests/data.test.js` — 파이프라인과 핵심 데이터 불변 조건 검사
 - `tests/test_database.py` — SQLite 트랜잭션, 제약 조건 및 비선형 타임라인 검사
