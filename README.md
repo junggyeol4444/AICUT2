@@ -18,7 +18,7 @@
 
 로컬 작업 큐는 `ffprobe`로 실제 미디어의 길이, 해상도, 프레임레이트, 코덱과 오디오 트랙 수를 검사합니다. 멀티모달 분석기는 `tests/fixtures/analysis-manifest.json` 형식의 교환 매니페스트를 출력하면 되며, 런타임은 사건·언급·후보·에피소드·컷 전체를 단일 트랜잭션으로 반영합니다. 분석기가 연결되지 않은 경우에는 미디어 파싱을 완료한 뒤 `UNDERSTANDING` 상태에서 명시적으로 대기합니다.
 
-렌더러는 DB의 완성본 컷 순서를 읽어 원본 시각과 무관한 FFmpeg concat 그래프를 생성합니다. `CUT` 컷은 제외하고, 각 컷에 짧은 `afade`를 적용한 뒤 H.264/AAC MP4로 출력합니다. 렌더 API는 기본적으로 명령만 반환하는 dry-run이며 `execute: true`를 명시해야 실제 FFmpeg를 실행합니다.
+렌더러는 DB의 완성본 컷 순서를 읽어 원본 시각과 무관한 FFmpeg concat 그래프를 생성합니다. `CUT` 컷은 제외하고, 각 컷에 짧은 `afade`를 적용한 뒤 H.264/AAC MP4로 출력합니다. 오디오는 1차 EBU R128 측정 결과를 2차 렌더에 주입하는 `loudnorm` 2-pass 방식으로 전체 타임라인을 정규화합니다. 목표 LUFS, true peak와 loudness range는 외부에서 변경할 수 있습니다. 렌더 API는 기본적으로 측정 계획만 반환하는 dry-run이며 `execute: true`를 명시해야 실제 FFmpeg를 실행합니다.
 
 ## 실행
 

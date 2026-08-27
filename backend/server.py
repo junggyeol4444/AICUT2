@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from .database import Database
 from .pipeline import PipelineManager
-from .render import RenderError, RenderPlan, build_render_command, render
+from .render import RenderError, RenderPlan, export_plan, render
 
 ROOT = Path(__file__).resolve().parents[1]
 DB = Database(os.environ.get("AICUT_DB", ROOT / "aicut.db"))
@@ -77,7 +77,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                     width=int(payload.get("width", 1920)), height=int(payload.get("height", 1080)),
                 )
                 if not payload.get("execute", False):
-                    self.json({"episode_id": episode_id, "dry_run": True, "command": build_render_command(plan)})
+                    self.json({"episode_id": episode_id, "dry_run": True, "plan": json.loads(export_plan(plan))})
                 else:
                     DB.set_render_status(episode_id, "RENDERING")
                     try:

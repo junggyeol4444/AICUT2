@@ -23,6 +23,22 @@ class RenderPlan:
     audio_codec: str = "aac"
 
 
+@dataclass(frozen=True)
+class LoudnessTarget:
+    integrated_lufs: float = -14.0
+    true_peak_db: float = -1.0
+    loudness_range: float = 11.0
+
+
+@dataclass(frozen=True)
+class LoudnessMeasurement:
+    input_i: float
+    input_tp: float
+    input_lra: float
+    input_thresh: float
+    target_offset: float
+
+
 def _number(value: object, name: str) -> float:
     try:
         number = float(value)
@@ -80,33 +96,94 @@ def build_filter_graph(plan: RenderPlan) -> tuple[str, str, str]:
     return ";".join(chains), "[vout]", "[aout]"
 
 
-def build_render_command(plan: RenderPlan, ffmpeg: str = "ffmpeg") -> list[str]:
+def build_render_command(
+    plan: RenderPlan,
+    ffmpeg: str = "ffmpeg",
+    target: LoudnessTarget | None = None,
+    measurement: LoudnessMeasurement | None = None,
+) -> list[str]:
     graph, video, audio = build_filter_graph(plan)
+    audio_map = audio
+    if target and measurement:
+        loudnorm = (
+            f"loudnorm=I={target.integrated_lufs}:TP={target.true_peak_db}:LRA={target.loudness_range}:"
+            f"measured_I={measurement.input_i}:measured_TP={measurement.input_tp}:"
+            f"measured_LRA={measurement.input_lra}:measured_thresh={measurement.input_thresh}:"
+            f"offset={measurement.target_offset}:linear=true:print_format=summary"
+        )
+        graph = f"{graph};{audio}{loudnorm}[anorm]"
+        audio_map = "[anorm]"
     return [
         ffmpeg, "-hide_banner", "-y", "-i", plan.input_path, "-filter_complex", graph,
-        "-map", video, "-map", audio, "-c:v", plan.video_codec, "-preset", "medium",
+        "-map", video, "-map", audio_map, "-c:v", plan.video_codec, "-preset", "medium",
         "-crf", "18", "-c:a", plan.audio_codec, "-b:a", "192k", "-movflags", "+faststart",
         plan.output_path,
     ]
 
 
-def render(plan: RenderPlan, runner: Callable = subprocess.run) -> dict:
+def build_measurement_command(
+    plan: RenderPlan, target: LoudnessTarget, ffmpeg: str = "ffmpeg"
+) -> list[str]:
+    graph, _, audio = build_filter_graph(plan)
+    graph = (
+        f"{graph};{audio}loudnorm=I={target.integrated_lufs}:TP={target.true_peak_db}:"
+        f"LRA={target.loudness_range}:print_format=json[ameasure]"
+    )
+    return [
+        ffmpeg, "-hide_banner", "-nostats", "-i", plan.input_path,
+        "-filter_complex", graph, "-map", "[ameasure]", "-f", "null", "-",
+    ]
+
+
+def parse_loudness_measurement(stderr: str) -> LoudnessMeasurement:
+    start = stderr.rfind("{")
+    end = stderr.rfind("}")
+    if start < 0 or end <= start:
+        raise RenderError("FFmpeg 라우드니스 측정 결과를 찾을 수 없습니다.")
+    try:
+        payload = json.loads(stderr[start:end + 1])
+        return LoudnessMeasurement(
+            input_i=float(payload["input_i"]), input_tp=float(payload["input_tp"]),
+            input_lra=float(payload["input_lra"]), input_thresh=float(payload["input_thresh"]),
+            target_offset=float(payload["target_offset"]),
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise RenderError(f"라우드니스 측정 결과가 올바르지 않습니다: {error}") from error
+
+
+def render(
+    plan: RenderPlan,
+    runner: Callable = subprocess.run,
+    loudness_target: LoudnessTarget | None = None,
+) -> dict:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise RenderError("ffmpeg가 설치되어 있지 않습니다.")
     output = Path(plan.output_path).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    command = build_render_command(plan, ffmpeg)
+    target = loudness_target or LoudnessTarget()
+    measurement_command = build_measurement_command(plan, target, ffmpeg)
+    measurement_result = runner(measurement_command, capture_output=True, text=True, check=False)
+    if measurement_result.returncode:
+        raise RenderError(measurement_result.stderr[-4000:] or "라우드니스 1차 측정에 실패했습니다.")
+    measurement = parse_loudness_measurement(measurement_result.stderr)
+    command = build_render_command(plan, ffmpeg, target, measurement)
     result = runner(command, capture_output=True, text=True, check=False)
     if result.returncode:
         raise RenderError(result.stderr[-4000:] or "FFmpeg 렌더링에 실패했습니다.")
-    return {"output_path": str(output), "command": command, "cut_count": len(validate_plan(plan))}
+    return {
+        "output_path": str(output), "command": command, "measurement_command": measurement_command,
+        "loudness_measurement": measurement.__dict__, "cut_count": len(validate_plan(plan)),
+    }
 
 
-def export_plan(plan: RenderPlan) -> str:
+def export_plan(plan: RenderPlan, target: LoudnessTarget | None = None) -> str:
     graph, video, audio = build_filter_graph(plan)
+    target = target or LoudnessTarget()
     return json.dumps({
         "input_path": plan.input_path, "output_path": plan.output_path,
         "filter_graph": graph, "video_map": video, "audio_map": audio,
-        "command": build_render_command(plan),
+        "loudness_target": target.__dict__,
+        "measurement_command": build_measurement_command(plan, target),
+        "final_command_requires_measurement": True,
     }, ensure_ascii=False, indent=2)
