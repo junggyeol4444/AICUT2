@@ -13,10 +13,12 @@ from .database import Database
 from .pipeline import PipelineManager
 from .render import RenderError, RenderPlan, export_plan, render
 from .package import MetadataPackage, build_thumbnail_commands, extract_thumbnails, write_metadata_package
+from .upload import UnconfiguredYouTubeClient, UploadManager
 
 ROOT = Path(__file__).resolve().parents[1]
 DB = Database(os.environ.get("AICUT_DB", ROOT / "aicut.db"))
 PIPELINE = PipelineManager(DB)
+UPLOADS = UploadManager(DB, UnconfiguredYouTubeClient())
 
 
 class ApiHandler(BaseHTTPRequestHandler):
@@ -41,6 +43,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.json(DB.get_timeline(path.split("/")[3]))
             elif path == "/api/logs":
                 self.json(DB.logs())
+            elif path == "/api/uploads":
+                self.json(DB.list_uploads())
             else:
                 self.serve_static(path)
         except KeyError as error:
@@ -106,6 +110,10 @@ class ApiHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/episodes/") and path.endswith("/publish"):
                 episode_id = path.split("/")[3]
                 self.json(DB.queue_upload(episode_id, payload.get("privacy_status", "PRIVATE")), HTTPStatus.CREATED)
+            elif path.startswith("/api/uploads/") and path.endswith("/run"):
+                upload_id = path.split("/")[3]
+                accepted = UPLOADS.submit(upload_id)
+                self.json({"upload_id": upload_id, "accepted": accepted}, HTTPStatus.ACCEPTED if accepted else HTTPStatus.CONFLICT)
             else:
                 self.json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
         except ValueError as error:

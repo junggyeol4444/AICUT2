@@ -22,6 +22,8 @@
 
 패키징 단계는 제목 후보 3개, 설명, 시간순 챕터와 태그를 검증해 JSON/TXT 패키지로 저장하고 지정한 완성본 시점에서 고화질 썸네일 후보를 추출합니다. 업로드 큐는 렌더 완료와 사람 검수 승인을 모두 DB에서 확인하며, 자동 단계에서는 공개 업로드를 허용하지 않고 `PRIVATE` 또는 `UNLISTED`만 접수합니다.
 
+업로드 실행기는 중복 실행을 차단하고 성공 시 YouTube 영상 ID를 기록합니다. 쿼터 초과는 임의의 24시간 후가 아니라 `America/Los_Angeles` 시간대의 다음 자정으로 계산해 `RETRY_QUEUED`에 저장합니다. 실제 업로드는 OAuth 구현체를 `UploadClient` 계약에 연결해야 하며, 자격 증명이 없는 기본 런타임은 명시적으로 실패합니다.
+
 ## 실행
 
 ```bash
@@ -66,5 +68,6 @@ npm run build
 - `backend/pipeline.py` — 중복 실행 방지 로컬 작업 큐와 실패 상태 처리
 - `backend/render.py` — 비선형 컷, 고정 crop 줌, 컷별 afade 및 concat 렌더 계획
 - `backend/package.py` — 메타데이터 패키지, 챕터 검증 및 썸네일 후보 추출
+- `backend/upload.py` — 검수된 비공개 업로드 실행, 중복 방지 및 PT 자정 쿼터 재시도
 - `tests/data.test.js` — 파이프라인과 핵심 데이터 불변 조건 검사
 - `tests/test_database.py` — SQLite 트랜잭션, 제약 조건 및 비선형 타임라인 검사

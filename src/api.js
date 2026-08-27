@@ -38,6 +38,8 @@ export const api = {
   publishEpisode: (episodeId, privacyStatus = 'PRIVATE') => request(`/episodes/${episodeId}/publish`, {
     method: 'POST', body: JSON.stringify({ privacy_status: privacyStatus }),
   }),
+  uploads: () => request('/uploads'),
+  runUpload: uploadId => request(`/uploads/${uploadId}/run`, { method: 'POST', body: '{}' }),
   logs: projectId => request(projectId ? `/projects/${projectId}/logs` : '/logs'),
 };
 

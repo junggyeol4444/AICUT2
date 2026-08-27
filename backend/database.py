@@ -249,6 +249,43 @@ class Database:
             row = connection.execute("SELECT * FROM upload_jobs WHERE upload_id=?", (upload_id,)).fetchone()
         return dict(row)
 
+    def list_uploads(self, status: str | None = None) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            if status:
+                rows = connection.execute(
+                    """SELECT u.*,e.output_mp4_path,e.metadata_json FROM upload_jobs u
+                    JOIN episodes e USING(episode_id) WHERE u.status=? ORDER BY u.created_at""", (status,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT u.*,e.output_mp4_path,e.metadata_json FROM upload_jobs u
+                    JOIN episodes e USING(episode_id) ORDER BY u.created_at DESC"""
+                ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = json.loads(item.pop("metadata_json"))
+            result.append(item)
+        return result
+
+    def set_upload_status(
+        self, upload_id: str, status: str, *, youtube_video_id: str | None = None,
+        retry_at: str | None = None, error_message: str | None = None,
+    ) -> dict[str, Any]:
+        allowed = {"QUEUED", "UPLOADING", "RETRY_QUEUED", "COMPLETE", "FAILED"}
+        if status not in allowed:
+            raise ValueError(f"지원하지 않는 업로드 상태입니다: {status}")
+        with self.connect() as connection:
+            result = connection.execute(
+                """UPDATE upload_jobs SET status=?,youtube_video_id=COALESCE(?,youtube_video_id),
+                retry_at=?,error_message=?,updated_at=? WHERE upload_id=?""",
+                (status, youtube_video_id, retry_at, error_message, now(), upload_id),
+            )
+            if not result.rowcount:
+                raise KeyError(upload_id)
+            row = connection.execute("SELECT * FROM upload_jobs WHERE upload_id=?", (upload_id,)).fetchone()
+        return dict(row)
+
     def logs(self, project_id: str | None = None) -> list[dict[str, Any]]:
         with self.connect() as connection:
             if project_id:
