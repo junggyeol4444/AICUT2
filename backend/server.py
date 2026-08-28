@@ -12,10 +12,16 @@ from urllib.parse import urlparse
 from .database import Database
 from .pipeline import PipelineManager
 from .render import RenderError, RenderPlan, export_plan, render
+from .package import MetadataPackage, build_thumbnail_commands, extract_thumbnails, write_metadata_package
+from .upload import UnconfiguredYouTubeClient, UploadManager
+from .calibration import calibrate_pacing
+from .learning import analyze_source_output
+from .performance import performance_insights, validate_metrics
 
 ROOT = Path(__file__).resolve().parents[1]
 DB = Database(os.environ.get("AICUT_DB", ROOT / "aicut.db"))
 PIPELINE = PipelineManager(DB)
+UPLOADS = UploadManager(DB, UnconfiguredYouTubeClient())
 
 
 class ApiHandler(BaseHTTPRequestHandler):
@@ -40,6 +46,14 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.json(DB.get_timeline(path.split("/")[3]))
             elif path == "/api/logs":
                 self.json(DB.logs())
+            elif path == "/api/uploads":
+                self.json(DB.list_uploads())
+            elif path == "/api/calibrations":
+                self.json(DB.list_calibrations())
+            elif path == "/api/learning/source-output":
+                self.json(DB.list_source_output_pairs())
+            elif path.startswith("/api/episodes/") and path.endswith("/performance"):
+                self.json(DB.list_performance(path.split("/")[3]))
             else:
                 self.serve_static(path)
         except KeyError as error:
@@ -55,6 +69,28 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if not payload.get("file_path"):
                     return self.json({"error": "file_path_required"}, HTTPStatus.BAD_REQUEST)
                 self.json(DB.create_project(payload), HTTPStatus.CREATED)
+            elif path == "/api/calibrations":
+                result = calibrate_pacing(payload.get("samples", []))
+                profile = DB.save_calibration(
+                    payload.get("channel_ref", "default"), payload.get("name", "Pacing profile"),
+                    {"pacing": result.params, "evaluation": result.to_dict()}, result.f1 * 100,
+                )
+                self.json(profile, HTTPStatus.CREATED)
+            elif path == "/api/learning/source-output":
+                cuts = payload.get("cuts")
+                if cuts is None and payload.get("episode_id"):
+                    cuts = DB.get_timeline(payload["episode_id"])
+                analysis = analyze_source_output(payload["source_duration_sec"], cuts or [])
+                pair = DB.save_source_output_pair(
+                    payload["source_ref"], payload["output_ref"], analysis, payload.get("project_id"),
+                )
+                self.json(pair, HTTPStatus.CREATED)
+            elif path.startswith("/api/episodes/") and path.endswith("/performance"):
+                episode_id = path.split("/")[3]
+                metrics = validate_metrics(payload["metrics"])
+                snapshot = DB.save_performance(episode_id, metrics)
+                snapshot["insights"] = performance_insights(metrics, payload["profile"])
+                self.json(snapshot, HTTPStatus.CREATED)
             elif path.startswith("/api/projects/") and path.endswith("/run"):
                 project_id = path.split("/")[3]
                 DB.get_project(project_id)
@@ -87,6 +123,28 @@ class ApiHandler(BaseHTTPRequestHandler):
                         raise
                     DB.set_render_status(episode_id, "COMPLETE", result["output_path"])
                     self.json({"episode_id": episode_id, **result})
+            elif path.startswith("/api/episodes/") and path.endswith("/package"):
+                episode_id = path.split("/")[3]
+                episode = DB.get_episode(episode_id)
+                package = MetadataPackage.from_dict(payload["metadata"])
+                output_directory = payload.get("output_directory") or str(ROOT / "outputs" / episode_id)
+                timestamps = [float(value) for value in payload.get("thumbnail_timestamps", [])]
+                video_path = episode.get("output_mp4_path") or str(ROOT / "outputs" / f"{episode_id}.mp4")
+                commands = build_thumbnail_commands("ffmpeg", video_path, timestamps, output_directory) if timestamps else []
+                if payload.get("execute", False):
+                    paths = write_metadata_package(package, output_directory)
+                    thumbnails = extract_thumbnails(video_path, timestamps, output_directory) if timestamps else []
+                    DB.update_episode_metadata(episode_id, payload["metadata"])
+                    self.json({"episode_id": episode_id, **paths, "thumbnails": thumbnails})
+                else:
+                    self.json({"episode_id": episode_id, "dry_run": True, "thumbnail_commands": commands})
+            elif path.startswith("/api/episodes/") and path.endswith("/publish"):
+                episode_id = path.split("/")[3]
+                self.json(DB.queue_upload(episode_id, payload.get("privacy_status", "PRIVATE")), HTTPStatus.CREATED)
+            elif path.startswith("/api/uploads/") and path.endswith("/run"):
+                upload_id = path.split("/")[3]
+                accepted = UPLOADS.submit(upload_id)
+                self.json({"upload_id": upload_id, "accepted": accepted}, HTTPStatus.ACCEPTED if accepted else HTTPStatus.CONFLICT)
             else:
                 self.json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
         except ValueError as error:

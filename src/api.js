@@ -29,8 +29,26 @@ export const api = {
   renderEpisode: (episodeId, options = {}) => request(`/episodes/${episodeId}/render`, {
     method: 'POST', body: JSON.stringify(options),
   }),
+  packageEpisode: (episodeId, options) => request(`/episodes/${episodeId}/package`, {
+    method: 'POST', body: JSON.stringify(options),
+  }),
   reviewEpisode: (episodeId, approved) => request(`/episodes/${episodeId}/review`, {
     method: 'POST', body: JSON.stringify({ approved }),
+  }),
+  publishEpisode: (episodeId, privacyStatus = 'PRIVATE') => request(`/episodes/${episodeId}/publish`, {
+    method: 'POST', body: JSON.stringify({ privacy_status: privacyStatus }),
+  }),
+  uploads: () => request('/uploads'),
+  runUpload: uploadId => request(`/uploads/${uploadId}/run`, { method: 'POST', body: '{}' }),
+  calibrations: () => request('/calibrations'),
+  calibrate: payload => request('/calibrations', { method: 'POST', body: JSON.stringify(payload) }),
+  sourceOutputPairs: () => request('/learning/source-output'),
+  analyzeSourceOutput: payload => request('/learning/source-output', {
+    method: 'POST', body: JSON.stringify(payload),
+  }),
+  performance: episodeId => request(`/episodes/${episodeId}/performance`),
+  collectPerformance: (episodeId, payload) => request(`/episodes/${episodeId}/performance`, {
+    method: 'POST', body: JSON.stringify(payload),
   }),
   logs: projectId => request(projectId ? `/projects/${projectId}/logs` : '/logs'),
 };

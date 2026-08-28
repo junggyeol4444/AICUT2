@@ -1,0 +1,10 @@
+[
+  { "silence_db": -52, "silence_duration_sec": 2.8, "previous_tension": 0.12, "speaker_transition": false, "meaningful_reaction": false, "human_decision": "CUT" },
+  { "silence_db": -49, "silence_duration_sec": 1.9, "previous_tension": 0.18, "speaker_transition": false, "meaningful_reaction": false, "human_decision": "CUT" },
+  { "silence_db": -46, "silence_duration_sec": 1.0, "previous_tension": 0.20, "speaker_transition": false, "meaningful_reaction": false, "human_decision": "TRIM" },
+  { "silence_db": -43, "silence_duration_sec": 0.8, "previous_tension": 0.24, "speaker_transition": false, "meaningful_reaction": false, "human_decision": "TRIM" },
+  { "silence_db": -51, "silence_duration_sec": 2.4, "previous_tension": 0.91, "speaker_transition": false, "meaningful_reaction": false, "human_decision": "KEEP" },
+  { "silence_db": -50, "silence_duration_sec": 2.1, "previous_tension": 0.15, "speaker_transition": true, "meaningful_reaction": false, "human_decision": "KEEP" },
+  { "silence_db": -48, "silence_duration_sec": 1.7, "previous_tension": 0.19, "speaker_transition": false, "meaningful_reaction": true, "human_decision": "KEEP" },
+  { "silence_db": -31, "silence_duration_sec": 0.2, "previous_tension": 0.35, "speaker_transition": false, "meaningful_reaction": false, "human_decision": "KEEP" }
+]

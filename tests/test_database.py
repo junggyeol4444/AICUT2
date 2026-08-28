@@ -70,6 +70,21 @@ class DatabaseTest(unittest.TestCase):
         self.assertEqual(self.db.get_project(project["project_id"])["status"], "PLANNING")
         self.assertEqual([cut["source_start_sec"] for cut in self.db.get_timeline("episode-operation")], [2581, 1022, 3827])
 
+    def test_upload_queue_enforces_render_and_human_review_gates(self):
+        project = self.db.create_project({"file_path": "/media/live.mkv"})
+        manifest = json.loads((Path(__file__).parent / "fixtures" / "analysis-manifest.json").read_text())
+        self.db.import_analysis(project["project_id"], manifest)
+        with self.assertRaisesRegex(ValueError, "사람 검수"):
+            self.db.queue_upload("episode-operation")
+        self.db.review_episode("episode-operation", True)
+        with self.assertRaisesRegex(ValueError, "렌더링"):
+            self.db.queue_upload("episode-operation")
+        self.db.set_render_status("episode-operation", "COMPLETE", "/output/episode.mp4")
+        upload = self.db.queue_upload("episode-operation", "PRIVATE")
+        self.assertEqual((upload["status"], upload["privacy_status"]), ("QUEUED", "PRIVATE"))
+        with self.assertRaises(ValueError):
+            self.db.queue_upload("episode-operation", "PUBLIC")
+
 
 if __name__ == "__main__":
     unittest.main()

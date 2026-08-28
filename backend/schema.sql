@@ -103,7 +103,38 @@ CREATE TABLE IF NOT EXISTS source_artifacts (
   UNIQUE(project_id, kind, path)
 );
 
+CREATE TABLE IF NOT EXISTS upload_jobs (
+  upload_id TEXT PRIMARY KEY,
+  episode_id TEXT NOT NULL REFERENCES episodes(episode_id) ON DELETE CASCADE,
+  privacy_status TEXT NOT NULL CHECK (privacy_status IN ('PRIVATE','UNLISTED')),
+  status TEXT NOT NULL CHECK (status IN ('QUEUED','UPLOADING','RETRY_QUEUED','COMPLETE','FAILED')),
+  youtube_video_id TEXT,
+  retry_at TEXT,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS source_output_pairs (
+  pair_id TEXT PRIMARY KEY,
+  project_id TEXT REFERENCES projects(project_id) ON DELETE SET NULL,
+  source_ref TEXT NOT NULL,
+  output_ref TEXT NOT NULL,
+  selection_analysis_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS performance_snapshots (
+  performance_id TEXT PRIMARY KEY,
+  episode_id TEXT NOT NULL REFERENCES episodes(episode_id) ON DELETE CASCADE,
+  metrics_json TEXT NOT NULL,
+  collected_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id);
 CREATE INDEX IF NOT EXISTS idx_candidates_project ON content_candidates(project_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_project ON episodes(project_id);
 CREATE INDEX IF NOT EXISTS idx_logs_project ON job_logs(project_id, log_id DESC);
+CREATE INDEX IF NOT EXISTS idx_upload_jobs_status ON upload_jobs(status, retry_at);
+CREATE INDEX IF NOT EXISTS idx_source_output_project ON source_output_pairs(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_performance_episode ON performance_snapshots(episode_id, collected_at DESC);
