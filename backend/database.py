@@ -270,6 +270,19 @@ class Database:
             value = self._decode(value, key)
         return value
 
+    def list_episodes(self, project_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM episodes WHERE project_id=? ORDER BY rowid", (project_id,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            for key in ("candidate_ids_json", "planned_structure_json", "metadata_json"):
+                value = self._decode(value, key)
+            result.append(value)
+        return result
+
     def set_render_status(self, episode_id: str, status: str, output_path: str | None = None) -> None:
         with self.connect() as connection:
             result = connection.execute(

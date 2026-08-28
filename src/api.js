@@ -14,14 +14,16 @@ export const api = {
   health: () => request('/health'),
   projects: () => request('/projects'),
   createProject: payload => request('/projects', { method: 'POST', body: JSON.stringify(payload) }),
-  runProject: (projectId, manifestPath) => request(`/projects/${projectId}/run`, {
-    method: 'POST', body: JSON.stringify({ manifest_path: manifestPath || null }),
+  runProject: (projectId, options = {}) => request(`/projects/${projectId}/run`, {
+    method: 'POST', body: JSON.stringify(options),
   }),
+  cancelProject: projectId => request(`/projects/${projectId}/cancel`, { method: 'POST', body: '{}' }),
   importAnalysis: (projectId, manifest) => request(`/projects/${projectId}/analysis`, {
     method: 'POST', body: JSON.stringify(manifest),
   }),
   job: projectId => request(`/projects/${projectId}/job`),
   candidates: projectId => request(`/projects/${projectId}/candidates`),
+  episodes: projectId => request(`/projects/${projectId}/episodes`),
   reviewCandidate: (candidateId, decision, feedback = '') => request(`/candidates/${candidateId}/review`, {
     method: 'POST', body: JSON.stringify({ decision, feedback }),
   }),

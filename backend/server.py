@@ -43,6 +43,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.json(DB.list_projects())
             elif path.startswith("/api/projects/") and path.endswith("/candidates"):
                 self.json(DB.list_candidates(path.split("/")[3]))
+            elif path.startswith("/api/projects/") and path.endswith("/episodes"):
+                self.json(DB.list_episodes(path.split("/")[3]))
             elif path.startswith("/api/projects/") and path.endswith("/logs"):
                 self.json(DB.logs(path.split("/")[3]))
             elif path.startswith("/api/projects/") and path.endswith("/job"):
