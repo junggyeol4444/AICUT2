@@ -16,6 +16,7 @@ from .package import MetadataPackage, build_thumbnail_commands, extract_thumbnai
 from .upload import UnconfiguredYouTubeClient, UploadManager
 from .calibration import calibrate_pacing
 from .learning import analyze_source_output
+from .performance import performance_insights, validate_metrics
 
 ROOT = Path(__file__).resolve().parents[1]
 DB = Database(os.environ.get("AICUT_DB", ROOT / "aicut.db"))
@@ -51,6 +52,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.json(DB.list_calibrations())
             elif path == "/api/learning/source-output":
                 self.json(DB.list_source_output_pairs())
+            elif path.startswith("/api/episodes/") and path.endswith("/performance"):
+                self.json(DB.list_performance(path.split("/")[3]))
             else:
                 self.serve_static(path)
         except KeyError as error:
@@ -82,6 +85,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                     payload["source_ref"], payload["output_ref"], analysis, payload.get("project_id"),
                 )
                 self.json(pair, HTTPStatus.CREATED)
+            elif path.startswith("/api/episodes/") and path.endswith("/performance"):
+                episode_id = path.split("/")[3]
+                metrics = validate_metrics(payload["metrics"])
+                snapshot = DB.save_performance(episode_id, metrics)
+                snapshot["insights"] = performance_insights(metrics, payload["profile"])
+                self.json(snapshot, HTTPStatus.CREATED)
             elif path.startswith("/api/projects/") and path.endswith("/run"):
                 project_id = path.split("/")[3]
                 DB.get_project(project_id)

@@ -26,7 +26,10 @@ def tracked_files() -> list[Path]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base", default="a98b592", help="base revision used for PR diff checks")
+    parser.add_argument(
+        "--base", default="e490252",
+        help="base revision used for PR diff checks (defaults to the merged PR #1 base)",
+    )
     args = parser.parse_args()
     errors: list[str] = []
 

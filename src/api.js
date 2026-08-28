@@ -46,6 +46,10 @@ export const api = {
   analyzeSourceOutput: payload => request('/learning/source-output', {
     method: 'POST', body: JSON.stringify(payload),
   }),
+  performance: episodeId => request(`/episodes/${episodeId}/performance`),
+  collectPerformance: (episodeId, payload) => request(`/episodes/${episodeId}/performance`, {
+    method: 'POST', body: JSON.stringify(payload),
+  }),
   logs: projectId => request(projectId ? `/projects/${projectId}/logs` : '/logs'),
 };
 

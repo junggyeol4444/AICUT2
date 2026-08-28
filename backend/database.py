@@ -345,6 +345,34 @@ class Database:
             result.append(value)
         return result
 
+    def save_performance(self, episode_id: str, metrics: dict[str, Any]) -> dict[str, Any]:
+        performance_id = str(uuid.uuid4())
+        with self.connect() as connection:
+            if not connection.execute("SELECT 1 FROM episodes WHERE episode_id=?", (episode_id,)).fetchone():
+                raise KeyError(episode_id)
+            connection.execute(
+                "INSERT INTO performance_snapshots VALUES(?,?,?,?)",
+                (performance_id, episode_id, json.dumps(metrics, ensure_ascii=False), now()),
+            )
+            row = connection.execute(
+                "SELECT * FROM performance_snapshots WHERE performance_id=?", (performance_id,),
+            ).fetchone()
+        value = dict(row)
+        value["metrics"] = json.loads(value.pop("metrics_json"))
+        return value
+
+    def list_performance(self, episode_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM performance_snapshots WHERE episode_id=? ORDER BY collected_at DESC", (episode_id,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            value["metrics"] = json.loads(value.pop("metrics_json"))
+            result.append(value)
+        return result
+
     def logs(self, project_id: str | None = None) -> list[dict[str, Any]]:
         with self.connect() as connection:
             if project_id:
