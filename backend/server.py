@@ -100,7 +100,15 @@ class ApiHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/projects/") and path.endswith("/run"):
                 project_id = path.split("/")[3]
                 DB.get_project(project_id)
-                accepted = PIPELINE.submit(project_id, payload.get("manifest_path"))
+                accepted = PIPELINE.submit(
+                    project_id, payload.get("manifest_path"), options=payload.get("options"),
+                    resume=bool(payload.get("resume", True)),
+                )
+                self.json({"accepted": accepted, "project_id": project_id}, HTTPStatus.ACCEPTED if accepted else HTTPStatus.CONFLICT)
+            elif path.startswith("/api/projects/") and path.endswith("/cancel"):
+                project_id = path.split("/")[3]
+                DB.get_project(project_id)
+                accepted = PIPELINE.cancel(project_id)
                 self.json({"accepted": accepted, "project_id": project_id}, HTTPStatus.ACCEPTED if accepted else HTTPStatus.CONFLICT)
             elif path.startswith("/api/projects/") and path.endswith("/analysis"):
                 project_id = path.split("/")[3]

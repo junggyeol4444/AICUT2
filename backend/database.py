@@ -99,6 +99,49 @@ class Database:
             )
             self._log(connection, project_id, "FAILED", message)
 
+    def save_pipeline_step(
+        self, project_id: str, step: str, status: str, progress: int,
+        output: dict[str, Any] | None = None, error_message: str | None = None,
+    ) -> dict[str, Any]:
+        timestamp = now()
+        with self.connect() as connection:
+            if not connection.execute("SELECT 1 FROM projects WHERE project_id=?", (project_id,)).fetchone():
+                raise KeyError(project_id)
+            previous = connection.execute(
+                "SELECT started_at FROM pipeline_steps WHERE project_id=? AND step=?", (project_id, step),
+            ).fetchone()
+            started_at = (previous["started_at"] if previous else None) or (timestamp if status == "RUNNING" else None)
+            completed_at = timestamp if status in {"COMPLETE", "FAILED", "CANCELLED"} else None
+            connection.execute(
+                """INSERT INTO pipeline_steps
+                (project_id,step,status,progress,output_json,error_message,started_at,completed_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(project_id,step) DO UPDATE SET
+                  status=excluded.status,progress=excluded.progress,output_json=excluded.output_json,
+                  error_message=excluded.error_message,started_at=COALESCE(pipeline_steps.started_at,excluded.started_at),
+                  completed_at=excluded.completed_at,updated_at=excluded.updated_at""",
+                (project_id, step, status, progress, json.dumps(output or {}, ensure_ascii=False),
+                 error_message, started_at, completed_at, timestamp),
+            )
+            row = connection.execute(
+                "SELECT * FROM pipeline_steps WHERE project_id=? AND step=?", (project_id, step),
+            ).fetchone()
+        value = dict(row)
+        value["output"] = json.loads(value.pop("output_json"))
+        return value
+
+    def pipeline_steps(self, project_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM pipeline_steps WHERE project_id=? ORDER BY updated_at", (project_id,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            value["output"] = json.loads(value.pop("output_json"))
+            result.append(value)
+        return result
+
     def import_analysis(self, project_id: str, manifest: dict[str, Any]) -> dict[str, int]:
         """Atomically replace AI analysis output using the documented interchange contract."""
         events = manifest.get("events", [])
