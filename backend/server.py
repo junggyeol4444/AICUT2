@@ -21,6 +21,7 @@ from .understanding import (
     PreprocessPlan, build_preprocess_commands, build_scan_plan, execute_preprocess,
     validate_transcript_segments,
 )
+from .stt import build_stt_command, SttJob, transcribe_tracks
 from dataclasses import asdict
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -138,6 +139,25 @@ class ApiHandler(BaseHTTPRequestHandler):
                 segments = validate_transcript_segments(payload.get("segments", []), project["duration_sec"])
                 DB.replace_transcript(project_id, segments)
                 self.json({"project_id": project_id, "segment_count": len(segments)}, HTTPStatus.CREATED)
+            elif path.startswith("/api/projects/") and path.endswith("/transcribe"):
+                project_id = path.split("/")[3]
+                project = DB.get_project(project_id)
+                executable = payload.get("executable")
+                audio_paths = payload.get("audio_paths", [])
+                if not isinstance(executable, list) or not all(isinstance(value, str) for value in executable):
+                    raise ValueError("executable은 셸 문자열이 아닌 인자 배열이어야 합니다.")
+                output_directory = payload.get("output_directory") or str(ROOT / "artifacts" / project_id / "stt")
+                if payload.get("execute", False):
+                    result = transcribe_tracks(
+                        executable, audio_paths, project["duration_sec"], output_directory, payload.get("language"),
+                    )
+                    DB.replace_transcript(project_id, result["segments"])
+                    self.json({"project_id": project_id, **result}, HTTPStatus.CREATED)
+                else:
+                    commands = [build_stt_command(executable, SttJob(
+                        audio_path, index, str(Path(output_directory) / f"audio-track-{index:02d}.json"), payload.get("language"),
+                    )) for index, audio_path in enumerate(audio_paths)]
+                    self.json({"project_id": project_id, "dry_run": True, "commands": commands})
             elif path.startswith("/api/candidates/") and path.endswith("/review"):
                 self.json(DB.review_candidate(path.split("/")[3], payload.get("decision", ""), payload.get("feedback", "")))
             elif path.startswith("/api/episodes/") and path.endswith("/review"):

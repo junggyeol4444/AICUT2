@@ -27,8 +27,8 @@ def tracked_files() -> list[Path]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--base", default="e490252",
-        help="base revision used for PR diff checks (defaults to the merged PR #1 base)",
+        "--base", default="origin/main",
+        help="base revision used for PR diff checks (defaults to the fetched GitHub main branch)",
     )
     args = parser.parse_args()
     errors: list[str] = []

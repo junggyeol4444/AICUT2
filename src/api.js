@@ -59,6 +59,9 @@ export const api = {
   importTranscript: (projectId, segments) => request(`/projects/${projectId}/transcript`, {
     method: 'POST', body: JSON.stringify({ segments }),
   }),
+  transcribe: (projectId, payload) => request(`/projects/${projectId}/transcribe`, {
+    method: 'POST', body: JSON.stringify(payload),
+  }),
   logs: projectId => request(projectId ? `/projects/${projectId}/logs` : '/logs'),
 };
 
