@@ -17,6 +17,12 @@ from .upload import UnconfiguredYouTubeClient, UploadManager
 from .calibration import calibrate_pacing
 from .learning import analyze_source_output
 from .performance import performance_insights, validate_metrics
+from .understanding import (
+    PreprocessPlan, build_preprocess_commands, build_scan_plan, execute_preprocess,
+    validate_transcript_segments,
+)
+from .stt import build_stt_command, SttJob, transcribe_tracks
+from dataclasses import asdict
 
 ROOT = Path(__file__).resolve().parents[1]
 DB = Database(os.environ.get("AICUT_DB", ROOT / "aicut.db"))
@@ -99,6 +105,59 @@ class ApiHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/projects/") and path.endswith("/analysis"):
                 project_id = path.split("/")[3]
                 self.json(DB.import_analysis(project_id, payload))
+            elif path.startswith("/api/projects/") and path.endswith("/preprocess"):
+                project_id = path.split("/")[3]
+                project = DB.get_project(project_id)
+                media = json.loads(project.get("media_info_json") or "{}")
+                plan = PreprocessPlan(
+                    source_path=project["file_path"],
+                    output_directory=payload.get("output_directory") or str(ROOT / "artifacts" / project_id),
+                    audio_tracks=int(payload.get("audio_tracks", media.get("audio_tracks", 0))),
+                    frame_interval_sec=float(payload["frame_interval_sec"]),
+                )
+                if payload.get("execute", False):
+                    result = execute_preprocess(plan)
+                    DB.add_artifacts(project_id, [
+                        {"kind": item["kind"], "path": item["path"], "metadata": {"command": item["command"]}}
+                        for item in result["artifacts"]
+                    ])
+                    self.json({"project_id": project_id, **result})
+                else:
+                    self.json({"project_id": project_id, "dry_run": True, "commands": build_preprocess_commands(plan)})
+            elif path.startswith("/api/projects/") and path.endswith("/scan-plan"):
+                project_id = path.split("/")[3]
+                project = DB.get_project(project_id)
+                windows = build_scan_plan(
+                    project["duration_sec"], payload["coarse_window_sec"], payload.get("precision_ranges"),
+                )
+                encoded = [asdict(window) for window in windows]
+                DB.replace_scan_windows(project_id, encoded)
+                self.json({"project_id": project_id, "windows": encoded}, HTTPStatus.CREATED)
+            elif path.startswith("/api/projects/") and path.endswith("/transcript"):
+                project_id = path.split("/")[3]
+                project = DB.get_project(project_id)
+                segments = validate_transcript_segments(payload.get("segments", []), project["duration_sec"])
+                DB.replace_transcript(project_id, segments)
+                self.json({"project_id": project_id, "segment_count": len(segments)}, HTTPStatus.CREATED)
+            elif path.startswith("/api/projects/") and path.endswith("/transcribe"):
+                project_id = path.split("/")[3]
+                project = DB.get_project(project_id)
+                executable = payload.get("executable")
+                audio_paths = payload.get("audio_paths", [])
+                if not isinstance(executable, list) or not all(isinstance(value, str) for value in executable):
+                    raise ValueError("executable은 셸 문자열이 아닌 인자 배열이어야 합니다.")
+                output_directory = payload.get("output_directory") or str(ROOT / "artifacts" / project_id / "stt")
+                if payload.get("execute", False):
+                    result = transcribe_tracks(
+                        executable, audio_paths, project["duration_sec"], output_directory, payload.get("language"),
+                    )
+                    DB.replace_transcript(project_id, result["segments"])
+                    self.json({"project_id": project_id, **result}, HTTPStatus.CREATED)
+                else:
+                    commands = [build_stt_command(executable, SttJob(
+                        audio_path, index, str(Path(output_directory) / f"audio-track-{index:02d}.json"), payload.get("language"),
+                    )) for index, audio_path in enumerate(audio_paths)]
+                    self.json({"project_id": project_id, "dry_run": True, "commands": commands})
             elif path.startswith("/api/candidates/") and path.endswith("/review"):
                 self.json(DB.review_candidate(path.split("/")[3], payload.get("decision", ""), payload.get("feedback", "")))
             elif path.startswith("/api/episodes/") and path.endswith("/review"):

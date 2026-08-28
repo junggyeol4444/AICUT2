@@ -1,0 +1,73 @@
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from backend.database import Database
+from backend.understanding import (
+    PreprocessPlan, UnderstandingError, build_preprocess_commands, build_scan_plan,
+    execute_preprocess, validate_transcript_segments,
+)
+
+
+class BroadcastUnderstandingTest(unittest.TestCase):
+    def test_preprocess_plan_keeps_each_audio_track_separate(self):
+        plan = PreprocessPlan("/media/live.mkv", "/artifacts/project", 4, 12)
+        commands = build_preprocess_commands(plan)
+        self.assertEqual(len(commands["audio"]), 4)
+        self.assertEqual([command[command.index("-map") + 1] for command in commands["audio"]], [
+            "0:a:0", "0:a:1", "0:a:2", "0:a:3",
+        ])
+        self.assertIn("fps=1/12", commands["frames"])
+
+    def test_preprocess_executes_audio_and_frame_artifacts(self):
+        calls = []
+        runner = lambda command, **kwargs: (calls.append(command) or SimpleNamespace(returncode=0, stderr=""))
+        with tempfile.TemporaryDirectory() as directory, patch("backend.understanding.shutil.which", return_value="/usr/bin/ffmpeg"):
+            result = execute_preprocess(PreprocessPlan("source.mkv", directory, 2, 10), runner)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([item["kind"] for item in result["artifacts"]], ["AUDIO", "AUDIO", "FRAMES"])
+
+    def test_coarse_scan_covers_entire_broadcast_without_gaps(self):
+        windows = build_scan_plan(65, 20)
+        coarse = [window for window in windows if window.pass_kind == "COARSE"]
+        self.assertEqual([(window.start_sec, window.end_sec) for window in coarse], [
+            (0, 20), (20, 40), (40, 60), (60, 65),
+        ])
+
+    def test_overlapping_precision_ranges_are_merged(self):
+        windows = build_scan_plan(100, 25, [
+            {"start_sec": 40, "end_sec": 55, "reason": "audio"},
+            {"start_sec": 50, "end_sec": 70, "reason": "topic"},
+        ])
+        precision = [window for window in windows if window.pass_kind == "PRECISION"]
+        self.assertEqual(len(precision), 1)
+        self.assertEqual((precision[0].start_sec, precision[0].end_sec), (40, 70))
+
+    def test_word_timestamps_must_stay_inside_segment_and_source(self):
+        valid = validate_transcript_segments([{
+            "track_index": 0, "start_sec": 10, "end_sec": 12, "text": "안녕하세요",
+            "confidence": .95, "words": [{"start_sec": 10, "end_sec": 11, "word": "안녕"}],
+        }], 100)
+        self.assertEqual(valid[0]["speaker_tag"], "UNKNOWN")
+        with self.assertRaises(UnderstandingError):
+            validate_transcript_segments([{
+                "start_sec": 10, "end_sec": 12, "text": "오류",
+                "words": [{"start_sec": 9, "end_sec": 11, "word": "오류"}],
+            }], 100)
+
+    def test_scan_and_transcript_are_persisted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "understanding.db")
+            project = database.create_project({"file_path": "/media/live.mkv", "duration_sec": 100})
+            windows = [window.__dict__ for window in build_scan_plan(100, 25)]
+            self.assertEqual(database.replace_scan_windows(project["project_id"], windows), 4)
+            segments = validate_transcript_segments([{
+                "start_sec": 1, "end_sec": 2, "text": "테스트", "words": [],
+            }], 100)
+            self.assertEqual(database.replace_transcript(project["project_id"], segments), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

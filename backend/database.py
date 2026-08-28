@@ -373,6 +373,42 @@ class Database:
             result.append(value)
         return result
 
+    def replace_scan_windows(self, project_id: str, windows: list[dict[str, Any]]) -> int:
+        with self.connect() as connection:
+            if not connection.execute("SELECT 1 FROM projects WHERE project_id=?", (project_id,)).fetchone():
+                raise KeyError(project_id)
+            connection.execute("DELETE FROM scan_windows WHERE project_id=?", (project_id,))
+            connection.executemany(
+                """INSERT INTO scan_windows(project_id,pass_kind,start_sec,end_sec,reason)
+                VALUES(?,?,?,?,?)""",
+                [(project_id, item["pass_kind"], item["start_sec"], item["end_sec"], item.get("reason")) for item in windows],
+            )
+        return len(windows)
+
+    def replace_transcript(self, project_id: str, segments: list[dict[str, Any]]) -> int:
+        with self.connect() as connection:
+            if not connection.execute("SELECT 1 FROM projects WHERE project_id=?", (project_id,)).fetchone():
+                raise KeyError(project_id)
+            connection.execute("DELETE FROM transcript_segments WHERE project_id=?", (project_id,))
+            connection.executemany(
+                """INSERT INTO transcript_segments
+                (project_id,track_index,start_sec,end_sec,speaker_tag,text,confidence,words_json)
+                VALUES(?,?,?,?,?,?,?,?)""",
+                [(project_id, item["track_index"], item["start_sec"], item["end_sec"], item["speaker_tag"],
+                  item["text"], item["confidence"], json.dumps(item["words"], ensure_ascii=False)) for item in segments],
+            )
+            self._log(connection, project_id, "UNDERSTANDING", f"단어 타임스탬프 자막 {len(segments)}개 저장")
+        return len(segments)
+
+    def add_artifacts(self, project_id: str, artifacts: list[dict[str, Any]]) -> int:
+        with self.connect() as connection:
+            connection.executemany(
+                """INSERT OR REPLACE INTO source_artifacts(project_id,kind,path,metadata_json,created_at)
+                VALUES(?,?,?,?,?)""",
+                [(project_id, item["kind"], item["path"], json.dumps(item.get("metadata", {}), ensure_ascii=False), now()) for item in artifacts],
+            )
+        return len(artifacts)
+
     def logs(self, project_id: str | None = None) -> list[dict[str, Any]]:
         with self.connect() as connection:
             if project_id:

@@ -131,6 +131,31 @@ CREATE TABLE IF NOT EXISTS performance_snapshots (
   collected_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS transcript_segments (
+  segment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  track_index INTEGER NOT NULL,
+  start_sec REAL NOT NULL,
+  end_sec REAL NOT NULL,
+  speaker_tag TEXT NOT NULL DEFAULT 'UNKNOWN',
+  text TEXT NOT NULL,
+  confidence REAL,
+  words_json TEXT NOT NULL DEFAULT '[]',
+  CHECK (start_sec >= 0 AND end_sec > start_sec),
+  CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1)
+);
+
+CREATE TABLE IF NOT EXISTS scan_windows (
+  window_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  pass_kind TEXT NOT NULL CHECK (pass_kind IN ('COARSE','PRECISION')),
+  start_sec REAL NOT NULL,
+  end_sec REAL NOT NULL,
+  reason TEXT,
+  status TEXT NOT NULL DEFAULT 'PENDING',
+  CHECK (start_sec >= 0 AND end_sec > start_sec)
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id);
 CREATE INDEX IF NOT EXISTS idx_candidates_project ON content_candidates(project_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_project ON episodes(project_id);
@@ -138,3 +163,5 @@ CREATE INDEX IF NOT EXISTS idx_logs_project ON job_logs(project_id, log_id DESC)
 CREATE INDEX IF NOT EXISTS idx_upload_jobs_status ON upload_jobs(status, retry_at);
 CREATE INDEX IF NOT EXISTS idx_source_output_project ON source_output_pairs(project_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_performance_episode ON performance_snapshots(episode_id, collected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_transcript_project_time ON transcript_segments(project_id, start_sec);
+CREATE INDEX IF NOT EXISTS idx_scan_windows_project ON scan_windows(project_id, pass_kind, start_sec);
