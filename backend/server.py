@@ -17,6 +17,7 @@ from .upload import UnconfiguredYouTubeClient, UploadManager
 from .calibration import calibrate_pacing
 from .learning import analyze_source_output
 from .performance import performance_insights, validate_metrics
+from .producer import run_producer
 from .understanding import (
     PreprocessPlan, build_preprocess_commands, build_scan_plan, execute_preprocess,
     validate_transcript_segments,
@@ -100,11 +101,29 @@ class ApiHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/projects/") and path.endswith("/run"):
                 project_id = path.split("/")[3]
                 DB.get_project(project_id)
-                accepted = PIPELINE.submit(project_id, payload.get("manifest_path"))
+                accepted = PIPELINE.submit(
+                    project_id, payload.get("manifest_path"), options=payload.get("options"),
+                    resume=bool(payload.get("resume", True)),
+                )
+                self.json({"accepted": accepted, "project_id": project_id}, HTTPStatus.ACCEPTED if accepted else HTTPStatus.CONFLICT)
+            elif path.startswith("/api/projects/") and path.endswith("/cancel"):
+                project_id = path.split("/")[3]
+                DB.get_project(project_id)
+                accepted = PIPELINE.cancel(project_id)
                 self.json({"accepted": accepted, "project_id": project_id}, HTTPStatus.ACCEPTED if accepted else HTTPStatus.CONFLICT)
             elif path.startswith("/api/projects/") and path.endswith("/analysis"):
                 project_id = path.split("/")[3]
                 self.json(DB.import_analysis(project_id, payload))
+            elif path.startswith("/api/projects/") and path.endswith("/produce"):
+                project_id = path.split("/")[3]
+                project = DB.get_project(project_id)
+                executable = payload.get("executable")
+                if not isinstance(executable, list):
+                    raise ValueError("executable은 셸 문자열이 아닌 인자 배열이어야 합니다.")
+                output_directory = payload.get("output_directory") or str(ROOT / "artifacts" / project_id / "producer")
+                result = run_producer(executable, DB.analysis_input(project_id), output_directory, project["duration_sec"])
+                counts = DB.import_analysis(project_id, result["manifest"])
+                self.json({"project_id": project_id, "counts": counts, "command": result["command"]}, HTTPStatus.CREATED)
             elif path.startswith("/api/projects/") and path.endswith("/preprocess"):
                 project_id = path.split("/")[3]
                 project = DB.get_project(project_id)

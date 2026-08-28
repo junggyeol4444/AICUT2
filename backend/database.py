@@ -99,8 +99,80 @@ class Database:
             )
             self._log(connection, project_id, "FAILED", message)
 
+    def save_pipeline_step(
+        self, project_id: str, step: str, status: str, progress: int,
+        output: dict[str, Any] | None = None, error_message: str | None = None,
+    ) -> dict[str, Any]:
+        timestamp = now()
+        with self.connect() as connection:
+            if not connection.execute("SELECT 1 FROM projects WHERE project_id=?", (project_id,)).fetchone():
+                raise KeyError(project_id)
+            previous = connection.execute(
+                "SELECT started_at FROM pipeline_steps WHERE project_id=? AND step=?", (project_id, step),
+            ).fetchone()
+            started_at = (previous["started_at"] if previous else None) or (timestamp if status == "RUNNING" else None)
+            completed_at = timestamp if status in {"COMPLETE", "FAILED", "CANCELLED"} else None
+            connection.execute(
+                """INSERT INTO pipeline_steps
+                (project_id,step,status,progress,output_json,error_message,started_at,completed_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(project_id,step) DO UPDATE SET
+                  status=excluded.status,progress=excluded.progress,output_json=excluded.output_json,
+                  error_message=excluded.error_message,started_at=COALESCE(pipeline_steps.started_at,excluded.started_at),
+                  completed_at=excluded.completed_at,updated_at=excluded.updated_at""",
+                (project_id, step, status, progress, json.dumps(output or {}, ensure_ascii=False),
+                 error_message, started_at, completed_at, timestamp),
+            )
+            row = connection.execute(
+                "SELECT * FROM pipeline_steps WHERE project_id=? AND step=?", (project_id, step),
+            ).fetchone()
+        value = dict(row)
+        value["output"] = json.loads(value.pop("output_json"))
+        return value
+
+    def pipeline_steps(self, project_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM pipeline_steps WHERE project_id=? ORDER BY updated_at", (project_id,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            value["output"] = json.loads(value.pop("output_json"))
+            result.append(value)
+        return result
+
+    def analysis_input(self, project_id: str) -> dict[str, Any]:
+        project = self.get_project(project_id)
+        with self.connect() as connection:
+            windows = connection.execute(
+                "SELECT pass_kind,start_sec,end_sec,reason,status FROM scan_windows WHERE project_id=? ORDER BY start_sec",
+                (project_id,),
+            ).fetchall()
+            segments = connection.execute(
+                """SELECT track_index,start_sec,end_sec,speaker_tag,text,confidence,words_json
+                FROM transcript_segments WHERE project_id=? ORDER BY start_sec,track_index""", (project_id,),
+            ).fetchall()
+            artifacts = connection.execute(
+                "SELECT kind,path,metadata_json FROM source_artifacts WHERE project_id=? ORDER BY artifact_id", (project_id,),
+            ).fetchall()
+        return {
+            "project": {
+                "project_id": project_id, "duration_sec": project["duration_sec"],
+                "media_info": json.loads(project.get("media_info_json") or "{}"),
+                "target_duration_hint": project.get("target_duration_hint"),
+            },
+            "scan_windows": [dict(row) for row in windows],
+            "transcript": [self._decode(dict(row), "words_json") for row in segments],
+            "artifacts": [self._decode(dict(row), "metadata_json") for row in artifacts],
+        }
+
     def import_analysis(self, project_id: str, manifest: dict[str, Any]) -> dict[str, int]:
         """Atomically replace AI analysis output using the documented interchange contract."""
+        from .producer import validate_analysis_manifest
+
+        project = self.get_project(project_id)
+        manifest = validate_analysis_manifest(manifest, float(project["duration_sec"]))
         events = manifest.get("events", [])
         candidates = manifest.get("candidates", [])
         episodes = manifest.get("episodes", [])
