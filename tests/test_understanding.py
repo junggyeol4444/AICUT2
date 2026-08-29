@@ -8,6 +8,7 @@ from backend.database import Database
 from backend.understanding import (
     PreprocessPlan, UnderstandingError, build_preprocess_commands, build_scan_plan,
     execute_preprocess, validate_transcript_segments,
+    select_precision_ranges,
 )
 
 
@@ -56,6 +57,29 @@ class BroadcastUnderstandingTest(unittest.TestCase):
                 "start_sec": 10, "end_sec": 12, "text": "오류",
                 "words": [{"start_sec": 9, "end_sec": 11, "word": "오류"}],
             }], 100)
+
+    def test_precision_ranges_use_calibrated_multimodal_signals_and_merge_context(self):
+        ranges = select_precision_ranges(100, [{
+            "start_sec": 10, "end_sec": 12, "confidence": 0.4,
+        }], [{
+            "modality": "AUDIO", "kind": "SIGNAL_WINDOW", "track_index": 0,
+            "start_sec": 12, "end_sec": 13, "payload": {"rms_dbfs": -30},
+        }, {
+            "modality": "AUDIO", "kind": "SIGNAL_WINDOW", "track_index": 0,
+            "start_sec": 13, "end_sec": 14, "payload": {"rms_dbfs": -10},
+        }, {
+            "modality": "VISION", "kind": "FRAME_SIGNAL", "start_sec": 50, "end_sec": 55,
+            "payload": {"scd.score": 0.8},
+        }], {
+            "context_before_sec": 2, "context_after_sec": 3, "stt_confidence_below": 0.5,
+            "audio_rms_delta_db": 15, "vision_scene_score_above": 0.7,
+        })
+        self.assertEqual([(item["start_sec"], item["end_sec"]) for item in ranges], [(8, 17), (48, 58)])
+        self.assertEqual(ranges[0]["reason"], "low_stt_confidence,audio_rms_change")
+
+    def test_precision_policy_requires_context_values(self):
+        with self.assertRaises(UnderstandingError):
+            select_precision_ranges(10, [], [], {})
 
     def test_scan_and_transcript_are_persisted(self):
         with tempfile.TemporaryDirectory() as directory:

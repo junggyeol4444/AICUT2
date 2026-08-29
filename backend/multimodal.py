@@ -36,7 +36,10 @@ def analyze_audio_tracks(
                 if not raw:
                     break
                 samples = _pcm_samples(raw, width)
-                mono = samples[::channels]
+                mono = [
+                    sum(samples[index:index + channels]) / channels
+                    for index in range(0, len(samples) - channels + 1, channels)
+                ]
                 if not mono:
                     break
                 peak = max(abs(sample) for sample in mono)
@@ -71,7 +74,10 @@ def _dbfs(value: float, full_scale: float) -> float | None:
     return round(20 * math.log10(value / full_scale), 4) if value else None
 
 
-_META = re.compile(r"(?:frame:\d+\s+)?pts:\d+\s+pts_time:(?P<time>[\d.]+)|lavfi\.(?P<key>[\w.]+)=(?P<value>[^\s]+)")
+_META = re.compile(
+    r"(?:frame:\d+\s+)?pts:-?\d+\s+pts_time:(?P<time>-?[\d.]+)"
+    r"|lavfi\.(?P<key>[\w.]+)=(?P<value>[^\s]+)"
+)
 
 
 def analyze_video(
@@ -101,6 +107,9 @@ def analyze_video(
             if current:
                 observations.append(current)
             start = float(match.group("time"))
+            if start < 0 or start >= duration_sec:
+                current = None
+                continue
             current = {
                 "modality": "VISION", "kind": "FRAME_SIGNAL", "track_index": None,
                 "start_sec": start, "end_sec": min(duration_sec, start + frame_interval_sec),

@@ -11,7 +11,7 @@ from .media import probe_media
 from .multimodal import analyze_audio_tracks, analyze_video
 from .producer import run_producer
 from .stt import transcribe_tracks
-from .understanding import PreprocessPlan, build_scan_plan, execute_preprocess
+from .understanding import PreprocessPlan, build_scan_plan, execute_preprocess, select_precision_ranges
 
 
 class PipelineCancelled(RuntimeError):
@@ -135,6 +135,20 @@ class PipelineManager:
                                             artifact_root / "stt", options.get("language")),
                 )
                 self.database.replace_transcript(project_id, stt["segments"])
+
+            precision_policy = options.get("precision_policy")
+            if precision_policy:
+                analysis = self.database.analysis_input(project_id)
+                precision = self._step(
+                    project_id, "PRECISION_PLAN", "UNDERSTANDING", 59, 60, cancel, resume, completed,
+                    lambda: {"ranges": select_precision_ranges(
+                        float(media["duration_sec"]), analysis["transcript"], analysis["observations"], precision_policy,
+                    )},
+                )
+                combined_ranges = list(options.get("precision_ranges") or []) + precision["ranges"]
+                self.database.replace_scan_windows(project_id, [window.__dict__ for window in build_scan_plan(
+                    float(media["duration_sec"]), float(options.get("coarse_window_sec", 300)), combined_ranges,
+                )])
 
             producer_executable = options.get("producer_executable")
             manifest_path = options.get("manifest_path")
