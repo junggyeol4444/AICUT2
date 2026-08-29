@@ -1,3 +1,4 @@
+import json
 import tempfile
 import threading
 import unittest
@@ -40,6 +41,32 @@ class PipelineTest(unittest.TestCase):
             manager._run(project["project_id"], {}, True, threading.Event())
             self.assertEqual(database.get_project(project["project_id"])["status"], "FAILED")
             self.assertEqual(database.pipeline_steps(project["project_id"])[0]["status"], "FAILED")
+            manager.shutdown()
+
+    def test_pipeline_can_run_external_producer_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv"})
+            manifest = json.loads(
+                (Path(__file__).parent / "fixtures" / "analysis-manifest.json").read_text(encoding="utf-8")
+            )
+            observed = {}
+
+            def produce(_command, analysis_input, _output, _duration):
+                observed.update(analysis_input)
+                return {"manifest": manifest, "command": ["producer"]}
+
+            manager = PipelineManager(
+                database,
+                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
+                    "duration_sec": 5000, "width": 1920, "height": 1080, "audio_tracks": 0,
+                }),
+                produce=produce,
+            )
+            manager._run(project["project_id"], {"producer_executable": ["producer"]}, True, threading.Event())
+            self.assertEqual(observed["project"]["project_id"], project["project_id"])
+            self.assertEqual(database.get_project(project["project_id"])["status"], "PLANNING")
+            self.assertEqual(database.pipeline_steps(project["project_id"])[-1]["step"], "AI_PRODUCER")
             manager.shutdown()
 
 

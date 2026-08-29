@@ -69,6 +69,9 @@ class DatabaseTest(unittest.TestCase):
         self.assertEqual(counts, {"events": 1, "candidates": 1, "episodes": 1, "cuts": 3})
         self.assertEqual(self.db.get_project(project["project_id"])["status"], "PLANNING")
         self.assertEqual([cut["source_start_sec"] for cut in self.db.get_timeline("episode-operation")], [2581, 1022, 3827])
+        episodes = self.db.list_episodes(project["project_id"])
+        self.assertEqual(episodes[0]["episode_id"], "episode-operation")
+        self.assertEqual(episodes[0]["candidate_ids"], ["candidate-operation"])
 
     def test_upload_queue_enforces_render_and_human_review_gates(self):
         project = self.db.create_project({"file_path": "/media/live.mkv"})

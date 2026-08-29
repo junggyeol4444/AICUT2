@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from .database import Database
 from .media import probe_media
+from .producer import run_producer
 from .stt import transcribe_tracks
 from .understanding import PreprocessPlan, build_scan_plan, execute_preprocess
 
@@ -23,12 +24,14 @@ class PipelineManager:
         self, database: Database, max_workers: int = 1, *,
         probe: Callable = probe_media, preprocess: Callable = execute_preprocess,
         transcribe: Callable = transcribe_tracks,
+        produce: Callable = run_producer,
     ):
         self.database = database
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="aicut")
         self.probe = probe
         self.preprocess = preprocess
         self.transcribe = transcribe
+        self.produce = produce
         self._jobs: dict[str, Future] = {}
         self._cancel: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
@@ -112,8 +115,16 @@ class PipelineManager:
                 )
                 self.database.replace_transcript(project_id, stt["segments"])
 
+            producer_executable = options.get("producer_executable")
             manifest_path = options.get("manifest_path")
-            if manifest_path:
+            if producer_executable:
+                produced = self._step(
+                    project_id, "AI_PRODUCER", "DISCOVERING", 60, 75, cancel, resume, completed,
+                    lambda: self.produce(producer_executable, self.database.analysis_input(project_id),
+                                         artifact_root / "producer", float(media["duration_sec"])),
+                )
+                self.database.import_analysis(project_id, produced["manifest"])
+            elif manifest_path:
                 manifest = self._step(
                     project_id, "ANALYSIS_IMPORT", "DISCOVERING", 60, 75, cancel, resume, completed,
                     lambda: json.loads(Path(manifest_path).expanduser().resolve().read_text(encoding="utf-8")),

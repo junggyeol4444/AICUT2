@@ -142,8 +142,37 @@ class Database:
             result.append(value)
         return result
 
+    def analysis_input(self, project_id: str) -> dict[str, Any]:
+        project = self.get_project(project_id)
+        with self.connect() as connection:
+            windows = connection.execute(
+                "SELECT pass_kind,start_sec,end_sec,reason,status FROM scan_windows WHERE project_id=? ORDER BY start_sec",
+                (project_id,),
+            ).fetchall()
+            segments = connection.execute(
+                """SELECT track_index,start_sec,end_sec,speaker_tag,text,confidence,words_json
+                FROM transcript_segments WHERE project_id=? ORDER BY start_sec,track_index""", (project_id,),
+            ).fetchall()
+            artifacts = connection.execute(
+                "SELECT kind,path,metadata_json FROM source_artifacts WHERE project_id=? ORDER BY artifact_id", (project_id,),
+            ).fetchall()
+        return {
+            "project": {
+                "project_id": project_id, "duration_sec": project["duration_sec"],
+                "media_info": json.loads(project.get("media_info_json") or "{}"),
+                "target_duration_hint": project.get("target_duration_hint"),
+            },
+            "scan_windows": [dict(row) for row in windows],
+            "transcript": [self._decode(dict(row), "words_json") for row in segments],
+            "artifacts": [self._decode(dict(row), "metadata_json") for row in artifacts],
+        }
+
     def import_analysis(self, project_id: str, manifest: dict[str, Any]) -> dict[str, int]:
         """Atomically replace AI analysis output using the documented interchange contract."""
+        from .producer import validate_analysis_manifest
+
+        project = self.get_project(project_id)
+        manifest = validate_analysis_manifest(manifest, float(project["duration_sec"]))
         events = manifest.get("events", [])
         candidates = manifest.get("candidates", [])
         episodes = manifest.get("episodes", [])
@@ -240,6 +269,19 @@ class Database:
         for key in ("candidate_ids_json", "planned_structure_json", "metadata_json"):
             value = self._decode(value, key)
         return value
+
+    def list_episodes(self, project_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM episodes WHERE project_id=? ORDER BY rowid", (project_id,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            for key in ("candidate_ids_json", "planned_structure_json", "metadata_json"):
+                value = self._decode(value, key)
+            result.append(value)
+        return result
 
     def set_render_status(self, episode_id: str, status: str, output_path: str | None = None) -> None:
         with self.connect() as connection:
