@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .database import Database
-from .media import probe_media
+from .media import check_disk_capacity, probe_media
 from .multimodal import analyze_audio_tracks, analyze_precision_ranges, analyze_video
 from .producer import run_producer
 from .processes import ProcessSupervisor
@@ -26,6 +26,7 @@ class PipelineManager:
     def __init__(
         self, database: Database, max_workers: int = 1, *,
         probe: Callable = probe_media, preprocess: Callable = execute_preprocess,
+        check_disk: Callable = check_disk_capacity,
         transcribe: Callable = transcribe_tracks,
         analyze_audio: Callable = analyze_audio_tracks,
         analyze_vision: Callable = analyze_video,
@@ -35,6 +36,7 @@ class PipelineManager:
         self.database = database
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="aicut")
         self.probe = probe
+        self.check_disk = check_disk
         self.preprocess = preprocess
         self.transcribe = transcribe
         self.analyze_audio = analyze_audio
@@ -101,6 +103,14 @@ class PipelineManager:
             self.database.set_media_info(project_id, media)
 
             artifact_root = Path(options.get("output_directory") or Path("artifacts") / project_id).expanduser().resolve()
+            if options.get("disk_check"):
+                required = int(options["disk_required_bytes"])
+                disk = self._step(
+                    project_id, "DISK_CHECK", "PARSING", 16, 17, cancel, resume, completed,
+                    lambda: self.check_disk(artifact_root, required, int(options.get("disk_reserve_bytes", 0))),
+                )
+                if disk["available_bytes"] < required:
+                    raise RuntimeError("디스크 용량 검사 결과가 올바르지 않습니다.")
             if options.get("preprocess", False):
                 result = self._step(
                     project_id, "PREPROCESS", "PARSING", 18, 35, cancel, resume, completed,

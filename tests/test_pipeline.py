@@ -62,6 +62,28 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(step["attempt_count"], 2)
             manager.shutdown()
 
+    def test_disk_check_runs_before_analysis(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv"})
+            calls = []
+            manager = PipelineManager(
+                database,
+                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
+                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 0,
+                }),
+                check_disk=lambda _path, required, reserve: (
+                    calls.append((required, reserve)) or {"available_bytes": required}
+                ),
+            )
+            manager._run(project["project_id"], {
+                "disk_check": True, "disk_required_bytes": 1000, "disk_reserve_bytes": 200,
+            }, True, threading.Event())
+            self.assertEqual(calls, [(1000, 200)])
+            self.assertEqual([step["step"] for step in database.pipeline_steps(project["project_id"])],
+                             ["PROBE", "DISK_CHECK", "SCAN_PLAN"])
+            manager.shutdown()
+
     def test_pipeline_can_run_external_producer_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "pipeline.db")
