@@ -119,6 +119,41 @@ class PipelineTest(unittest.TestCase):
                              ["PROBE", "SCAN_PLAN", "AUDIO_ANALYSIS", "VISION_ANALYSIS", "AI_PRODUCER"])
             manager.shutdown()
 
+    def test_pipeline_executes_selected_precision_ranges(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv"})
+            selected = []
+            manager = PipelineManager(
+                database,
+                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
+                    "duration_sec": 10, "width": 1920, "height": 1080, "audio_tracks": 0,
+                }),
+                analyze_vision=lambda *_args, **_kwargs: {"observations": [{
+                    "kind": "FRAME_SIGNAL", "track_index": None, "start_sec": 4, "end_sec": 5,
+                    "confidence": None, "payload": {"scd.score": 0.9},
+                }]},
+                analyze_precision=lambda _source, _audio, _duration, ranges, **_kwargs: (
+                    selected.extend(ranges) or {"observations": [{
+                        "modality": "VISION", "kind": "PRECISION_FRAME_SIGNAL", "track_index": None,
+                        "start_sec": 3, "end_sec": 6, "confidence": None,
+                        "payload": {"selection_reason": "vision_scene_change"},
+                    }]}
+                ),
+            )
+            manager._run(project["project_id"], {
+                "vision_analysis": True, "precision_analysis": True,
+                "precision_audio_window_sec": 0.2, "precision_vision_interval_sec": 0.4,
+                "precision_policy": {"context_before_sec": 1, "context_after_sec": 1,
+                                     "vision_scene_score_above": 0.8},
+            }, True, threading.Event())
+            self.assertEqual(selected, [{"start_sec": 3, "end_sec": 6, "reason": "vision_scene_change"}])
+            self.assertIn("PRECISION_ANALYSIS", [step["step"] for step in database.pipeline_steps(project["project_id"])])
+            self.assertIn("PRECISION_FRAME_SIGNAL", {
+                item["kind"] for item in database.analysis_input(project["project_id"])["observations"]
+            })
+            manager.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()

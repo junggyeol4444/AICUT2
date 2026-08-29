@@ -208,6 +208,31 @@ class Database:
             self._log(connection, project_id, "UNDERSTANDING", f"{modality} 시간축 관찰 {len(rows)}개 저장")
         return len(rows)
 
+    def replace_precision_observations(self, project_id: str, observations: list[dict[str, Any]]) -> int:
+        grouped = {"AUDIO": [], "VISION": []}
+        for item in observations:
+            modality = item.get("modality")
+            if modality not in grouped or not str(item.get("kind", "")).startswith("PRECISION_"):
+                raise ValueError("정밀 관찰에는 AUDIO/VISION modality와 PRECISION_ kind가 필요합니다.")
+            grouped[modality].append(item)
+        duration = float(self.get_project(project_id)["duration_sec"])
+        with self.connect() as connection:
+            connection.execute("DELETE FROM analysis_observations WHERE project_id=? AND kind LIKE 'PRECISION_%'", (project_id,))
+            for modality, items in grouped.items():
+                for item in items:
+                    start, end = float(item["start_sec"]), float(item["end_sec"])
+                    if start < 0 or end <= start or end > duration + 1e-6:
+                        raise ValueError(f"정밀 관찰 시간 범위가 원본을 벗어났습니다: {start}~{end}")
+                    connection.execute(
+                        """INSERT INTO analysis_observations
+                        (project_id,modality,kind,track_index,start_sec,end_sec,confidence,payload_json)
+                        VALUES(?,?,?,?,?,?,?,?)""",
+                        (project_id, modality, item["kind"], item.get("track_index"), start, end,
+                         item.get("confidence"), json.dumps(item.get("payload", {}), ensure_ascii=False)),
+                    )
+            self._log(connection, project_id, "UNDERSTANDING", f"2차 정밀 관찰 {len(observations)}개 저장")
+        return len(observations)
+
     def import_analysis(self, project_id: str, manifest: dict[str, Any]) -> dict[str, int]:
         """Atomically replace AI analysis output using the documented interchange contract."""
         from .producer import validate_analysis_manifest

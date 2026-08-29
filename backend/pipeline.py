@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from .database import Database
 from .media import probe_media
-from .multimodal import analyze_audio_tracks, analyze_video
+from .multimodal import analyze_audio_tracks, analyze_precision_ranges, analyze_video
 from .producer import run_producer
 from .stt import transcribe_tracks
 from .understanding import PreprocessPlan, build_scan_plan, execute_preprocess, select_precision_ranges
@@ -28,6 +28,7 @@ class PipelineManager:
         transcribe: Callable = transcribe_tracks,
         analyze_audio: Callable = analyze_audio_tracks,
         analyze_vision: Callable = analyze_video,
+        analyze_precision: Callable = analyze_precision_ranges,
         produce: Callable = run_producer,
     ):
         self.database = database
@@ -37,6 +38,7 @@ class PipelineManager:
         self.transcribe = transcribe
         self.analyze_audio = analyze_audio
         self.analyze_vision = analyze_vision
+        self.analyze_precision = analyze_precision
         self.produce = produce
         self._jobs: dict[str, Future] = {}
         self._cancel: dict[str, threading.Event] = {}
@@ -152,19 +154,30 @@ class PipelineManager:
                 self.database.replace_scan_windows(project_id, [window.__dict__ for window in build_scan_plan(
                     float(media["duration_sec"]), float(options.get("coarse_window_sec", 300)), combined_ranges,
                 )])
+                if options.get("precision_analysis") and precision["ranges"]:
+                    detailed = self._step(
+                        project_id, "PRECISION_ANALYSIS", "UNDERSTANDING", 60, 68, cancel, resume, completed,
+                        lambda: self.analyze_precision(
+                            project["file_path"], [path for path in audio_paths if Path(path).is_file()],
+                            float(media["duration_sec"]), precision["ranges"],
+                            audio_window_sec=float(options["precision_audio_window_sec"]),
+                            vision_interval_sec=float(options["precision_vision_interval_sec"]),
+                        ),
+                    )
+                    self.database.replace_precision_observations(project_id, detailed["observations"])
 
             producer_executable = options.get("producer_executable")
             manifest_path = options.get("manifest_path")
             if producer_executable:
                 produced = self._step(
-                    project_id, "AI_PRODUCER", "DISCOVERING", 60, 75, cancel, resume, completed,
+                    project_id, "AI_PRODUCER", "DISCOVERING", 70, 80, cancel, resume, completed,
                     lambda: self.produce(producer_executable, self.database.analysis_input(project_id),
                                          artifact_root / "producer", float(media["duration_sec"])),
                 )
                 self.database.import_analysis(project_id, produced["manifest"])
             elif manifest_path:
                 manifest = self._step(
-                    project_id, "ANALYSIS_IMPORT", "DISCOVERING", 60, 75, cancel, resume, completed,
+                    project_id, "ANALYSIS_IMPORT", "DISCOVERING", 70, 80, cancel, resume, completed,
                     lambda: json.loads(Path(manifest_path).expanduser().resolve().read_text(encoding="utf-8")),
                 )
                 self.database.import_analysis(project_id, manifest)
