@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -40,6 +41,7 @@ class PipelineManager:
         self._jobs: dict[str, Future] = {}
         self._cancel: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
+        self._hash_context = threading.local()
 
     def submit(
         self, project_id: str, manifest_path: str | None = None, *,
@@ -81,8 +83,9 @@ class PipelineManager:
         try:
             completed = {item["step"]: item for item in self.database.pipeline_steps(project_id) if item["status"] == "COMPLETE"}
             project = self.database.get_project(project_id)
+            input_hash = self._input_hash(project["file_path"], options)
             media = self._step(project_id, "PROBE", "PARSING", 5, 15, cancel, resume, completed,
-                               lambda: self.probe(project["file_path"]).to_dict())
+                               lambda: self.probe(project["file_path"]).to_dict(), input_hash)
             self.database.set_media_info(project_id, media)
 
             artifact_root = Path(options.get("output_directory") or Path("artifacts") / project_id).expanduser().resolve()
@@ -175,25 +178,53 @@ class PipelineManager:
         except Exception as error:
             self.database.fail_project(project_id, str(error))
 
-    def _step(self, project_id, step, stage, start, end, cancel, resume, completed, operation):
+    def _step(self, project_id, step, stage, start, end, cancel, resume, completed, operation, input_hash=None):
         self._check_cancel(cancel)
-        if resume and step in completed:
+        input_hash = input_hash or self._hash_context.value
+        if resume and step in completed and completed[step].get("input_hash") == input_hash:
             self.database.update_status(project_id, stage, end, f"{step} 체크포인트를 재사용합니다.")
             return completed[step]["output"]
-        self.database.save_pipeline_step(project_id, step, "RUNNING", start)
+        self.database.save_pipeline_step(project_id, step, "RUNNING", start, input_hash=input_hash)
         self.database.update_status(project_id, stage, start, f"{step} 단계를 시작합니다.")
         try:
             output = operation()
             self._check_cancel(cancel)
         except PipelineCancelled:
-            self.database.save_pipeline_step(project_id, step, "CANCELLED", start)
+            self.database.save_pipeline_step(project_id, step, "CANCELLED", start, input_hash=input_hash)
             raise
         except Exception as error:
-            self.database.save_pipeline_step(project_id, step, "FAILED", start, error_message=str(error))
+            self.database.save_pipeline_step(project_id, step, "FAILED", start, error_message=str(error), input_hash=input_hash)
             raise
-        self.database.save_pipeline_step(project_id, step, "COMPLETE", end, output=output)
+        self.database.save_pipeline_step(project_id, step, "COMPLETE", end, output=output, input_hash=input_hash)
         self.database.update_status(project_id, stage, end, f"{step} 단계를 완료했습니다.")
         return output
+
+    def _input_hash(self, source: str, options: dict[str, Any]) -> str:
+        files = [source, options.get("manifest_path"), *(options.get("audio_paths") or [])]
+        payload = {
+            "checkpoint_version": 2,
+            "options": options,
+            "files": [self._file_identity(value) for value in files if value],
+        }
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+        self._hash_context.value = digest
+        return digest
+
+    @staticmethod
+    def _file_identity(value: str) -> dict[str, Any]:
+        path = Path(value).expanduser().resolve()
+        identity: dict[str, Any] = {"path": str(path), "exists": path.is_file()}
+        if not identity["exists"]:
+            return identity
+        stat = path.stat()
+        checksum = hashlib.sha256()
+        with path.open("rb") as source:
+            checksum.update(source.read(1024 * 1024))
+            if stat.st_size > 1024 * 1024:
+                source.seek(max(0, stat.st_size - 1024 * 1024))
+                checksum.update(source.read(1024 * 1024))
+        identity.update(size=stat.st_size, mtime_ns=stat.st_mtime_ns, sample_sha256=checksum.hexdigest())
+        return identity
 
     @staticmethod
     def _check_cancel(event: threading.Event) -> None:

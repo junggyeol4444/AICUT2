@@ -43,6 +43,25 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(database.pipeline_steps(project["project_id"])[0]["status"], "FAILED")
             manager.shutdown()
 
+    def test_changed_options_invalidate_old_checkpoints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv"})
+            calls = []
+            manager = PipelineManager(database, probe=lambda _path: (
+                calls.append("probe") or SimpleNamespace(to_dict=lambda: {
+                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 0,
+                })
+            ))
+            manager._run(project["project_id"], {"coarse_window_sec": 30}, True, threading.Event())
+            first_hash = database.pipeline_steps(project["project_id"])[0]["input_hash"]
+            manager._run(project["project_id"], {"coarse_window_sec": 20}, True, threading.Event())
+            step = database.pipeline_steps(project["project_id"])[0]
+            self.assertEqual(calls, ["probe", "probe"])
+            self.assertNotEqual(first_hash, step["input_hash"])
+            self.assertEqual(step["attempt_count"], 2)
+            manager.shutdown()
+
     def test_pipeline_can_run_external_producer_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "pipeline.db")

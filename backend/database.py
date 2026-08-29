@@ -37,6 +37,15 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript((ROOT / "schema.sql").read_text(encoding="utf-8"))
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(pipeline_steps)")}
+            migrations = {
+                "input_hash": "ALTER TABLE pipeline_steps ADD COLUMN input_hash TEXT",
+                "checkpoint_version": "ALTER TABLE pipeline_steps ADD COLUMN checkpoint_version INTEGER NOT NULL DEFAULT 1",
+                "attempt_count": "ALTER TABLE pipeline_steps ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
+            }
+            for column, statement in migrations.items():
+                if column not in columns:
+                    connection.execute(statement)
 
     def create_project(self, payload: dict[str, Any]) -> dict[str, Any]:
         project_id = str(uuid.uuid4())
@@ -102,6 +111,7 @@ class Database:
     def save_pipeline_step(
         self, project_id: str, step: str, status: str, progress: int,
         output: dict[str, Any] | None = None, error_message: str | None = None,
+        input_hash: str | None = None, checkpoint_version: int = 1,
     ) -> dict[str, Any]:
         timestamp = now()
         with self.connect() as connection:
@@ -114,14 +124,18 @@ class Database:
             completed_at = timestamp if status in {"COMPLETE", "FAILED", "CANCELLED"} else None
             connection.execute(
                 """INSERT INTO pipeline_steps
-                (project_id,step,status,progress,output_json,error_message,started_at,completed_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?)
+                (project_id,step,status,progress,output_json,input_hash,checkpoint_version,attempt_count,
+                 error_message,started_at,completed_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,CASE WHEN ?='RUNNING' THEN 1 ELSE 0 END,?,?,?,?)
                 ON CONFLICT(project_id,step) DO UPDATE SET
                   status=excluded.status,progress=excluded.progress,output_json=excluded.output_json,
+                  input_hash=COALESCE(excluded.input_hash,pipeline_steps.input_hash),
+                  checkpoint_version=excluded.checkpoint_version,
+                  attempt_count=pipeline_steps.attempt_count + CASE WHEN excluded.status='RUNNING' THEN 1 ELSE 0 END,
                   error_message=excluded.error_message,started_at=COALESCE(pipeline_steps.started_at,excluded.started_at),
                   completed_at=excluded.completed_at,updated_at=excluded.updated_at""",
                 (project_id, step, status, progress, json.dumps(output or {}, ensure_ascii=False),
-                 error_message, started_at, completed_at, timestamp),
+                 input_hash, checkpoint_version, status, error_message, started_at, completed_at, timestamp),
             )
             row = connection.execute(
                 "SELECT * FROM pipeline_steps WHERE project_id=? AND step=?", (project_id, step),
