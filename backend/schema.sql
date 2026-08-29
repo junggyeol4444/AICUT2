@@ -169,6 +169,20 @@ CREATE TABLE IF NOT EXISTS pipeline_steps (
   PRIMARY KEY (project_id, step)
 );
 
+CREATE TABLE IF NOT EXISTS analysis_observations (
+  observation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  modality TEXT NOT NULL CHECK (modality IN ('AUDIO','VISION')),
+  kind TEXT NOT NULL,
+  track_index INTEGER,
+  start_sec REAL NOT NULL,
+  end_sec REAL NOT NULL,
+  confidence REAL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  CHECK (start_sec >= 0 AND end_sec > start_sec),
+  CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1)
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id);
 CREATE INDEX IF NOT EXISTS idx_candidates_project ON content_candidates(project_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_project ON episodes(project_id);
@@ -179,3 +193,4 @@ CREATE INDEX IF NOT EXISTS idx_performance_episode ON performance_snapshots(epis
 CREATE INDEX IF NOT EXISTS idx_transcript_project_time ON transcript_segments(project_id, start_sec);
 CREATE INDEX IF NOT EXISTS idx_scan_windows_project ON scan_windows(project_id, pass_kind, start_sec);
 CREATE INDEX IF NOT EXISTS idx_pipeline_steps_project ON pipeline_steps(project_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_observations_project_time ON analysis_observations(project_id, start_sec, modality);

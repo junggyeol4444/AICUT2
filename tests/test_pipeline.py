@@ -69,6 +69,37 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(database.pipeline_steps(project["project_id"])[-1]["step"], "AI_PRODUCER")
             manager.shutdown()
 
+    def test_pipeline_aligns_audio_and_vision_before_producer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv"})
+            observed = {}
+            manager = PipelineManager(
+                database,
+                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
+                    "duration_sec": 10, "width": 1920, "height": 1080, "audio_tracks": 1,
+                }),
+                analyze_audio=lambda *_args, **_kwargs: {"observations": [{
+                    "kind": "SIGNAL_WINDOW", "track_index": 0, "start_sec": 0, "end_sec": 1,
+                    "confidence": None, "payload": {"rms_dbfs": -12},
+                }]},
+                analyze_vision=lambda *_args, **_kwargs: {"observations": [{
+                    "kind": "FRAME_SIGNAL", "track_index": None, "start_sec": 0, "end_sec": 5,
+                    "confidence": None, "payload": {"signalstats.YAVG": 80},
+                }]},
+                produce=lambda _command, analysis, *_args: observed.update(analysis) or {
+                    "manifest": {"schema_version": 1, "events": [], "candidates": [], "episodes": []}
+                },
+            )
+            manager._run(project["project_id"], {
+                "audio_analysis": True, "vision_analysis": True, "audio_paths": ["ignored.wav"],
+                "producer_executable": ["producer"],
+            }, True, threading.Event())
+            self.assertEqual([item["modality"] for item in observed["observations"]], ["AUDIO", "VISION"])
+            self.assertEqual([step["step"] for step in database.pipeline_steps(project["project_id"])],
+                             ["PROBE", "SCAN_PLAN", "AUDIO_ANALYSIS", "VISION_ANALYSIS", "AI_PRODUCER"])
+            manager.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()

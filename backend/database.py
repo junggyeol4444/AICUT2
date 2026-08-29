@@ -156,6 +156,11 @@ class Database:
             artifacts = connection.execute(
                 "SELECT kind,path,metadata_json FROM source_artifacts WHERE project_id=? ORDER BY artifact_id", (project_id,),
             ).fetchall()
+            observations = connection.execute(
+                """SELECT modality,kind,track_index,start_sec,end_sec,confidence,payload_json
+                FROM analysis_observations WHERE project_id=? ORDER BY start_sec,modality,track_index""",
+                (project_id,),
+            ).fetchall()
         return {
             "project": {
                 "project_id": project_id, "duration_sec": project["duration_sec"],
@@ -165,7 +170,29 @@ class Database:
             "scan_windows": [dict(row) for row in windows],
             "transcript": [self._decode(dict(row), "words_json") for row in segments],
             "artifacts": [self._decode(dict(row), "metadata_json") for row in artifacts],
+            "observations": [self._decode(dict(row), "payload_json") for row in observations],
         }
+
+    def replace_observations(self, project_id: str, modality: str, observations: list[dict[str, Any]]) -> int:
+        if modality not in {"AUDIO", "VISION"}:
+            raise ValueError("modality must be AUDIO or VISION")
+        duration = float(self.get_project(project_id)["duration_sec"])
+        rows = []
+        for item in observations:
+            start, end = float(item["start_sec"]), float(item["end_sec"])
+            if start < 0 or end <= start or end > duration + 1e-6:
+                raise ValueError(f"관찰 시간 범위가 원본을 벗어났습니다: {start}~{end}")
+            rows.append((project_id, modality, item["kind"], item.get("track_index"), start, end,
+                         item.get("confidence"), json.dumps(item.get("payload", {}), ensure_ascii=False)))
+        with self.connect() as connection:
+            connection.execute("DELETE FROM analysis_observations WHERE project_id=? AND modality=?", (project_id, modality))
+            connection.executemany(
+                """INSERT INTO analysis_observations
+                (project_id,modality,kind,track_index,start_sec,end_sec,confidence,payload_json)
+                VALUES(?,?,?,?,?,?,?,?)""", rows,
+            )
+            self._log(connection, project_id, "UNDERSTANDING", f"{modality} 시간축 관찰 {len(rows)}개 저장")
+        return len(rows)
 
     def import_analysis(self, project_id: str, manifest: dict[str, Any]) -> dict[str, int]:
         """Atomically replace AI analysis output using the documented interchange contract."""

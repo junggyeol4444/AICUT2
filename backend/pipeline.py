@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from .database import Database
 from .media import probe_media
+from .multimodal import analyze_audio_tracks, analyze_video
 from .producer import run_producer
 from .stt import transcribe_tracks
 from .understanding import PreprocessPlan, build_scan_plan, execute_preprocess
@@ -24,6 +25,8 @@ class PipelineManager:
         self, database: Database, max_workers: int = 1, *,
         probe: Callable = probe_media, preprocess: Callable = execute_preprocess,
         transcribe: Callable = transcribe_tracks,
+        analyze_audio: Callable = analyze_audio_tracks,
+        analyze_vision: Callable = analyze_video,
         produce: Callable = run_producer,
     ):
         self.database = database
@@ -31,6 +34,8 @@ class PipelineManager:
         self.probe = probe
         self.preprocess = preprocess
         self.transcribe = transcribe
+        self.analyze_audio = analyze_audio
+        self.analyze_vision = analyze_vision
         self.produce = produce
         self._jobs: dict[str, Future] = {}
         self._cancel: dict[str, threading.Event] = {}
@@ -103,11 +108,27 @@ class PipelineManager:
             )
             self.database.replace_scan_windows(project_id, windows["windows"])
 
+            audio_paths = options.get("audio_paths") or [
+                str(artifact_root / f"audio-track-{index:02d}.wav") for index in range(int(media["audio_tracks"]))
+            ]
+            if options.get("audio_analysis") and audio_paths:
+                audio = self._step(
+                    project_id, "AUDIO_ANALYSIS", "UNDERSTANDING", 43, 50, cancel, resume, completed,
+                    lambda: self.analyze_audio(audio_paths, float(media["duration_sec"]),
+                                               window_sec=float(options.get("audio_window_sec", 1.0))),
+                )
+                self.database.replace_observations(project_id, "AUDIO", audio["observations"])
+
+            if options.get("vision_analysis"):
+                vision = self._step(
+                    project_id, "VISION_ANALYSIS", "UNDERSTANDING", 51, 58, cancel, resume, completed,
+                    lambda: self.analyze_vision(project["file_path"], float(media["duration_sec"]),
+                                                frame_interval_sec=float(options.get("vision_interval_sec", 5.0))),
+                )
+                self.database.replace_observations(project_id, "VISION", vision["observations"])
+
             executable = options.get("stt_executable")
             if executable:
-                audio_paths = options.get("audio_paths") or [
-                    str(artifact_root / f"audio-track-{index:02d}.wav") for index in range(int(media["audio_tracks"]))
-                ]
                 stt = self._step(
                     project_id, "STT", "UNDERSTANDING", 45, 58, cancel, resume, completed,
                     lambda: self.transcribe(executable, audio_paths, float(media["duration_sec"]),
