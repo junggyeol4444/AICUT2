@@ -11,6 +11,7 @@ from .database import Database
 from .media import probe_media
 from .multimodal import analyze_audio_tracks, analyze_precision_ranges, analyze_video
 from .producer import run_producer
+from .processes import ProcessSupervisor
 from .stt import transcribe_tracks
 from .understanding import PreprocessPlan, build_scan_plan, execute_preprocess, select_precision_ranges
 
@@ -40,6 +41,12 @@ class PipelineManager:
         self.analyze_vision = analyze_vision
         self.analyze_precision = analyze_precision
         self.produce = produce
+        self._default_preprocess = preprocess is execute_preprocess
+        self._default_transcribe = transcribe is transcribe_tracks
+        self._default_vision = analyze_vision is analyze_video
+        self._default_precision = analyze_precision is analyze_precision_ranges
+        self._default_producer = produce is run_producer
+        self.processes = ProcessSupervisor()
         self._jobs: dict[str, Future] = {}
         self._cancel: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
@@ -68,6 +75,7 @@ class PipelineManager:
         if not event or not future or future.done():
             return False
         event.set()
+        self.processes.cancel(project_id)
         return True
 
     def state(self, project_id: str) -> dict:
@@ -78,7 +86,8 @@ class PipelineManager:
             "project_id": project_id, "running": bool(future and not future.done()),
             "done": bool(future and future.done()),
             "failed": bool(future and future.done() and future.exception()),
-            "cancelling": cancelling, "steps": self.database.pipeline_steps(project_id),
+            "cancelling": cancelling, "active_pids": self.processes.pids(project_id),
+            "steps": self.database.pipeline_steps(project_id),
         }
 
     def _run(self, project_id: str, options: dict[str, Any], resume: bool, cancel: threading.Event) -> None:
@@ -86,6 +95,7 @@ class PipelineManager:
             completed = {item["step"]: item for item in self.database.pipeline_steps(project_id) if item["status"] == "COMPLETE"}
             project = self.database.get_project(project_id)
             input_hash = self._input_hash(project["file_path"], options)
+            runner = self.processes.runner(project_id, cancel)
             media = self._step(project_id, "PROBE", "PARSING", 5, 15, cancel, resume, completed,
                                lambda: self.probe(project["file_path"]).to_dict(), input_hash)
             self.database.set_media_info(project_id, media)
@@ -94,7 +104,7 @@ class PipelineManager:
             if options.get("preprocess", False):
                 result = self._step(
                     project_id, "PREPROCESS", "PARSING", 18, 35, cancel, resume, completed,
-                    lambda: self.preprocess(PreprocessPlan(
+                    lambda: self._invoke(self.preprocess, self._default_preprocess, runner, PreprocessPlan(
                         project["file_path"], str(artifact_root), int(media["audio_tracks"]),
                         float(options["frame_interval_sec"]),
                     )),
@@ -127,7 +137,8 @@ class PipelineManager:
             if options.get("vision_analysis"):
                 vision = self._step(
                     project_id, "VISION_ANALYSIS", "UNDERSTANDING", 51, 58, cancel, resume, completed,
-                    lambda: self.analyze_vision(project["file_path"], float(media["duration_sec"]),
+                    lambda: self._invoke(self.analyze_vision, self._default_vision, runner,
+                                                project["file_path"], float(media["duration_sec"]),
                                                 frame_interval_sec=float(options.get("vision_interval_sec", 5.0))),
                 )
                 self.database.replace_observations(project_id, "VISION", vision["observations"])
@@ -136,7 +147,8 @@ class PipelineManager:
             if executable:
                 stt = self._step(
                     project_id, "STT", "UNDERSTANDING", 45, 58, cancel, resume, completed,
-                    lambda: self.transcribe(executable, audio_paths, float(media["duration_sec"]),
+                    lambda: self._invoke(self.transcribe, self._default_transcribe, runner,
+                                            executable, audio_paths, float(media["duration_sec"]),
                                             artifact_root / "stt", options.get("language")),
                 )
                 self.database.replace_transcript(project_id, stt["segments"])
@@ -157,7 +169,7 @@ class PipelineManager:
                 if options.get("precision_analysis") and precision["ranges"]:
                     detailed = self._step(
                         project_id, "PRECISION_ANALYSIS", "UNDERSTANDING", 60, 68, cancel, resume, completed,
-                        lambda: self.analyze_precision(
+                        lambda: self._invoke(self.analyze_precision, self._default_precision, runner,
                             project["file_path"], [path for path in audio_paths if Path(path).is_file()],
                             float(media["duration_sec"]), precision["ranges"],
                             audio_window_sec=float(options["precision_audio_window_sec"]),
@@ -171,7 +183,8 @@ class PipelineManager:
             if producer_executable:
                 produced = self._step(
                     project_id, "AI_PRODUCER", "DISCOVERING", 70, 80, cancel, resume, completed,
-                    lambda: self.produce(producer_executable, self.database.analysis_input(project_id),
+                    lambda: self._invoke(self.produce, self._default_producer, runner,
+                                         producer_executable, self.database.analysis_input(project_id),
                                          artifact_root / "producer", float(media["duration_sec"])),
                 )
                 self.database.import_analysis(project_id, produced["manifest"])
@@ -206,6 +219,9 @@ class PipelineManager:
             self.database.save_pipeline_step(project_id, step, "CANCELLED", start, input_hash=input_hash)
             raise
         except Exception as error:
+            if cancel.is_set():
+                self.database.save_pipeline_step(project_id, step, "CANCELLED", start, input_hash=input_hash)
+                raise PipelineCancelled() from error
             self.database.save_pipeline_step(project_id, step, "FAILED", start, error_message=str(error), input_hash=input_hash)
             raise
         self.database.save_pipeline_step(project_id, step, "COMPLETE", end, output=output, input_hash=input_hash)
@@ -222,6 +238,12 @@ class PipelineManager:
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
         self._hash_context.value = digest
         return digest
+
+    @staticmethod
+    def _invoke(function, accepts_runner: bool, runner, *args, **kwargs):
+        if accepts_runner:
+            kwargs["runner"] = runner
+        return function(*args, **kwargs)
 
     @staticmethod
     def _file_identity(value: str) -> dict[str, Any]:

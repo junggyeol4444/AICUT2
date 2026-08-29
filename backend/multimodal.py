@@ -138,14 +138,14 @@ def analyze_video(
 
 def analyze_precision_ranges(
     source: str | Path, audio_paths: list[str | Path], duration_sec: float, ranges: list[dict], *,
-    audio_window_sec: float, vision_interval_sec: float,
+    audio_window_sec: float, vision_interval_sec: float, runner: Callable = subprocess.run,
 ) -> dict:
     """Actually execute denser audio and vision passes only inside selected source ranges."""
     audio = analyze_audio_tracks(audio_paths, duration_sec, window_sec=audio_window_sec, ranges=ranges) if audio_paths else {"observations": []}
     vision = []
     for selected in ranges:
         result = analyze_video(source, duration_sec, frame_interval_sec=vision_interval_sec,
-                               start_sec=float(selected["start_sec"]), end_sec=float(selected["end_sec"]))
+                               start_sec=float(selected["start_sec"]), end_sec=float(selected["end_sec"]), runner=runner)
         for item in result["observations"]:
             item["payload"]["selection_reason"] = selected.get("reason")
             vision.append(item)
