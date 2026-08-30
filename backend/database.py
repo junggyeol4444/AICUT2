@@ -197,6 +197,11 @@ class Database:
                 independence_score,decision,decision_reason FROM content_candidates
                 WHERE project_id=? ORDER BY independence_score DESC""", (project_id,),
             ).fetchall()
+            retrieval_rows = connection.execute(
+                """SELECT candidate_id,query,start_sec,end_sec,score,scene_role,reasons_json
+                FROM scene_retrieval_results WHERE project_id=? ORDER BY candidate_id,score DESC,start_sec""",
+                (project_id,),
+            ).fetchall()
         transcript = [self._decode(dict(row), "words_json") for row in segments]
         observation_items = [self._decode(dict(row), "payload_json") for row in observations]
         timeline = [{
@@ -238,7 +243,30 @@ class Database:
                 "independence_score": item["independence_score"], "decision": item["decision"],
                 "decision_reason": item["decision_reason"],
             } for item in (self._decode(dict(row), "related_event_ids_json") for row in candidate_rows)],
+            "retrieved_scenes": [self._decode(dict(row), "reasons_json") for row in retrieval_rows],
         }
+
+    def replace_retrieved_scenes(self, project_id: str, scenes: list[dict[str, Any]]) -> int:
+        duration = float(self.get_project(project_id)["duration_sec"])
+        with self.connect() as connection:
+            candidate_ids = {row[0] for row in connection.execute(
+                "SELECT candidate_id FROM content_candidates WHERE project_id=?", (project_id,),
+            )}
+            rows = []
+            for item in scenes:
+                start, end, score = float(item["start_sec"]), float(item["end_sec"]), float(item["score"])
+                if item["candidate_id"] not in candidate_ids or start < 0 or end <= start or end > duration:
+                    raise ValueError("검색 장면의 후보 또는 원본 시간 범위가 올바르지 않습니다.")
+                if not 0 <= score <= 1:
+                    raise ValueError("검색 장면 점수는 0과 1 사이여야 합니다.")
+                rows.append((project_id, item["candidate_id"], item.get("query", ""), start, end, score,
+                             item["scene_role"], json.dumps(item["reasons"], ensure_ascii=False)))
+            connection.execute("DELETE FROM scene_retrieval_results WHERE project_id=?", (project_id,))
+            connection.executemany("""INSERT INTO scene_retrieval_results
+                (project_id,candidate_id,query,start_sec,end_sec,score,scene_role,reasons_json)
+                VALUES(?,?,?,?,?,?,?,?)""", rows)
+            self._log(connection, project_id, "PLANNING", f"검색 장면 {len(rows)}개 저장")
+        return len(rows)
 
     def replace_understanding_windows(self, project_id: str, windows: list[dict[str, Any]]) -> int:
         duration = float(self.get_project(project_id)["duration_sec"])

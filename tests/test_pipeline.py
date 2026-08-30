@@ -226,14 +226,21 @@ class PipelineTest(unittest.TestCase):
                                 "mentions": [{"start_sec": 1, "end_sec": 2, "role": "origin"}]}],
                     "candidates": [{"candidate_id": "candidate-1", "summary": "candidate",
                                     "event_ids": ["event-1"], "independence_score": .8,
-                                    "decision": "MAKE", "decision_reason": "complete"}], "episodes": [],
+                    "decision": "MAKE", "decision_reason": "complete"}], "episodes": [],
                 }},
+                retrieve=lambda *_args: {"scenes": [{
+                    "candidate_id": "candidate-1", "query": "origin", "start_sec": 1, "end_sec": 2,
+                    "score": .9, "scene_role": "origin", "reasons": ["event_mention"],
+                }]},
             )
-            manager._run(project["project_id"], {"discovery_executable": ["model"]}, True, threading.Event())
+            manager._run(project["project_id"], {
+                "discovery_executable": ["model"], "retrieval_executable": ["retriever"],
+            }, True, threading.Event())
             analysis = database.analysis_input(project["project_id"])
             self.assertEqual(analysis["events"][0]["mentions"][0]["role"], "origin")
             self.assertEqual(analysis["candidates"][0]["event_ids"], ["event-1"])
-            self.assertEqual(database.get_project(project["project_id"])["status"], "EVALUATING")
+            self.assertEqual(analysis["retrieved_scenes"][0]["reasons"], ["event_mention"])
+            self.assertEqual(database.get_project(project["project_id"])["status"], "PLANNING")
             manager.shutdown()
 
     def test_chunked_analysis_resumes_from_the_failed_chunk(self):

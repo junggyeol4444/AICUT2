@@ -15,6 +15,7 @@ from .media import check_disk_capacity, probe_media
 from .longterm import run_window_understanding
 from .multimodal import analyze_audio_tracks, analyze_precision_ranges, analyze_video
 from .producer import run_producer
+from .retrieval import run_scene_retrieval
 from .processes import ProcessSupervisor
 from .stt import transcribe_range, transcribe_tracks
 from .understanding import PreprocessPlan, build_scan_plan, execute_preprocess, select_precision_ranges
@@ -41,6 +42,7 @@ class PipelineManager:
         analyze_external_vision: Callable = run_vision_analyzer,
         understand_window: Callable = run_window_understanding,
         discover: Callable = run_content_discovery,
+        retrieve: Callable = run_scene_retrieval,
         produce: Callable = run_producer,
     ):
         self.database = database
@@ -57,6 +59,7 @@ class PipelineManager:
         self.analyze_external_vision = analyze_external_vision
         self.understand_window = understand_window
         self.discover = discover
+        self.retrieve = retrieve
         self.produce = produce
         self._default_preprocess = preprocess is execute_preprocess
         self._default_transcribe = transcribe is transcribe_tracks
@@ -68,6 +71,7 @@ class PipelineManager:
         self._default_external_vision = analyze_external_vision is run_vision_analyzer
         self._default_understand_window = understand_window is run_window_understanding
         self._default_discover = discover is run_content_discovery
+        self._default_retrieve = retrieve is run_scene_retrieval
         self._default_producer = produce is run_producer
         self.processes = ProcessSupervisor()
         self._jobs: dict[str, Future] = {}
@@ -287,11 +291,26 @@ class PipelineManager:
                 )
                 self.database.import_analysis(project_id, discovered["manifest"])
 
+            retrieval_executable = options.get("retrieval_executable")
+            if retrieval_executable:
+                retrieval_input = self.database.analysis_input(project_id)
+                if not retrieval_input["candidates"]:
+                    raise ValueError("장면 검색을 실행하려면 콘텐츠 후보가 먼저 필요합니다.")
+                retrieved = self._step(
+                    project_id, "SCENE_RETRIEVAL", "PLANNING", 83, 87, cancel, resume, completed,
+                    lambda: self._invoke(
+                        self.retrieve, self._default_retrieve, runner,
+                        retrieval_executable, retrieval_input, artifact_root / "retrieval",
+                        float(media["duration_sec"]),
+                    ),
+                )
+                self.database.replace_retrieved_scenes(project_id, retrieved["scenes"])
+
             producer_executable = options.get("producer_executable")
             manifest_path = options.get("manifest_path")
             if producer_executable:
                 produced = self._step(
-                    project_id, "AI_PRODUCER", "PLANNING", 83, 90, cancel, resume, completed,
+                    project_id, "AI_PRODUCER", "PLANNING", 88, 94, cancel, resume, completed,
                     lambda: self._invoke(self.produce, self._default_producer, runner,
                                          producer_executable, self.database.analysis_input(project_id),
                                          artifact_root / "producer", float(media["duration_sec"])),
@@ -299,11 +318,11 @@ class PipelineManager:
                 self.database.import_analysis(project_id, produced["manifest"])
             elif manifest_path:
                 manifest = self._step(
-                    project_id, "ANALYSIS_IMPORT", "DISCOVERING", 83, 90, cancel, resume, completed,
+                    project_id, "ANALYSIS_IMPORT", "DISCOVERING", 88, 94, cancel, resume, completed,
                     lambda: json.loads(Path(manifest_path).expanduser().resolve().read_text(encoding="utf-8")),
                 )
                 self.database.import_analysis(project_id, manifest)
-            elif not discovery_executable:
+            elif not discovery_executable and not retrieval_executable:
                 self.database.update_status(
                     project_id, "UNDERSTANDING", 58 if executable else 42,
                     "전처리 파이프라인 완료 · 장기 방송 이해 AI 결과를 기다립니다.",
@@ -479,6 +498,8 @@ class PipelineManager:
             return isinstance(manifest, dict) and isinstance(manifest.get("events"), list) and isinstance(
                 manifest.get("candidates"), list,
             )
+        if step == "SCENE_RETRIEVAL":
+            return isinstance(output.get("scenes"), list)
         return True
 
     @staticmethod
