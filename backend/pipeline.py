@@ -14,7 +14,7 @@ from .media import check_disk_capacity, probe_media
 from .multimodal import analyze_audio_tracks, analyze_precision_ranges, analyze_video
 from .producer import run_producer
 from .processes import ProcessSupervisor
-from .stt import transcribe_tracks
+from .stt import transcribe_range, transcribe_tracks
 from .understanding import PreprocessPlan, build_scan_plan, execute_preprocess, select_precision_ranges
 from .vision import run_vision_analyzer
 
@@ -31,6 +31,7 @@ class PipelineManager:
         probe: Callable = probe_media, preprocess: Callable = execute_preprocess,
         check_disk: Callable = check_disk_capacity,
         transcribe: Callable = transcribe_tracks,
+        transcribe_chunk: Callable = transcribe_range,
         analyze_audio: Callable = analyze_audio_tracks,
         analyze_external_audio: Callable = run_audio_analyzer,
         analyze_vision: Callable = analyze_video,
@@ -44,6 +45,7 @@ class PipelineManager:
         self.check_disk = check_disk
         self.preprocess = preprocess
         self.transcribe = transcribe
+        self.transcribe_chunk = transcribe_chunk
         self.analyze_audio = analyze_audio
         self.analyze_external_audio = analyze_external_audio
         self.analyze_vision = analyze_vision
@@ -52,6 +54,7 @@ class PipelineManager:
         self.produce = produce
         self._default_preprocess = preprocess is execute_preprocess
         self._default_transcribe = transcribe is transcribe_tracks
+        self._default_transcribe_chunk = transcribe_chunk is transcribe_range
         self._default_audio = analyze_audio is analyze_audio_tracks
         self._default_external_audio = analyze_external_audio is run_audio_analyzer
         self._default_vision = analyze_vision is analyze_video
@@ -192,13 +195,22 @@ class PipelineManager:
 
             executable = options.get("stt_executable")
             if executable:
-                stt = self._step(
-                    project_id, "STT", "UNDERSTANDING", 45, 58, cancel, resume, completed,
-                    lambda: self._invoke(self.transcribe, self._default_transcribe, runner,
-                                            executable, audio_paths, float(media["duration_sec"]),
-                                            artifact_root / "stt", options.get("language")),
-                )
-                self.database.replace_transcript(project_id, stt["segments"])
+                transcript = []
+                chunks = self._analysis_chunks(float(media["duration_sec"]), options.get("stt_chunk_sec"))
+                for index, chunk in enumerate(chunks):
+                    step = "STT" if len(chunks) == 1 else f"STT_{index:06d}"
+                    progress = self._chunk_progress(45, 58, index, len(chunks))
+                    stt = self._step(
+                        project_id, step, "UNDERSTANDING", progress[0], progress[1], cancel, resume, completed,
+                        lambda chunk=chunk, index=index: self._transcribe_chunk(
+                            runner, executable, audio_paths, float(media["duration_sec"]),
+                            artifact_root / "stt" / f"chunk-{index:06d}", options.get("language"), chunk,
+                            len(chunks) > 1,
+                        ),
+                    )
+                    transcript.extend(stt["segments"])
+                transcript.sort(key=lambda item: (item["start_sec"], item["track_index"]))
+                self.database.replace_transcript(project_id, transcript)
 
             precision_policy = options.get("precision_policy")
             if precision_policy:
@@ -373,6 +385,18 @@ class PipelineManager:
             )
         return self.analyze_vision(source, duration, frame_interval_sec=interval)
 
+    def _transcribe_chunk(self, runner, executable, paths, duration, output, language, chunk, ranged):
+        if ranged:
+            return self._invoke(
+                self.transcribe_chunk, self._default_transcribe_chunk, runner,
+                executable, paths, duration, output, start_sec=chunk["start_sec"],
+                end_sec=chunk["end_sec"], language=language,
+            )
+        return self._invoke(
+            self.transcribe, self._default_transcribe, runner,
+            executable, paths, duration, output, language,
+        )
+
     @staticmethod
     def _checkpoint_usable(step: str, checkpoint: dict[str, Any], input_hash: str) -> bool:
         if checkpoint.get("input_hash") != input_hash or checkpoint.get("corrupt_output"):
@@ -387,7 +411,7 @@ class PipelineManager:
             return isinstance(artifacts, list) and all(Path(item.get("path", "")).is_file() for item in artifacts)
         if step == "SCAN_PLAN":
             return isinstance(output.get("windows"), list)
-        if step == "STT":
+        if step.startswith("STT"):
             return isinstance(output.get("segments"), list)
         if step.startswith(("AUDIO_ANALYSIS", "VISION_ANALYSIS", "PRECISION_ANALYSIS")):
             return isinstance(output.get("observations"), list)
