@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .database import Database
+from .discovery import run_content_discovery
 from .audio import run_audio_analyzer
 from .media import check_disk_capacity, probe_media
 from .longterm import run_window_understanding
@@ -39,6 +40,7 @@ class PipelineManager:
         analyze_precision: Callable = analyze_precision_ranges,
         analyze_external_vision: Callable = run_vision_analyzer,
         understand_window: Callable = run_window_understanding,
+        discover: Callable = run_content_discovery,
         produce: Callable = run_producer,
     ):
         self.database = database
@@ -54,6 +56,7 @@ class PipelineManager:
         self.analyze_precision = analyze_precision
         self.analyze_external_vision = analyze_external_vision
         self.understand_window = understand_window
+        self.discover = discover
         self.produce = produce
         self._default_preprocess = preprocess is execute_preprocess
         self._default_transcribe = transcribe is transcribe_tracks
@@ -64,6 +67,7 @@ class PipelineManager:
         self._default_precision = analyze_precision is analyze_precision_ranges
         self._default_external_vision = analyze_external_vision is run_vision_analyzer
         self._default_understand_window = understand_window is run_window_understanding
+        self._default_discover = discover is run_content_discovery
         self._default_producer = produce is run_producer
         self.processes = ProcessSupervisor()
         self._jobs: dict[str, Future] = {}
@@ -271,11 +275,23 @@ class PipelineManager:
                 )
                 self.database.replace_precision_observations(project_id, detailed["observations"])
 
+            discovery_executable = options.get("discovery_executable")
+            if discovery_executable:
+                discovered = self._step(
+                    project_id, "CONTENT_DISCOVERY", "DISCOVERING", 76, 82, cancel, resume, completed,
+                    lambda: self._invoke(
+                        self.discover, self._default_discover, runner,
+                        discovery_executable, self.database.analysis_input(project_id),
+                        artifact_root / "discovery", float(media["duration_sec"]),
+                    ),
+                )
+                self.database.import_analysis(project_id, discovered["manifest"])
+
             producer_executable = options.get("producer_executable")
             manifest_path = options.get("manifest_path")
             if producer_executable:
                 produced = self._step(
-                    project_id, "AI_PRODUCER", "DISCOVERING", 76, 85, cancel, resume, completed,
+                    project_id, "AI_PRODUCER", "PLANNING", 83, 90, cancel, resume, completed,
                     lambda: self._invoke(self.produce, self._default_producer, runner,
                                          producer_executable, self.database.analysis_input(project_id),
                                          artifact_root / "producer", float(media["duration_sec"])),
@@ -283,11 +299,11 @@ class PipelineManager:
                 self.database.import_analysis(project_id, produced["manifest"])
             elif manifest_path:
                 manifest = self._step(
-                    project_id, "ANALYSIS_IMPORT", "DISCOVERING", 76, 85, cancel, resume, completed,
+                    project_id, "ANALYSIS_IMPORT", "DISCOVERING", 83, 90, cancel, resume, completed,
                     lambda: json.loads(Path(manifest_path).expanduser().resolve().read_text(encoding="utf-8")),
                 )
                 self.database.import_analysis(project_id, manifest)
-            else:
+            elif not discovery_executable:
                 self.database.update_status(
                     project_id, "UNDERSTANDING", 58 if executable else 42,
                     "전처리 파이프라인 완료 · 장기 방송 이해 AI 결과를 기다립니다.",
@@ -458,6 +474,11 @@ class PipelineManager:
             return isinstance(manifest, dict) and all(isinstance(manifest.get(key, []), list) for key in (
                 "events", "candidates", "episodes",
             ))
+        if step == "CONTENT_DISCOVERY":
+            manifest = output.get("manifest")
+            return isinstance(manifest, dict) and isinstance(manifest.get("events"), list) and isinstance(
+                manifest.get("candidates"), list,
+            )
         return True
 
     @staticmethod

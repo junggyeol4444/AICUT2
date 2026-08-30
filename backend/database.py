@@ -188,6 +188,15 @@ class Database:
                 """SELECT sequence_order,start_sec,end_sec,summary,memory_json,precision_ranges_json
                 FROM understanding_windows WHERE project_id=? ORDER BY sequence_order""", (project_id,),
             ).fetchall()
+            event_rows = connection.execute(
+                "SELECT event_id,summary,people_json,relations_json FROM events WHERE project_id=? ORDER BY rowid",
+                (project_id,),
+            ).fetchall()
+            candidate_rows = connection.execute(
+                """SELECT candidate_id,core_summary,related_event_ids_json,required_context,
+                independence_score,decision,decision_reason FROM content_candidates
+                WHERE project_id=? ORDER BY independence_score DESC""", (project_id,),
+            ).fetchall()
         transcript = [self._decode(dict(row), "words_json") for row in segments]
         observation_items = [self._decode(dict(row), "payload_json") for row in observations]
         timeline = [{
@@ -199,6 +208,16 @@ class Database:
             item["start_sec"], item["end_sec"], {"STT": 0, "AUDIO": 1, "VISION": 2}[item["modality"]],
             -1 if item.get("track_index") is None else item["track_index"],
         ))
+        events = []
+        with self.connect() as connection:
+            for row in event_rows:
+                event = self._decode(self._decode(dict(row), "people_json"), "relations_json")
+                mentions = connection.execute(
+                    """SELECT source_start_sec start_sec,source_end_sec end_sec,role
+                    FROM event_mentions WHERE event_id=? ORDER BY source_start_sec""", (event["event_id"],),
+                ).fetchall()
+                event["mentions"] = [dict(item) for item in mentions]
+                events.append(event)
         return {
             "project": {
                 "project_id": project_id, "duration_sec": project["duration_sec"],
@@ -212,6 +231,13 @@ class Database:
             "timeline": timeline,
             "understanding_windows": [self._decode(self._decode(dict(row), "memory_json"), "precision_ranges_json")
                                       for row in summaries],
+            "events": events,
+            "candidates": [{
+                "candidate_id": item["candidate_id"], "summary": item["core_summary"],
+                "event_ids": item["related_event_ids"], "required_context": item["required_context"],
+                "independence_score": item["independence_score"], "decision": item["decision"],
+                "decision_reason": item["decision_reason"],
+            } for item in (self._decode(dict(row), "related_event_ids_json") for row in candidate_rows)],
         }
 
     def replace_understanding_windows(self, project_id: str, windows: list[dict[str, Any]]) -> int:

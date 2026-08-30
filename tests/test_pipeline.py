@@ -212,6 +212,30 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(windows[-1]["memory"]["count"], 2)
             manager.shutdown()
 
+    def test_content_discovery_persists_event_graph_without_forcing_episodes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv"})
+            manager = PipelineManager(
+                database,
+                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
+                    "duration_sec": 10, "width": 1920, "height": 1080, "audio_tracks": 0,
+                }),
+                discover=lambda *_args: {"manifest": {
+                    "events": [{"event_id": "event-1", "summary": "event",
+                                "mentions": [{"start_sec": 1, "end_sec": 2, "role": "origin"}]}],
+                    "candidates": [{"candidate_id": "candidate-1", "summary": "candidate",
+                                    "event_ids": ["event-1"], "independence_score": .8,
+                                    "decision": "MAKE", "decision_reason": "complete"}], "episodes": [],
+                }},
+            )
+            manager._run(project["project_id"], {"discovery_executable": ["model"]}, True, threading.Event())
+            analysis = database.analysis_input(project["project_id"])
+            self.assertEqual(analysis["events"][0]["mentions"][0]["role"], "origin")
+            self.assertEqual(analysis["candidates"][0]["event_ids"], ["event-1"])
+            self.assertEqual(database.get_project(project["project_id"])["status"], "EVALUATING")
+            manager.shutdown()
+
     def test_chunked_analysis_resumes_from_the_failed_chunk(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "pipeline.db")
