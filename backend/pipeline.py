@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .database import Database
+from .audio import run_audio_analyzer
 from .media import check_disk_capacity, probe_media
 from .multimodal import analyze_audio_tracks, analyze_precision_ranges, analyze_video
 from .producer import run_producer
@@ -31,6 +32,7 @@ class PipelineManager:
         check_disk: Callable = check_disk_capacity,
         transcribe: Callable = transcribe_tracks,
         analyze_audio: Callable = analyze_audio_tracks,
+        analyze_external_audio: Callable = run_audio_analyzer,
         analyze_vision: Callable = analyze_video,
         analyze_precision: Callable = analyze_precision_ranges,
         analyze_external_vision: Callable = run_vision_analyzer,
@@ -43,6 +45,7 @@ class PipelineManager:
         self.preprocess = preprocess
         self.transcribe = transcribe
         self.analyze_audio = analyze_audio
+        self.analyze_external_audio = analyze_external_audio
         self.analyze_vision = analyze_vision
         self.analyze_precision = analyze_precision
         self.analyze_external_vision = analyze_external_vision
@@ -50,6 +53,7 @@ class PipelineManager:
         self._default_preprocess = preprocess is execute_preprocess
         self._default_transcribe = transcribe is transcribe_tracks
         self._default_audio = analyze_audio is analyze_audio_tracks
+        self._default_external_audio = analyze_external_audio is run_audio_analyzer
         self._default_vision = analyze_vision is analyze_video
         self._default_precision = analyze_precision is analyze_precision_ranges
         self._default_external_vision = analyze_external_vision is run_vision_analyzer
@@ -147,8 +151,10 @@ class PipelineManager:
             ]
             if options.get("audio_analysis") and audio_paths:
                 audio_observations = []
+                audio_executable = options.get("audio_executable")
                 chunks = self._analysis_chunks(
-                    float(media["duration_sec"]), options.get("analysis_chunk_sec") if self._default_audio else None,
+                    float(media["duration_sec"]),
+                    options.get("analysis_chunk_sec") if (self._default_audio or audio_executable) else None,
                 )
                 for index, chunk in enumerate(chunks):
                     step = "AUDIO_ANALYSIS" if len(chunks) == 1 else f"AUDIO_ANALYSIS_{index:06d}"
@@ -156,8 +162,8 @@ class PipelineManager:
                     audio = self._step(
                         project_id, step, "UNDERSTANDING", progress[0], progress[1], cancel, resume, completed,
                         lambda chunk=chunk: self._analyze_audio_chunk(
-                            audio_paths, float(media["duration_sec"]), float(options.get("audio_window_sec", 1.0)),
-                            chunk,
+                            runner, audio_paths, float(media["duration_sec"]), float(options.get("audio_window_sec", 1.0)),
+                            chunk, audio_executable, artifact_root / "audio-analysis" / f"chunk-{index:06d}.json",
                         ),
                     )
                     audio_observations.extend(audio["observations"])
@@ -341,7 +347,14 @@ class PipelineManager:
     def _chunk_progress(start: int, end: int, index: int, count: int) -> tuple[int, int]:
         return start + (end - start) * index // count, start + (end - start) * (index + 1) // count
 
-    def _analyze_audio_chunk(self, paths, duration, window, chunk):
+    def _analyze_audio_chunk(self, runner, paths, duration, window, chunk, executable, output_path):
+        if executable:
+            return self._invoke(
+                self.analyze_external_audio, self._default_external_audio,
+                runner,
+                executable, paths, output_path, duration, start_sec=chunk["start_sec"],
+                end_sec=chunk["end_sec"], window_sec=window,
+            )
         if self._default_audio:
             return self.analyze_audio(paths, duration, window_sec=window, ranges=[{**chunk, "reason": "chunk"}])
         return self.analyze_audio(paths, duration, window_sec=window)
