@@ -390,6 +390,7 @@ class PipelineManager:
                         audio_codec=str(options.get("audio_codec", "aac")),
                         subtitle_path=(options.get("subtitle_paths") or {}).get(episode_id),
                         audio_mix=audio_mix,
+                        ducking=options.get("render_ducking"),
                     )
                     target = LoudnessTarget(
                         integrated_lufs=float(options.get("integrated_lufs", -14)),

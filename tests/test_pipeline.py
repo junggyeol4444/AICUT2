@@ -257,6 +257,7 @@ class PipelineTest(unittest.TestCase):
             def render_episode(plan, loudness_target):
                 self.assertEqual(plan.subtitle_path, str(subtitle))
                 self.assertEqual(plan.audio_mix[1]["role"], "GAME")
+                self.assertEqual(plan.ducking["foreground_track_index"], 0)
                 output = Path(plan.output_path)
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_bytes(b"rendered")
@@ -317,6 +318,8 @@ class PipelineTest(unittest.TestCase):
                 "subtitle_paths": {"episode-1": str(subtitle)},
                 "render_audio_mix": [{"track_index": 0, "volume": 1, "role": "MIC"},
                                      {"track_index": 1, "volume": 0.4, "role": "GAME"}],
+                "render_ducking": {"foreground_track_index": 0, "threshold": 0.08, "ratio": 6,
+                                   "attack_ms": 20, "release_ms": 350},
                 "packaging_executable": ["packager"],
                 "package_output_directory": str(Path(directory) / "packages"),
             }, True, threading.Event())

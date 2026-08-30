@@ -23,6 +23,7 @@ class RenderPlan:
     audio_codec: str = "aac"
     subtitle_path: str | None = None
     audio_mix: tuple[dict, ...] = ()
+    ducking: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,17 @@ def validate_plan(plan: RenderPlan) -> tuple[dict, ...]:
         if index < 0 or volume < 0 or index in seen_tracks:
             raise RenderError("오디오 믹스에는 중복되지 않은 트랙 번호와 음수가 아닌 볼륨이 필요합니다.")
         seen_tracks.add(index)
+    if plan.ducking:
+        required = ("foreground_track_index", "threshold", "ratio", "attack_ms", "release_ms")
+        if any(key not in plan.ducking for key in required):
+            raise RenderError("자동 덕킹 값은 채널 캘리브레이션 프로파일에서 모두 지정해야 합니다.")
+        foreground = int(plan.ducking["foreground_track_index"])
+        threshold, ratio = float(plan.ducking["threshold"]), float(plan.ducking["ratio"])
+        attack, release = float(plan.ducking["attack_ms"]), float(plan.ducking["release_ms"])
+        if foreground not in seen_tracks or len(seen_tracks) < 2:
+            raise RenderError("자동 덕킹에는 믹스에 포함된 전경 트랙과 하나 이상의 배경 트랙이 필요합니다.")
+        if not 0 < threshold <= 1 or ratio < 1 or not 0.01 <= attack <= 2000 or not 1 <= release <= 9000:
+            raise RenderError("자동 덕킹 캘리브레이션 값이 FFmpeg 허용 범위를 벗어났습니다.")
     return active
 
 
@@ -107,9 +119,32 @@ def build_filter_graph(plan: RenderPlan) -> tuple[str, str, str]:
                     f"asetpts=PTS-STARTPTS,volume={float(track.get('volume', 1.0)):.3f}[{label}]"
                 )
                 audio_inputs.append(f"[{label}]")
+            if plan.ducking:
+                foreground_index = next(
+                    position for position, track in enumerate(plan.audio_mix)
+                    if int(track["track_index"]) == int(plan.ducking["foreground_track_index"])
+                )
+                foreground = audio_inputs[foreground_index]
+                backgrounds = [value for position, value in enumerate(audio_inputs) if position != foreground_index]
+                background = backgrounds[0]
+                if len(backgrounds) > 1:
+                    chains.append(
+                        f"{''.join(backgrounds)}amix=inputs={len(backgrounds)}:duration=longest:normalize=0[bg{index}]"
+                    )
+                    background = f"[bg{index}]"
+                chains.append(f"{foreground}asplit=2[fgsc{index}][fgmix{index}]")
+                duck = plan.ducking
+                chains.append(
+                    f"{background}[fgsc{index}]sidechaincompress=threshold={float(duck['threshold']):.4f}:"
+                    f"ratio={float(duck['ratio']):.3f}:attack={float(duck['attack_ms']):.3f}:"
+                    f"release={float(duck['release_ms']):.3f}[duck{index}]"
+                )
+                mixed = f"[fgmix{index}][duck{index}]amix=inputs=2:duration=longest:normalize=0"
+            else:
+                mixed = f"{''.join(audio_inputs)}amix=inputs={len(audio_inputs)}:duration=longest:normalize=0"
             chains.append(
-                f"{''.join(audio_inputs)}amix=inputs={len(audio_inputs)}:duration=longest:normalize=0,"
-                f"afade=t=in:st=0:d={fade:.3f},afade=t=out:st={max(duration-fade,0):.3f}:d={fade:.3f}[a{index}]"
+                f"{mixed},afade=t=in:st=0:d={fade:.3f},"
+                f"afade=t=out:st={max(duration-fade,0):.3f}:d={fade:.3f}[a{index}]"
             )
         else:
             chains.append(
@@ -217,6 +252,7 @@ def export_plan(plan: RenderPlan, target: LoudnessTarget | None = None) -> str:
         "input_path": plan.input_path, "output_path": plan.output_path,
         "subtitle_path": plan.subtitle_path,
         "audio_mix": plan.audio_mix,
+        "ducking": plan.ducking,
         "filter_graph": graph, "video_map": video, "audio_map": audio,
         "loudness_target": target.__dict__,
         "measurement_command": build_measurement_command(plan, target),
