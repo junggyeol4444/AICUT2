@@ -99,6 +99,51 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(step["attempt_count"], 2)
             manager.shutdown()
 
+    def test_corrupt_checkpoint_output_is_recomputed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv"})
+            calls = []
+            manager = PipelineManager(database, probe=lambda _path: (
+                calls.append("probe") or SimpleNamespace(to_dict=lambda: {
+                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 0,
+                })
+            ))
+            manager._run(project["project_id"], {}, True, threading.Event())
+            with database.connect() as connection:
+                connection.execute(
+                    "UPDATE pipeline_steps SET output_json='not-json' WHERE project_id=? AND step='PROBE'",
+                    (project["project_id"],),
+                )
+            self.assertTrue(database.pipeline_steps(project["project_id"])[0]["corrupt_output"])
+            manager._run(project["project_id"], {}, True, threading.Event())
+            self.assertEqual(calls, ["probe", "probe"])
+            self.assertFalse(database.pipeline_steps(project["project_id"])[0]["corrupt_output"])
+            manager.shutdown()
+
+    def test_missing_preprocess_artifact_invalidates_its_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv"})
+            calls = []
+
+            def preprocess(_plan):
+                calls.append("preprocess")
+                return {"artifacts": [{"kind": "FRAMES", "path": str(Path(directory) / "missing.jpg"),
+                                        "command": ["ffmpeg"]}]}
+
+            manager = PipelineManager(
+                database, preprocess=preprocess,
+                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
+                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 0,
+                }),
+            )
+            options = {"preprocess": True, "frame_interval_sec": 10}
+            manager._run(project["project_id"], options, True, threading.Event())
+            manager._run(project["project_id"], options, True, threading.Event())
+            self.assertEqual(calls, ["preprocess", "preprocess"])
+            manager.shutdown()
+
     def test_disk_check_runs_before_analysis(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "pipeline.db")

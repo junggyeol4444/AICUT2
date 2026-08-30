@@ -153,7 +153,15 @@ class Database:
         result = []
         for row in rows:
             value = dict(row)
-            value["output"] = json.loads(value.pop("output_json"))
+            raw_output = value.pop("output_json")
+            try:
+                value["output"] = json.loads(raw_output)
+                value["corrupt_output"] = not isinstance(value["output"], dict)
+                if value["corrupt_output"]:
+                    value["output"] = {}
+            except (TypeError, json.JSONDecodeError):
+                value["output"] = {}
+                value["corrupt_output"] = True
             result.append(value)
         return result
 

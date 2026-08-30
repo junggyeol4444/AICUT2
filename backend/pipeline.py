@@ -240,7 +240,7 @@ class PipelineManager:
     def _step(self, project_id, step, stage, start, end, cancel, resume, completed, operation, input_hash=None):
         self._check_cancel(cancel)
         input_hash = input_hash or self._hash_context.value
-        if resume and step in completed and completed[step].get("input_hash") == input_hash:
+        if resume and step in completed and self._checkpoint_usable(step, completed[step], input_hash):
             self.database.update_status(project_id, stage, end, f"{step} 체크포인트를 재사용합니다.")
             return completed[step]["output"]
         retry = self._retry_context.value.get(step, {"max_attempts": 1, "backoff_sec": 0.0})
@@ -335,6 +335,33 @@ class PipelineManager:
                 end_sec=chunk["end_sec"], runner=runner,
             )
         return self.analyze_vision(source, duration, frame_interval_sec=interval)
+
+    @staticmethod
+    def _checkpoint_usable(step: str, checkpoint: dict[str, Any], input_hash: str) -> bool:
+        if checkpoint.get("input_hash") != input_hash or checkpoint.get("corrupt_output"):
+            return False
+        output = checkpoint.get("output")
+        if not isinstance(output, dict):
+            return False
+        if step == "PROBE":
+            return isinstance(output.get("duration_sec"), (int, float)) and output["duration_sec"] > 0
+        if step == "PREPROCESS":
+            artifacts = output.get("artifacts")
+            return isinstance(artifacts, list) and all(Path(item.get("path", "")).is_file() for item in artifacts)
+        if step == "SCAN_PLAN":
+            return isinstance(output.get("windows"), list)
+        if step == "STT":
+            return isinstance(output.get("segments"), list)
+        if step.startswith(("AUDIO_ANALYSIS", "VISION_ANALYSIS", "PRECISION_ANALYSIS")):
+            return isinstance(output.get("observations"), list)
+        if step == "PRECISION_PLAN":
+            return isinstance(output.get("ranges"), list)
+        if step in {"AI_PRODUCER", "ANALYSIS_IMPORT"}:
+            manifest = output.get("manifest", output)
+            return isinstance(manifest, dict) and all(isinstance(manifest.get(key, []), list) for key in (
+                "events", "candidates", "episodes",
+            ))
+        return True
 
     @staticmethod
     def _file_identity(value: str) -> dict[str, Any]:
