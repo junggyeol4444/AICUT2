@@ -13,7 +13,7 @@ from .database import Database
 from .pipeline import PipelineManager
 from .render import RenderError, RenderPlan, export_plan, render
 from .package import MetadataPackage, build_thumbnail_commands, extract_thumbnails, write_metadata_package
-from .upload import UnconfiguredYouTubeClient, UploadManager
+from .upload import UploadManager, client_from_environment
 from .calibration import calibrate_pacing
 from .learning import analyze_source_output
 from .performance import performance_insights, validate_metrics
@@ -28,7 +28,7 @@ from dataclasses import asdict
 ROOT = Path(__file__).resolve().parents[1]
 DB = Database(os.environ.get("AICUT_DB", ROOT / "aicut.db"))
 PIPELINE = PipelineManager(DB)
-UPLOADS = UploadManager(DB, UnconfiguredYouTubeClient())
+UPLOADS = UploadManager(DB, client_from_environment())
 
 
 class ApiHandler(BaseHTTPRequestHandler):
