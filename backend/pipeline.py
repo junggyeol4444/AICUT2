@@ -11,6 +11,7 @@ from typing import Any, Callable
 from .database import Database
 from .audio import run_audio_analyzer
 from .media import check_disk_capacity, probe_media
+from .longterm import run_window_understanding
 from .multimodal import analyze_audio_tracks, analyze_precision_ranges, analyze_video
 from .producer import run_producer
 from .processes import ProcessSupervisor
@@ -37,6 +38,7 @@ class PipelineManager:
         analyze_vision: Callable = analyze_video,
         analyze_precision: Callable = analyze_precision_ranges,
         analyze_external_vision: Callable = run_vision_analyzer,
+        understand_window: Callable = run_window_understanding,
         produce: Callable = run_producer,
     ):
         self.database = database
@@ -51,6 +53,7 @@ class PipelineManager:
         self.analyze_vision = analyze_vision
         self.analyze_precision = analyze_precision
         self.analyze_external_vision = analyze_external_vision
+        self.understand_window = understand_window
         self.produce = produce
         self._default_preprocess = preprocess is execute_preprocess
         self._default_transcribe = transcribe is transcribe_tracks
@@ -60,6 +63,7 @@ class PipelineManager:
         self._default_vision = analyze_vision is analyze_video
         self._default_precision = analyze_precision is analyze_precision_ranges
         self._default_external_vision = analyze_external_vision is run_vision_analyzer
+        self._default_understand_window = understand_window is run_window_understanding
         self._default_producer = produce is run_producer
         self.processes = ProcessSupervisor()
         self._jobs: dict[str, Future] = {}
@@ -212,36 +216,66 @@ class PipelineManager:
                 transcript.sort(key=lambda item: (item["start_sec"], item["track_index"]))
                 self.database.replace_transcript(project_id, transcript)
 
+            understanding_ranges = []
+            understanding_executable = options.get("understanding_executable")
+            if understanding_executable:
+                analysis = self.database.analysis_input(project_id)
+                coarse = [item for item in analysis["scan_windows"] if item["pass_kind"] == "COARSE"]
+                memory, summaries = {}, []
+                for index, window in enumerate(coarse):
+                    progress = self._chunk_progress(58, 66, index, len(coarse))
+                    selected_timeline = [item for item in analysis["timeline"]
+                                         if item["end_sec"] > window["start_sec"] and item["start_sec"] < window["end_sec"]]
+                    understood = self._step(
+                        project_id, f"UNDERSTANDING_{index:06d}", "UNDERSTANDING",
+                        progress[0], progress[1], cancel, resume, completed,
+                        lambda index=index, window=window, memory=memory, selected_timeline=selected_timeline:
+                            self._invoke(
+                                self.understand_window, self._default_understand_window, runner,
+                                understanding_executable, window, selected_timeline, memory,
+                                artifact_root / "understanding" / f"window-{index:06d}.json",
+                            ),
+                    )
+                    memory = understood["memory"]
+                    understanding_ranges.extend(understood["precision_ranges"])
+                    summaries.append({**window, "summary": understood["summary"], "memory": memory,
+                                      "precision_ranges": understood["precision_ranges"]})
+                self.database.replace_understanding_windows(project_id, summaries)
+
             precision_policy = options.get("precision_policy")
+            signal_ranges = []
             if precision_policy:
                 analysis = self.database.analysis_input(project_id)
                 precision = self._step(
-                    project_id, "PRECISION_PLAN", "UNDERSTANDING", 59, 60, cancel, resume, completed,
+                    project_id, "PRECISION_PLAN", "UNDERSTANDING", 67, 69, cancel, resume, completed,
                     lambda: {"ranges": select_precision_ranges(
                         float(media["duration_sec"]), analysis["transcript"], analysis["observations"], precision_policy,
                     )},
                 )
-                combined_ranges = list(options.get("precision_ranges") or []) + precision["ranges"]
+                signal_ranges = precision["ranges"]
+            selected_ranges = understanding_ranges + signal_ranges
+            combined_ranges = list(options.get("precision_ranges") or []) + selected_ranges
+            if combined_ranges:
                 self.database.replace_scan_windows(project_id, [window.__dict__ for window in build_scan_plan(
                     float(media["duration_sec"]), float(options.get("coarse_window_sec", 300)), combined_ranges,
                 )])
-                if options.get("precision_analysis") and precision["ranges"]:
-                    detailed = self._step(
-                        project_id, "PRECISION_ANALYSIS", "UNDERSTANDING", 60, 68, cancel, resume, completed,
-                        lambda: self._invoke(self.analyze_precision, self._default_precision, runner,
-                            project["file_path"], [path for path in audio_paths if Path(path).is_file()],
-                            float(media["duration_sec"]), precision["ranges"],
-                            audio_window_sec=float(options["precision_audio_window_sec"]),
-                            vision_interval_sec=float(options["precision_vision_interval_sec"]),
-                        ),
-                    )
-                    self.database.replace_precision_observations(project_id, detailed["observations"])
+            if options.get("precision_analysis") and selected_ranges:
+                detailed = self._step(
+                    project_id, "PRECISION_ANALYSIS", "UNDERSTANDING", 70, 75, cancel, resume, completed,
+                    lambda: self._invoke(self.analyze_precision, self._default_precision, runner,
+                        project["file_path"], [path for path in audio_paths if Path(path).is_file()],
+                        float(media["duration_sec"]), selected_ranges,
+                        audio_window_sec=float(options["precision_audio_window_sec"]),
+                        vision_interval_sec=float(options["precision_vision_interval_sec"]),
+                    ),
+                )
+                self.database.replace_precision_observations(project_id, detailed["observations"])
 
             producer_executable = options.get("producer_executable")
             manifest_path = options.get("manifest_path")
             if producer_executable:
                 produced = self._step(
-                    project_id, "AI_PRODUCER", "DISCOVERING", 70, 80, cancel, resume, completed,
+                    project_id, "AI_PRODUCER", "DISCOVERING", 76, 85, cancel, resume, completed,
                     lambda: self._invoke(self.produce, self._default_producer, runner,
                                          producer_executable, self.database.analysis_input(project_id),
                                          artifact_root / "producer", float(media["duration_sec"])),
@@ -249,7 +283,7 @@ class PipelineManager:
                 self.database.import_analysis(project_id, produced["manifest"])
             elif manifest_path:
                 manifest = self._step(
-                    project_id, "ANALYSIS_IMPORT", "DISCOVERING", 70, 80, cancel, resume, completed,
+                    project_id, "ANALYSIS_IMPORT", "DISCOVERING", 76, 85, cancel, resume, completed,
                     lambda: json.loads(Path(manifest_path).expanduser().resolve().read_text(encoding="utf-8")),
                 )
                 self.database.import_analysis(project_id, manifest)
@@ -413,6 +447,8 @@ class PipelineManager:
             return isinstance(output.get("windows"), list)
         if step.startswith("STT"):
             return isinstance(output.get("segments"), list)
+        if step.startswith("UNDERSTANDING_"):
+            return isinstance(output.get("memory"), dict) and isinstance(output.get("precision_ranges"), list)
         if step.startswith(("AUDIO_ANALYSIS", "VISION_ANALYSIS", "PRECISION_ANALYSIS")):
             return isinstance(output.get("observations"), list)
         if step == "PRECISION_PLAN":

@@ -185,6 +185,33 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(database.get_calibration(profile["profile_id"])["name"], "profile")
             manager.shutdown()
 
+    def test_long_term_understanding_carries_memory_across_windows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv"})
+            received = []
+
+            def understand(_executable, window, _timeline, memory, _output):
+                received.append(dict(memory))
+                count = memory.get("count", 0) + 1
+                return {"summary": f"window {count}", "memory": {"count": count},
+                        "precision_ranges": []}
+
+            manager = PipelineManager(
+                database, understand_window=understand,
+                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
+                    "duration_sec": 10, "width": 1920, "height": 1080, "audio_tracks": 0,
+                }),
+            )
+            manager._run(project["project_id"], {
+                "coarse_window_sec": 5, "understanding_executable": ["model"],
+            }, True, threading.Event())
+            self.assertEqual(received, [{}, {"count": 1}])
+            windows = database.analysis_input(project["project_id"])["understanding_windows"]
+            self.assertEqual([item["summary"] for item in windows], ["window 1", "window 2"])
+            self.assertEqual(windows[-1]["memory"]["count"], 2)
+            manager.shutdown()
+
     def test_chunked_analysis_resumes_from_the_failed_chunk(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "pipeline.db")

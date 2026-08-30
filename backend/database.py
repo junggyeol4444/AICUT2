@@ -184,6 +184,10 @@ class Database:
                 FROM analysis_observations WHERE project_id=? ORDER BY start_sec,modality,track_index""",
                 (project_id,),
             ).fetchall()
+            summaries = connection.execute(
+                """SELECT sequence_order,start_sec,end_sec,summary,memory_json,precision_ranges_json
+                FROM understanding_windows WHERE project_id=? ORDER BY sequence_order""", (project_id,),
+            ).fetchall()
         transcript = [self._decode(dict(row), "words_json") for row in segments]
         observation_items = [self._decode(dict(row), "payload_json") for row in observations]
         timeline = [{
@@ -206,7 +210,29 @@ class Database:
             "artifacts": [self._decode(dict(row), "metadata_json") for row in artifacts],
             "observations": observation_items,
             "timeline": timeline,
+            "understanding_windows": [self._decode(self._decode(dict(row), "memory_json"), "precision_ranges_json")
+                                      for row in summaries],
         }
+
+    def replace_understanding_windows(self, project_id: str, windows: list[dict[str, Any]]) -> int:
+        duration = float(self.get_project(project_id)["duration_sec"])
+        rows = []
+        for order, item in enumerate(windows):
+            start, end = float(item["start_sec"]), float(item["end_sec"])
+            if start < 0 or end <= start or end > duration:
+                raise ValueError("장기 이해 창이 원본 시간 범위를 벗어났습니다.")
+            if not str(item.get("summary", "")).strip() or not isinstance(item.get("memory"), dict):
+                raise ValueError("장기 이해 요약과 메모리가 올바르지 않습니다.")
+            rows.append((project_id, order, start, end, item["summary"],
+                         json.dumps(item["memory"], ensure_ascii=False),
+                         json.dumps(item.get("precision_ranges", []), ensure_ascii=False)))
+        with self.connect() as connection:
+            connection.execute("DELETE FROM understanding_windows WHERE project_id=?", (project_id,))
+            connection.executemany("""INSERT INTO understanding_windows
+                (project_id,sequence_order,start_sec,end_sec,summary,memory_json,precision_ranges_json)
+                VALUES(?,?,?,?,?,?,?)""", rows)
+            self._log(connection, project_id, "UNDERSTANDING", f"누적 장기 이해 창 {len(rows)}개 저장")
+        return len(rows)
 
     def replace_observations(self, project_id: str, modality: str, observations: list[dict[str, Any]]) -> int:
         if modality not in {"AUDIO", "VISION"}:
