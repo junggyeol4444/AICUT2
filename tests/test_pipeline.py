@@ -247,12 +247,15 @@ class PipelineTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "pipeline.db")
             project = database.create_project({"file_path": "/media/live.mkv"})
+            subtitle = Path(directory) / "episode-1.ass"
+            subtitle.write_text("[Script Info]\n")
             discovery = {"events": [{"event_id": "event-1", "summary": "event", "mentions": []}],
                          "candidates": [{"candidate_id": "candidate-1", "summary": "candidate",
                                          "event_ids": ["event-1"], "independence_score": .8,
                                          "decision": "MAKE", "decision_reason": "complete"}], "episodes": []}
 
             def render_episode(plan, loudness_target):
+                self.assertEqual(plan.subtitle_path, str(subtitle))
                 output = Path(plan.output_path)
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_bytes(b"rendered")
@@ -310,6 +313,7 @@ class PipelineTest(unittest.TestCase):
                 "discovery_executable": ["discovery"], "planner_executable": ["planner"],
                 "pacing_executable": ["pacing"], "render": True,
                 "render_output_directory": str(Path(directory) / "renders"),
+                "subtitle_paths": {"episode-1": str(subtitle)},
                 "packaging_executable": ["packager"],
                 "package_output_directory": str(Path(directory) / "packages"),
             }, True, threading.Event())

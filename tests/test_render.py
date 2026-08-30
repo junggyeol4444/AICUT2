@@ -42,6 +42,18 @@ class RenderPlanTest(unittest.TestCase):
         self.assertNotIn("shell=True", command)
         self.assertIn("measured_I=-20.1", command[command.index("-filter_complex") + 1])
 
+    def test_ass_subtitles_are_burned_after_non_linear_concat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            subtitle = f"{directory}/episode.ass"
+            with open(subtitle, "w", encoding="utf-8") as target:
+                target.write("[Script Info]\n")
+            plan = RenderPlan(self.plan.input_path, self.plan.output_path, self.plan.cuts,
+                              subtitle_path=subtitle)
+            graph, video, _audio = build_filter_graph(plan)
+        self.assertIn("concat=n=2:v=1:a=1[vconcat][aout]", graph)
+        self.assertIn("[vconcat]subtitles=filename=", graph)
+        self.assertEqual(video, "[vout]")
+
     def test_two_pass_loudness_measurement_is_configurable(self):
         target = LoudnessTarget(integrated_lufs=-16, true_peak_db=-1.5, loudness_range=9)
         command = build_measurement_command(self.plan, target)

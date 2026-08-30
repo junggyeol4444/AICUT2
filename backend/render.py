@@ -21,6 +21,7 @@ class RenderPlan:
     height: int = 1080
     video_codec: str = "libx264"
     audio_codec: str = "aac"
+    subtitle_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -92,7 +93,15 @@ def build_filter_graph(plan: RenderPlan) -> tuple[str, str, str]:
             f"afade=t=in:st=0:d={fade:.3f},afade=t=out:st={max(duration-fade,0):.3f}:d={fade:.3f}[a{index}]"
         )
         concat_inputs.append(f"[v{index}][a{index}]")
-    chains.append(f"{''.join(concat_inputs)}concat=n={len(cuts)}:v=1:a=1[vout][aout]")
+    video_output = "[vout]"
+    concat_video = "[vconcat]" if plan.subtitle_path else video_output
+    chains.append(f"{''.join(concat_inputs)}concat=n={len(cuts)}:v=1:a=1{concat_video}[aout]")
+    if plan.subtitle_path:
+        subtitle = Path(plan.subtitle_path).expanduser().resolve()
+        if not subtitle.is_file():
+            raise RenderError(f"ASS 자막 파일을 찾을 수 없습니다: {subtitle}")
+        escaped = subtitle.as_posix().replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'")
+        chains.append(f"{concat_video}subtitles=filename='{escaped}'{video_output}")
     return ";".join(chains), "[vout]", "[aout]"
 
 
@@ -182,6 +191,7 @@ def export_plan(plan: RenderPlan, target: LoudnessTarget | None = None) -> str:
     target = target or LoudnessTarget()
     return json.dumps({
         "input_path": plan.input_path, "output_path": plan.output_path,
+        "subtitle_path": plan.subtitle_path,
         "filter_graph": graph, "video_map": video, "audio_map": audio,
         "loudness_target": target.__dict__,
         "measurement_command": build_measurement_command(plan, target),

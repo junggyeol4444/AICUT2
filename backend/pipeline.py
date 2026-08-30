@@ -384,6 +384,7 @@ class PipelineManager:
                         width=int(options.get("render_width", 1920)), height=int(options.get("render_height", 1080)),
                         video_codec=str(options.get("video_codec", "libx264")),
                         audio_codec=str(options.get("audio_codec", "aac")),
+                        subtitle_path=(options.get("subtitle_paths") or {}).get(episode_id),
                     )
                     target = LoudnessTarget(
                         integrated_lufs=float(options.get("integrated_lufs", -14)),
@@ -482,7 +483,8 @@ class PipelineManager:
         return output
 
     def _input_hash(self, source: str, options: dict[str, Any]) -> str:
-        files = [source, options.get("manifest_path"), *(options.get("audio_paths") or [])]
+        files = [source, options.get("manifest_path"), *(options.get("audio_paths") or []),
+                 *(options.get("subtitle_paths") or {}).values()]
         payload = {
             "checkpoint_version": 2,
             "options": options,
