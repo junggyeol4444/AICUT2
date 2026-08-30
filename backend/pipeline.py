@@ -53,6 +53,7 @@ class PipelineManager:
         self._cancel: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
         self._hash_context = threading.local()
+        self._retry_context = threading.local()
 
     def submit(
         self, project_id: str, manifest_path: str | None = None, *,
@@ -97,6 +98,7 @@ class PipelineManager:
             completed = {item["step"]: item for item in self.database.pipeline_steps(project_id) if item["status"] == "COMPLETE"}
             project = self.database.get_project(project_id)
             input_hash = self._input_hash(project["file_path"], options)
+            self._retry_context.value = self._validate_retry_policy(options.get("retry_policy") or {})
             runner = self.processes.runner(project_id, cancel)
             media = self._step(project_id, "PROBE", "PARSING", 5, 15, cancel, resume, completed,
                                lambda: self.probe(project["file_path"]).to_dict(), input_hash)
@@ -220,20 +222,34 @@ class PipelineManager:
         if resume and step in completed and completed[step].get("input_hash") == input_hash:
             self.database.update_status(project_id, stage, end, f"{step} 체크포인트를 재사용합니다.")
             return completed[step]["output"]
-        self.database.save_pipeline_step(project_id, step, "RUNNING", start, input_hash=input_hash)
-        self.database.update_status(project_id, stage, start, f"{step} 단계를 시작합니다.")
-        try:
-            output = operation()
-            self._check_cancel(cancel)
-        except PipelineCancelled:
-            self.database.save_pipeline_step(project_id, step, "CANCELLED", start, input_hash=input_hash)
-            raise
-        except Exception as error:
-            if cancel.is_set():
+        retry = self._retry_context.value.get(step, {"max_attempts": 1, "backoff_sec": 0.0})
+        output = None
+        for attempt in range(1, retry["max_attempts"] + 1):
+            self.database.save_pipeline_step(project_id, step, "RUNNING", start, input_hash=input_hash)
+            self.database.update_status(project_id, stage, start, f"{step} 단계를 시작합니다. ({attempt}/{retry['max_attempts']})")
+            try:
+                output = operation()
+                self._check_cancel(cancel)
+                break
+            except PipelineCancelled:
                 self.database.save_pipeline_step(project_id, step, "CANCELLED", start, input_hash=input_hash)
-                raise PipelineCancelled() from error
-            self.database.save_pipeline_step(project_id, step, "FAILED", start, error_message=str(error), input_hash=input_hash)
-            raise
+                raise
+            except Exception as error:
+                if cancel.is_set():
+                    self.database.save_pipeline_step(project_id, step, "CANCELLED", start, input_hash=input_hash)
+                    raise PipelineCancelled() from error
+                self.database.save_pipeline_step(
+                    project_id, step, "FAILED", start, error_message=str(error), input_hash=input_hash,
+                )
+                if attempt >= retry["max_attempts"]:
+                    raise
+                self.database.update_status(
+                    project_id, stage, start,
+                    f"{step} 실패 · {retry['backoff_sec']}초 후 {attempt + 1}번째 시도",
+                )
+                if cancel.wait(retry["backoff_sec"]):
+                    self.database.save_pipeline_step(project_id, step, "CANCELLED", start, input_hash=input_hash)
+                    raise PipelineCancelled() from error
         self.database.save_pipeline_step(project_id, step, "COMPLETE", end, output=output, input_hash=input_hash)
         self.database.update_status(project_id, stage, end, f"{step} 단계를 완료했습니다.")
         return output
@@ -254,6 +270,21 @@ class PipelineManager:
         if accepts_runner:
             kwargs["runner"] = runner
         return function(*args, **kwargs)
+
+    @staticmethod
+    def _validate_retry_policy(raw: dict[str, Any]) -> dict[str, dict[str, float | int]]:
+        if not isinstance(raw, dict):
+            raise ValueError("retry_policy는 단계 이름을 키로 갖는 객체여야 합니다.")
+        result = {}
+        for step, value in raw.items():
+            if not isinstance(value, dict):
+                raise ValueError(f"{step} 재시도 정책은 객체여야 합니다.")
+            attempts = int(value.get("max_attempts", 1))
+            backoff = float(value.get("backoff_sec", 0))
+            if attempts < 1 or backoff < 0:
+                raise ValueError(f"{step} 재시도 횟수와 대기 시간은 음수가 될 수 없습니다.")
+            result[str(step)] = {"max_attempts": attempts, "backoff_sec": backoff}
+        return result
 
     @staticmethod
     def _file_identity(value: str) -> dict[str, Any]:

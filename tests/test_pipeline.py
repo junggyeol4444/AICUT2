@@ -43,6 +43,43 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(database.pipeline_steps(project["project_id"])[0]["status"], "FAILED")
             manager.shutdown()
 
+    def test_step_retry_policy_recovers_and_records_each_attempt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv"})
+            calls = []
+
+            def probe(_path):
+                calls.append("probe")
+                if len(calls) == 1:
+                    raise RuntimeError("temporary probe failure")
+                return SimpleNamespace(to_dict=lambda: {
+                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 0,
+                })
+
+            manager = PipelineManager(database, probe=probe)
+            manager._run(project["project_id"], {
+                "retry_policy": {"PROBE": {"max_attempts": 2, "backoff_sec": 0}},
+            }, True, threading.Event())
+            probe_step = database.pipeline_steps(project["project_id"])[0]
+            self.assertEqual(calls, ["probe", "probe"])
+            self.assertEqual(probe_step["status"], "COMPLETE")
+            self.assertEqual(probe_step["attempt_count"], 2)
+            self.assertEqual(probe_step["error_message"], "temporary probe failure")
+            manager.shutdown()
+
+    def test_invalid_retry_policy_fails_before_analysis(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv"})
+            manager = PipelineManager(database, probe=lambda _path: self.fail("probe must not run"))
+            manager._run(project["project_id"], {
+                "retry_policy": {"PROBE": {"max_attempts": 0}},
+            }, True, threading.Event())
+            self.assertEqual(database.get_project(project["project_id"])["status"], "FAILED")
+            self.assertEqual(database.pipeline_steps(project["project_id"]), [])
+            manager.shutdown()
+
     def test_changed_options_invalidate_old_checkpoints(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "pipeline.db")
