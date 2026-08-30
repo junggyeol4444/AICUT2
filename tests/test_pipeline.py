@@ -121,6 +121,42 @@ class PipelineTest(unittest.TestCase):
                              ["PROBE", "DISK_CHECK", "SCAN_PLAN"])
             manager.shutdown()
 
+    def test_chunked_analysis_resumes_from_the_failed_chunk(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv"})
+            calls, fail_once = [], {4.0}
+
+            def analyze_audio(_paths, _duration, *, window_sec, ranges):
+                start = ranges[0]["start_sec"]
+                calls.append(start)
+                if start in fail_once:
+                    fail_once.remove(start)
+                    raise RuntimeError("temporary chunk failure")
+                return {"observations": [{
+                    "kind": "SIGNAL_WINDOW", "track_index": 0, "start_sec": start,
+                    "end_sec": ranges[0]["end_sec"], "confidence": None,
+                    "payload": {"rms_dbfs": -10, "window_sec": window_sec},
+                }]}
+
+            manager = PipelineManager(
+                database,
+                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
+                    "duration_sec": 10, "width": 1920, "height": 1080, "audio_tracks": 1,
+                }),
+                analyze_audio=analyze_audio,
+            )
+            manager._default_audio = True
+            options = {"audio_analysis": True, "audio_paths": ["track.wav"], "analysis_chunk_sec": 4}
+            manager._run(project["project_id"], options, True, threading.Event())
+            self.assertEqual(database.get_project(project["project_id"])["status"], "FAILED")
+            manager._run(project["project_id"], options, True, threading.Event())
+            self.assertEqual(calls, [0.0, 4.0, 4.0, 8.0])
+            observations = database.analysis_input(project["project_id"])["observations"]
+            self.assertEqual([(item["start_sec"], item["end_sec"]) for item in observations],
+                             [(0, 4), (4, 8), (8, 10)])
+            manager.shutdown()
+
     def test_pipeline_can_run_external_producer_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "pipeline.db")

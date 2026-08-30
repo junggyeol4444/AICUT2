@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -45,6 +46,7 @@ class PipelineManager:
         self.produce = produce
         self._default_preprocess = preprocess is execute_preprocess
         self._default_transcribe = transcribe is transcribe_tracks
+        self._default_audio = analyze_audio is analyze_audio_tracks
         self._default_vision = analyze_vision is analyze_video
         self._default_precision = analyze_precision is analyze_precision_ranges
         self._default_producer = produce is run_producer
@@ -139,21 +141,40 @@ class PipelineManager:
                 str(artifact_root / f"audio-track-{index:02d}.wav") for index in range(int(media["audio_tracks"]))
             ]
             if options.get("audio_analysis") and audio_paths:
-                audio = self._step(
-                    project_id, "AUDIO_ANALYSIS", "UNDERSTANDING", 43, 50, cancel, resume, completed,
-                    lambda: self.analyze_audio(audio_paths, float(media["duration_sec"]),
-                                               window_sec=float(options.get("audio_window_sec", 1.0))),
+                audio_observations = []
+                chunks = self._analysis_chunks(
+                    float(media["duration_sec"]), options.get("analysis_chunk_sec") if self._default_audio else None,
                 )
-                self.database.replace_observations(project_id, "AUDIO", audio["observations"])
+                for index, chunk in enumerate(chunks):
+                    step = "AUDIO_ANALYSIS" if len(chunks) == 1 else f"AUDIO_ANALYSIS_{index:06d}"
+                    progress = self._chunk_progress(43, 50, index, len(chunks))
+                    audio = self._step(
+                        project_id, step, "UNDERSTANDING", progress[0], progress[1], cancel, resume, completed,
+                        lambda chunk=chunk: self._analyze_audio_chunk(
+                            audio_paths, float(media["duration_sec"]), float(options.get("audio_window_sec", 1.0)),
+                            chunk,
+                        ),
+                    )
+                    audio_observations.extend(audio["observations"])
+                self.database.replace_observations(project_id, "AUDIO", audio_observations)
 
             if options.get("vision_analysis"):
-                vision = self._step(
-                    project_id, "VISION_ANALYSIS", "UNDERSTANDING", 51, 58, cancel, resume, completed,
-                    lambda: self._invoke(self.analyze_vision, self._default_vision, runner,
-                                                project["file_path"], float(media["duration_sec"]),
-                                                frame_interval_sec=float(options.get("vision_interval_sec", 5.0))),
+                vision_observations = []
+                chunks = self._analysis_chunks(
+                    float(media["duration_sec"]), options.get("analysis_chunk_sec") if self._default_vision else None,
                 )
-                self.database.replace_observations(project_id, "VISION", vision["observations"])
+                for index, chunk in enumerate(chunks):
+                    step = "VISION_ANALYSIS" if len(chunks) == 1 else f"VISION_ANALYSIS_{index:06d}"
+                    progress = self._chunk_progress(51, 58, index, len(chunks))
+                    vision = self._step(
+                        project_id, step, "UNDERSTANDING", progress[0], progress[1], cancel, resume, completed,
+                        lambda chunk=chunk: self._analyze_vision_chunk(
+                            runner, project["file_path"], float(media["duration_sec"]),
+                            float(options.get("vision_interval_sec", 5.0)), chunk,
+                        ),
+                    )
+                    vision_observations.extend(vision["observations"])
+                self.database.replace_observations(project_id, "VISION", vision_observations)
 
             executable = options.get("stt_executable")
             if executable:
@@ -285,6 +306,35 @@ class PipelineManager:
                 raise ValueError(f"{step} 재시도 횟수와 대기 시간은 음수가 될 수 없습니다.")
             result[str(step)] = {"max_attempts": attempts, "backoff_sec": backoff}
         return result
+
+    @staticmethod
+    def _analysis_chunks(duration_sec: float, chunk_sec: Any) -> list[dict[str, float]]:
+        if chunk_sec is None:
+            return [{"start_sec": 0.0, "end_sec": duration_sec}]
+        size = float(chunk_sec)
+        if size <= 0:
+            raise ValueError("analysis_chunk_sec은 양수여야 합니다.")
+        return [
+            {"start_sec": start, "end_sec": min(duration_sec, start + size)}
+            for start in (index * size for index in range(math.ceil(duration_sec / size)))
+        ]
+
+    @staticmethod
+    def _chunk_progress(start: int, end: int, index: int, count: int) -> tuple[int, int]:
+        return start + (end - start) * index // count, start + (end - start) * (index + 1) // count
+
+    def _analyze_audio_chunk(self, paths, duration, window, chunk):
+        if self._default_audio:
+            return self.analyze_audio(paths, duration, window_sec=window, ranges=[{**chunk, "reason": "chunk"}])
+        return self.analyze_audio(paths, duration, window_sec=window)
+
+    def _analyze_vision_chunk(self, runner, source, duration, interval, chunk):
+        if self._default_vision:
+            return self.analyze_vision(
+                source, duration, frame_interval_sec=interval, start_sec=chunk["start_sec"],
+                end_sec=chunk["end_sec"], runner=runner,
+            )
+        return self.analyze_vision(source, duration, frame_interval_sec=interval)
 
     @staticmethod
     def _file_identity(value: str) -> dict[str, Any]:
