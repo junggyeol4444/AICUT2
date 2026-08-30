@@ -270,11 +270,20 @@ class PipelineTest(unittest.TestCase):
                                  {"source_start_sec": 10, "source_end_sec": 20, "scene_role": "context",
                                   "pacing_mode": "TRIM"}],
                 }]}},
+                pace=lambda *_args: {"decisions": [
+                    {"episode_id": "episode-1", "sequence_order": 1, "pacing_mode": "KEEP",
+                     "reason": "preserve result reaction"},
+                    {"episode_id": "episode-1", "sequence_order": 2, "pacing_mode": "CUT",
+                     "reason": "remove repeated context"},
+                ]},
             )
             manager._run(project["project_id"], {
                 "discovery_executable": ["discovery"], "planner_executable": ["planner"],
+                "pacing_executable": ["pacing"],
             }, True, threading.Event())
             self.assertEqual([item["source_start_sec"] for item in database.get_timeline("episode-1")], [50, 10])
+            self.assertEqual([item["pacing_mode"] for item in database.get_timeline("episode-1")], ["KEEP", "CUT"])
+            self.assertEqual(database.get_timeline("episode-1")[1]["pacing_reason"], "remove repeated context")
             versions = database.analysis_input(project["project_id"])["planning_versions"]
             self.assertEqual(versions[0]["version_number"], 1)
             manager.shutdown()

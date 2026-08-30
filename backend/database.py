@@ -46,6 +46,9 @@ class Database:
             for column, statement in migrations.items():
                 if column not in columns:
                     connection.execute(statement)
+            timeline_columns = {row["name"] for row in connection.execute("PRAGMA table_info(edit_timeline)")}
+            if "pacing_reason" not in timeline_columns:
+                connection.execute("ALTER TABLE edit_timeline ADD COLUMN pacing_reason TEXT NOT NULL DEFAULT ''")
 
     def create_project(self, payload: dict[str, Any]) -> dict[str, Any]:
         project_id = str(uuid.uuid4())
@@ -227,6 +230,9 @@ class Database:
                 ).fetchall()
                 event["mentions"] = [dict(item) for item in mentions]
                 events.append(event)
+        episode_items = self.list_episodes(project_id)
+        for episode in episode_items:
+            episode["timeline"] = self.get_timeline(episode["episode_id"])
         return {
             "project": {
                 "project_id": project_id, "duration_sec": project["duration_sec"],
@@ -249,7 +255,23 @@ class Database:
             } for item in (self._decode(dict(row), "related_event_ids_json") for row in candidate_rows)],
             "retrieved_scenes": [self._decode(dict(row), "reasons_json") for row in retrieval_rows],
             "planning_versions": [self._decode(dict(row), "manifest_json") for row in planning_rows],
+            "episodes": episode_items,
         }
+
+    def apply_pacing_decisions(self, project_id: str, decisions: list[dict[str, Any]]) -> int:
+        with self.connect() as connection:
+            for item in decisions:
+                result = connection.execute(
+                    """UPDATE edit_timeline SET pacing_mode=?,pacing_reason=?
+                    WHERE episode_id IN (SELECT episode_id FROM episodes WHERE project_id=?)
+                    AND episode_id=? AND sequence_order=?""",
+                    (item["pacing_mode"], item["reason"], project_id,
+                     item["episode_id"], item["sequence_order"]),
+                )
+                if not result.rowcount:
+                    raise ValueError("페이싱 결과가 존재하지 않는 프로젝트 컷을 참조합니다.")
+            self._log(connection, project_id, "PLANNING", f"스마트 페이싱 컷 {len(decisions)}개 적용")
+        return len(decisions)
 
     def save_planning_version(self, project_id: str, manifest: dict[str, Any]) -> dict[str, Any]:
         with self.connect() as connection:

@@ -18,6 +18,7 @@ from .producer import run_producer
 from .retrieval import run_scene_retrieval
 from .processes import ProcessSupervisor
 from .planning import run_dynamic_planner
+from .pacing import run_smart_pacing
 from .stt import transcribe_range, transcribe_tracks
 from .understanding import PreprocessPlan, build_scan_plan, execute_preprocess, select_precision_ranges
 from .vision import run_vision_analyzer
@@ -45,6 +46,7 @@ class PipelineManager:
         discover: Callable = run_content_discovery,
         retrieve: Callable = run_scene_retrieval,
         plan: Callable = run_dynamic_planner,
+        pace: Callable = run_smart_pacing,
         produce: Callable = run_producer,
     ):
         self.database = database
@@ -63,6 +65,7 @@ class PipelineManager:
         self.discover = discover
         self.retrieve = retrieve
         self.plan = plan
+        self.pace = pace
         self.produce = produce
         self._default_preprocess = preprocess is execute_preprocess
         self._default_transcribe = transcribe is transcribe_tracks
@@ -76,6 +79,7 @@ class PipelineManager:
         self._default_discover = discover is run_content_discovery
         self._default_retrieve = retrieve is run_scene_retrieval
         self._default_plan = plan is run_dynamic_planner
+        self._default_pace = pace is run_smart_pacing
         self._default_producer = produce is run_producer
         self.processes = ProcessSupervisor()
         self._jobs: dict[str, Future] = {}
@@ -345,6 +349,16 @@ class PipelineManager:
                     project_id, "UNDERSTANDING", 58 if executable else 42,
                     "전처리 파이프라인 완료 · 장기 방송 이해 AI 결과를 기다립니다.",
                 )
+            pacing_executable = options.get("pacing_executable")
+            if pacing_executable:
+                paced = self._step(
+                    project_id, "SMART_PACING", "PLANNING", 95, 97, cancel, resume, completed,
+                    lambda: self._invoke(
+                        self.pace, self._default_pace, runner,
+                        pacing_executable, self.database.analysis_input(project_id), artifact_root / "pacing",
+                    ),
+                )
+                self.database.apply_pacing_decisions(project_id, paced["decisions"])
         except PipelineCancelled:
             self.database.update_status(project_id, "QUEUED", 0, "사용자 요청으로 분석을 취소했습니다. 재개할 수 있습니다.")
         except Exception as error:
@@ -520,6 +534,8 @@ class PipelineManager:
             return isinstance(output.get("scenes"), list)
         if step == "DYNAMIC_PLANNING":
             return isinstance(output.get("manifest"), dict) and isinstance(output.get("episodes"), list)
+        if step == "SMART_PACING":
+            return isinstance(output.get("decisions"), list)
         return True
 
     @staticmethod

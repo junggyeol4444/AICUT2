@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS edit_timeline (
   speaker_tag TEXT NOT NULL DEFAULT 'UNKNOWN',
   scene_role TEXT NOT NULL,
   pacing_mode TEXT NOT NULL CHECK (pacing_mode IN ('KEEP','TRIM','CUT')),
+  pacing_reason TEXT NOT NULL DEFAULT '',
   visual_effect_json TEXT NOT NULL DEFAULT '{}',
   subtitle_ref TEXT,
   UNIQUE (episode_id, sequence_order),
