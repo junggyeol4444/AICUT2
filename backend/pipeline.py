@@ -15,6 +15,7 @@ from .producer import run_producer
 from .processes import ProcessSupervisor
 from .stt import transcribe_tracks
 from .understanding import PreprocessPlan, build_scan_plan, execute_preprocess, select_precision_ranges
+from .vision import run_vision_analyzer
 
 
 class PipelineCancelled(RuntimeError):
@@ -32,6 +33,7 @@ class PipelineManager:
         analyze_audio: Callable = analyze_audio_tracks,
         analyze_vision: Callable = analyze_video,
         analyze_precision: Callable = analyze_precision_ranges,
+        analyze_external_vision: Callable = run_vision_analyzer,
         produce: Callable = run_producer,
     ):
         self.database = database
@@ -43,12 +45,14 @@ class PipelineManager:
         self.analyze_audio = analyze_audio
         self.analyze_vision = analyze_vision
         self.analyze_precision = analyze_precision
+        self.analyze_external_vision = analyze_external_vision
         self.produce = produce
         self._default_preprocess = preprocess is execute_preprocess
         self._default_transcribe = transcribe is transcribe_tracks
         self._default_audio = analyze_audio is analyze_audio_tracks
         self._default_vision = analyze_vision is analyze_video
         self._default_precision = analyze_precision is analyze_precision_ranges
+        self._default_external_vision = analyze_external_vision is run_vision_analyzer
         self._default_producer = produce is run_producer
         self.processes = ProcessSupervisor()
         self._jobs: dict[str, Future] = {}
@@ -161,8 +165,10 @@ class PipelineManager:
 
             if options.get("vision_analysis"):
                 vision_observations = []
+                vision_executable = options.get("vision_executable")
                 chunks = self._analysis_chunks(
-                    float(media["duration_sec"]), options.get("analysis_chunk_sec") if self._default_vision else None,
+                    float(media["duration_sec"]),
+                    options.get("analysis_chunk_sec") if (self._default_vision or vision_executable) else None,
                 )
                 for index, chunk in enumerate(chunks):
                     step = "VISION_ANALYSIS" if len(chunks) == 1 else f"VISION_ANALYSIS_{index:06d}"
@@ -171,7 +177,8 @@ class PipelineManager:
                         project_id, step, "UNDERSTANDING", progress[0], progress[1], cancel, resume, completed,
                         lambda chunk=chunk: self._analyze_vision_chunk(
                             runner, project["file_path"], float(media["duration_sec"]),
-                            float(options.get("vision_interval_sec", 5.0)), chunk,
+                            float(options.get("vision_interval_sec", 5.0)), chunk, vision_executable,
+                            artifact_root / "vision" / f"chunk-{index:06d}.json",
                         ),
                     )
                     vision_observations.extend(vision["observations"])
@@ -339,7 +346,13 @@ class PipelineManager:
             return self.analyze_audio(paths, duration, window_sec=window, ranges=[{**chunk, "reason": "chunk"}])
         return self.analyze_audio(paths, duration, window_sec=window)
 
-    def _analyze_vision_chunk(self, runner, source, duration, interval, chunk):
+    def _analyze_vision_chunk(self, runner, source, duration, interval, chunk, executable, output_path):
+        if executable:
+            return self._invoke(
+                self.analyze_external_vision, self._default_external_vision, runner,
+                executable, source, output_path, duration, start_sec=chunk["start_sec"],
+                end_sec=chunk["end_sec"], interval_sec=interval,
+            )
         if self._default_vision:
             return self.analyze_vision(
                 source, duration, frame_interval_sec=interval, start_sec=chunk["start_sec"],
