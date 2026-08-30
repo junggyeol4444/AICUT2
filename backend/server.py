@@ -15,6 +15,7 @@ from .render import RenderError, RenderPlan, export_plan, render
 from .package import MetadataPackage, build_thumbnail_commands, extract_thumbnails, write_metadata_package
 from .upload import UploadManager, client_from_environment
 from .oauth import OAuthYouTubeClient, YouTubeOAuth
+from .token_store import EncryptedTokenStore
 from .calibration import calibrate_pacing
 from .learning import analyze_source_output
 from .performance import performance_insights, validate_metrics
@@ -30,11 +31,17 @@ ROOT = Path(__file__).resolve().parents[1]
 DB = Database(os.environ.get("AICUT_DB", ROOT / "aicut.db"))
 PIPELINE = PipelineManager(DB)
 UPLOADS = UploadManager(DB, client_from_environment())
+YOUTUBE_TOKEN_STORE = EncryptedTokenStore(
+    os.environ["YOUTUBE_TOKEN_STORE"], os.environ["YOUTUBE_TOKEN_KEY"],
+) if os.environ.get("YOUTUBE_TOKEN_STORE") and os.environ.get("YOUTUBE_TOKEN_KEY") else None
 YOUTUBE_OAUTH = YouTubeOAuth(
     os.environ["YOUTUBE_CLIENT_ID"], os.environ["YOUTUBE_CLIENT_SECRET"], os.environ["YOUTUBE_REDIRECT_URI"],
+    token_store=YOUTUBE_TOKEN_STORE,
 ) if all(os.environ.get(key) for key in (
     "YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET", "YOUTUBE_REDIRECT_URI",
 )) else None
+if YOUTUBE_OAUTH and YOUTUBE_OAUTH.tokens:
+    UPLOADS.client = OAuthYouTubeClient(YOUTUBE_OAUTH)
 
 
 class ApiHandler(BaseHTTPRequestHandler):

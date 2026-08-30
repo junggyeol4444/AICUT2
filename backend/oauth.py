@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .upload import UploadError, YouTubeResumableClient
+from .token_store import EncryptedTokenStore
 
 
 @dataclass
@@ -27,13 +28,15 @@ class YouTubeOAuth:
 
     def __init__(
         self, client_id: str, client_secret: str, redirect_uri: str, *, opener: Callable = urlopen,
-        clock: Callable[[], float] = time.time,
+        clock: Callable[[], float] = time.time, token_store: EncryptedTokenStore | None = None,
     ):
         if not all(str(value).strip() for value in (client_id, client_secret, redirect_uri)):
             raise UploadError("YouTube OAuth client id, client secret, redirect URI가 필요합니다.")
         self.client_id, self.client_secret, self.redirect_uri = client_id, client_secret, redirect_uri
         self.opener, self.clock = opener, clock
-        self.tokens: OAuthTokens | None = None
+        self.token_store = token_store
+        stored = token_store.load() if token_store else None
+        self.tokens = OAuthTokens(**stored) if stored else None
         self._states: set[str] = set()
         self._lock = threading.Lock()
 
@@ -62,6 +65,7 @@ class YouTubeOAuth:
         self.tokens = self._tokens_from_payload(payload, payload.get("refresh_token", ""))
         if not self.tokens.refresh_token:
             raise UploadError("Google OAuth 응답에 refresh token이 없습니다. 동의 화면을 다시 승인해야 합니다.")
+        self._persist_tokens()
         return self.tokens
 
     def access_token(self) -> str:
@@ -73,6 +77,7 @@ class YouTubeOAuth:
                 "client_secret": self.client_secret, "grant_type": "refresh_token",
             })
             self.tokens = self._tokens_from_payload(payload, self.tokens.refresh_token)
+            self._persist_tokens()
         return self.tokens.access_token
 
     def _token_request(self, values: dict[str, str]) -> dict:
@@ -95,6 +100,13 @@ class YouTubeOAuth:
     def _tokens_from_payload(self, payload: dict, refresh_token: str) -> OAuthTokens:
         return OAuthTokens(str(payload["access_token"]), str(refresh_token),
                            self.clock() + float(payload.get("expires_in", 3600)))
+
+    def _persist_tokens(self) -> None:
+        if self.token_store and self.tokens:
+            self.token_store.save({
+                "access_token": self.tokens.access_token, "refresh_token": self.tokens.refresh_token,
+                "expires_at": self.tokens.expires_at,
+            })
 
 
 class OAuthYouTubeClient:

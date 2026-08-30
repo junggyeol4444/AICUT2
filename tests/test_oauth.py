@@ -1,10 +1,13 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 from backend.oauth import OAuthYouTubeClient, YouTubeOAuth
 from backend.upload import UploadError
+from backend.token_store import EncryptedTokenStore
 
 
 class Response:
@@ -56,6 +59,21 @@ class OAuthTest(unittest.TestCase):
         client = OAuthYouTubeClient(oauth, uploader_factory=Uploader)
         self.assertEqual(client.upload("video.mp4", {}, "PRIVATE"), "video-1")
         self.assertEqual(uploads, ["fresh-token"])
+
+    def test_encrypted_refresh_token_restores_after_restart(self):
+        def opener(_request):
+            return Response({"access_token": "access", "refresh_token": "refresh", "expires_in": 3600})
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = EncryptedTokenStore(Path(directory) / "tokens", "master-key")
+            oauth = YouTubeOAuth("client", "secret", "http://localhost/callback", opener=opener,
+                                 clock=lambda: 1000, token_store=store)
+            authorization = oauth.authorization_url()
+            oauth.exchange_callback("code", authorization["state"])
+            restored = YouTubeOAuth("client", "secret", "http://localhost/callback", opener=opener,
+                                    clock=lambda: 1000, token_store=store)
+        self.assertEqual(restored.tokens.refresh_token, "refresh")
+        self.assertEqual(restored.access_token(), "access")
 
 
 if __name__ == "__main__":
