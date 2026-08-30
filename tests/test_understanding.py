@@ -92,6 +92,24 @@ class BroadcastUnderstandingTest(unittest.TestCase):
             }], 100)
             self.assertEqual(database.replace_transcript(project["project_id"], segments), 1)
 
+    def test_stt_audio_and_vision_share_one_ordered_timeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "understanding.db")
+            project = database.create_project({"file_path": "/media/live.mkv", "duration_sec": 20})
+            database.replace_transcript(project["project_id"], validate_transcript_segments([{
+                "start_sec": 5, "end_sec": 7, "text": "대사", "confidence": .9, "words": [],
+            }], 20))
+            database.replace_observations(project["project_id"], "AUDIO", [{
+                "kind": "SIGNAL_WINDOW", "track_index": 0, "start_sec": 0, "end_sec": 1,
+                "payload": {"rms_dbfs": -10},
+            }])
+            database.replace_observations(project["project_id"], "VISION", [{
+                "kind": "FRAME_SIGNAL", "start_sec": 5, "end_sec": 6, "payload": {"scd.score": .8},
+            }])
+            timeline = database.analysis_input(project["project_id"])["timeline"]
+            self.assertEqual([item["modality"] for item in timeline], ["AUDIO", "VISION", "STT"])
+            self.assertEqual(timeline[-1]["payload"]["text"], "대사")
+
 
 if __name__ == "__main__":
     unittest.main()

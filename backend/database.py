@@ -184,6 +184,17 @@ class Database:
                 FROM analysis_observations WHERE project_id=? ORDER BY start_sec,modality,track_index""",
                 (project_id,),
             ).fetchall()
+        transcript = [self._decode(dict(row), "words_json") for row in segments]
+        observation_items = [self._decode(dict(row), "payload_json") for row in observations]
+        timeline = [{
+            "modality": "STT", "kind": "TRANSCRIPT_SEGMENT", "track_index": item["track_index"],
+            "start_sec": item["start_sec"], "end_sec": item["end_sec"], "confidence": item["confidence"],
+            "payload": {"speaker_tag": item["speaker_tag"], "text": item["text"], "words": item["words"]},
+        } for item in transcript] + observation_items
+        timeline.sort(key=lambda item: (
+            item["start_sec"], item["end_sec"], {"STT": 0, "AUDIO": 1, "VISION": 2}[item["modality"]],
+            -1 if item.get("track_index") is None else item["track_index"],
+        ))
         return {
             "project": {
                 "project_id": project_id, "duration_sec": project["duration_sec"],
@@ -191,9 +202,10 @@ class Database:
                 "target_duration_hint": project.get("target_duration_hint"),
             },
             "scan_windows": [dict(row) for row in windows],
-            "transcript": [self._decode(dict(row), "words_json") for row in segments],
+            "transcript": transcript,
             "artifacts": [self._decode(dict(row), "metadata_json") for row in artifacts],
-            "observations": [self._decode(dict(row), "payload_json") for row in observations],
+            "observations": observation_items,
+            "timeline": timeline,
         }
 
     def replace_observations(self, project_id: str, modality: str, observations: list[dict[str, Any]]) -> int:
@@ -475,6 +487,17 @@ class Database:
             value["params"] = json.loads(value.pop("params_json"))
             result.append(value)
         return result
+
+    def get_calibration(self, profile_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM calibration_profiles WHERE profile_id=?", (profile_id,),
+            ).fetchone()
+        if not row:
+            raise KeyError(profile_id)
+        value = dict(row)
+        value["params"] = json.loads(value.pop("params_json"))
+        return value
 
     def save_source_output_pair(
         self, source_ref: str, output_ref: str, analysis: dict[str, Any], project_id: str | None = None

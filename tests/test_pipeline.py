@@ -166,6 +166,25 @@ class PipelineTest(unittest.TestCase):
                              ["PROBE", "DISK_CHECK", "SCAN_PLAN"])
             manager.shutdown()
 
+    def test_channel_calibration_supplies_pipeline_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            profile = database.save_calibration("channel-1", "profile", {
+                "pipeline_options": {"coarse_window_sec": 4},
+            }, 90)
+            project = database.create_project({
+                "file_path": "/media/live.mkv", "calibration_profile_id": profile["profile_id"],
+            })
+            manager = PipelineManager(database, probe=lambda _path: SimpleNamespace(to_dict=lambda: {
+                "duration_sec": 10, "width": 1920, "height": 1080, "audio_tracks": 0,
+            }))
+            manager._run(project["project_id"], {}, True, threading.Event())
+            coarse = [item for item in database.analysis_input(project["project_id"])["scan_windows"]
+                      if item["pass_kind"] == "COARSE"]
+            self.assertEqual([(item["start_sec"], item["end_sec"]) for item in coarse], [(0, 4), (4, 8), (8, 10)])
+            self.assertEqual(database.get_calibration(profile["profile_id"])["name"], "profile")
+            manager.shutdown()
+
     def test_chunked_analysis_resumes_from_the_failed_chunk(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "pipeline.db")
@@ -255,6 +274,7 @@ class PipelineTest(unittest.TestCase):
                 "producer_executable": ["producer"],
             }, True, threading.Event())
             self.assertEqual([item["modality"] for item in observed["observations"]], ["AUDIO", "VISION"])
+            self.assertEqual([item["modality"] for item in observed["timeline"]], ["AUDIO", "VISION"])
             self.assertEqual([step["step"] for step in database.pipeline_steps(project["project_id"])],
                              ["PROBE", "SCAN_PLAN", "AUDIO_ANALYSIS", "VISION_ANALYSIS", "AI_PRODUCER"])
             manager.shutdown()

@@ -99,6 +99,7 @@ class PipelineManager:
         try:
             completed = {item["step"]: item for item in self.database.pipeline_steps(project_id) if item["status"] == "COMPLETE"}
             project = self.database.get_project(project_id)
+            options = self._calibrated_options(project, options)
             input_hash = self._input_hash(project["file_path"], options)
             self._retry_context.value = self._validate_retry_policy(options.get("retry_policy") or {})
             runner = self.processes.runner(project_id, cancel)
@@ -306,6 +307,16 @@ class PipelineManager:
                 raise ValueError(f"{step} 재시도 횟수와 대기 시간은 음수가 될 수 없습니다.")
             result[str(step)] = {"max_attempts": attempts, "backoff_sec": backoff}
         return result
+
+    def _calibrated_options(self, project: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
+        profile_id = project.get("calibration_profile_id")
+        if not profile_id:
+            return dict(options)
+        profile = self.database.get_calibration(profile_id)
+        defaults = profile["params"].get("pipeline_options", {})
+        if not isinstance(defaults, dict):
+            raise ValueError("캘리브레이션 pipeline_options는 객체여야 합니다.")
+        return {**defaults, **options, "calibration_profile_version": profile["measured_at"]}
 
     @staticmethod
     def _analysis_chunks(duration_sec: float, chunk_sec: Any) -> list[dict[str, float]]:
