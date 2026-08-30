@@ -211,6 +211,15 @@ CREATE TABLE IF NOT EXISTS scene_retrieval_results (
   CHECK(start_sec >= 0 AND end_sec > start_sec)
 );
 
+CREATE TABLE IF NOT EXISTS planning_versions (
+  planning_version_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  version_number INTEGER NOT NULL,
+  manifest_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(project_id, version_number)
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id);
 CREATE INDEX IF NOT EXISTS idx_candidates_project ON content_candidates(project_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_project ON episodes(project_id);
@@ -224,3 +233,4 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_steps_project ON pipeline_steps(project_
 CREATE INDEX IF NOT EXISTS idx_observations_project_time ON analysis_observations(project_id, start_sec, modality);
 CREATE INDEX IF NOT EXISTS idx_understanding_project_time ON understanding_windows(project_id, start_sec);
 CREATE INDEX IF NOT EXISTS idx_retrieval_candidate_score ON scene_retrieval_results(candidate_id, score DESC);
+CREATE INDEX IF NOT EXISTS idx_planning_versions_project ON planning_versions(project_id, version_number DESC);

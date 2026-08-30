@@ -202,6 +202,10 @@ class Database:
                 FROM scene_retrieval_results WHERE project_id=? ORDER BY candidate_id,score DESC,start_sec""",
                 (project_id,),
             ).fetchall()
+            planning_rows = connection.execute(
+                """SELECT planning_version_id,version_number,manifest_json,created_at FROM planning_versions
+                WHERE project_id=? ORDER BY version_number DESC""", (project_id,),
+            ).fetchall()
         transcript = [self._decode(dict(row), "words_json") for row in segments]
         observation_items = [self._decode(dict(row), "payload_json") for row in observations]
         timeline = [{
@@ -244,7 +248,24 @@ class Database:
                 "decision_reason": item["decision_reason"],
             } for item in (self._decode(dict(row), "related_event_ids_json") for row in candidate_rows)],
             "retrieved_scenes": [self._decode(dict(row), "reasons_json") for row in retrieval_rows],
+            "planning_versions": [self._decode(dict(row), "manifest_json") for row in planning_rows],
         }
+
+    def save_planning_version(self, project_id: str, manifest: dict[str, Any]) -> dict[str, Any]:
+        with self.connect() as connection:
+            if not connection.execute("SELECT 1 FROM projects WHERE project_id=?", (project_id,)).fetchone():
+                raise KeyError(project_id)
+            version = connection.execute(
+                "SELECT COALESCE(MAX(version_number),0)+1 FROM planning_versions WHERE project_id=?", (project_id,),
+            ).fetchone()[0]
+            connection.execute(
+                """INSERT INTO planning_versions(project_id,version_number,manifest_json,created_at)
+                VALUES(?,?,?,?)""", (project_id, version, json.dumps(manifest, ensure_ascii=False), now()),
+            )
+            row = connection.execute(
+                "SELECT * FROM planning_versions WHERE project_id=? AND version_number=?", (project_id, version),
+            ).fetchone()
+        return self._decode(dict(row), "manifest_json")
 
     def replace_retrieved_scenes(self, project_id: str, scenes: list[dict[str, Any]]) -> int:
         duration = float(self.get_project(project_id)["duration_sec"])

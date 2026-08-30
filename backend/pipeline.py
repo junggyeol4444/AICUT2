@@ -17,6 +17,7 @@ from .multimodal import analyze_audio_tracks, analyze_precision_ranges, analyze_
 from .producer import run_producer
 from .retrieval import run_scene_retrieval
 from .processes import ProcessSupervisor
+from .planning import run_dynamic_planner
 from .stt import transcribe_range, transcribe_tracks
 from .understanding import PreprocessPlan, build_scan_plan, execute_preprocess, select_precision_ranges
 from .vision import run_vision_analyzer
@@ -43,6 +44,7 @@ class PipelineManager:
         understand_window: Callable = run_window_understanding,
         discover: Callable = run_content_discovery,
         retrieve: Callable = run_scene_retrieval,
+        plan: Callable = run_dynamic_planner,
         produce: Callable = run_producer,
     ):
         self.database = database
@@ -60,6 +62,7 @@ class PipelineManager:
         self.understand_window = understand_window
         self.discover = discover
         self.retrieve = retrieve
+        self.plan = plan
         self.produce = produce
         self._default_preprocess = preprocess is execute_preprocess
         self._default_transcribe = transcribe is transcribe_tracks
@@ -72,6 +75,7 @@ class PipelineManager:
         self._default_understand_window = understand_window is run_window_understanding
         self._default_discover = discover is run_content_discovery
         self._default_retrieve = retrieve is run_scene_retrieval
+        self._default_plan = plan is run_dynamic_planner
         self._default_producer = produce is run_producer
         self.processes = ProcessSupervisor()
         self._jobs: dict[str, Future] = {}
@@ -306,7 +310,21 @@ class PipelineManager:
                 )
                 self.database.replace_retrieved_scenes(project_id, retrieved["scenes"])
 
+            planner_executable = options.get("planner_executable")
             producer_executable = options.get("producer_executable")
+            if planner_executable and producer_executable:
+                raise ValueError("planner_executable과 producer_executable은 동시에 사용할 수 없습니다.")
+            if planner_executable:
+                planned = self._step(
+                    project_id, "DYNAMIC_PLANNING", "PLANNING", 88, 94, cancel, resume, completed,
+                    lambda: self._invoke(
+                        self.plan, self._default_plan, runner,
+                        planner_executable, self.database.analysis_input(project_id),
+                        artifact_root / "planning", float(media["duration_sec"]),
+                    ),
+                )
+                self.database.save_planning_version(project_id, planned["manifest"])
+                self.database.import_analysis(project_id, planned["manifest"])
             manifest_path = options.get("manifest_path")
             if producer_executable:
                 produced = self._step(
@@ -316,13 +334,13 @@ class PipelineManager:
                                          artifact_root / "producer", float(media["duration_sec"])),
                 )
                 self.database.import_analysis(project_id, produced["manifest"])
-            elif manifest_path:
+            elif manifest_path and not planner_executable:
                 manifest = self._step(
                     project_id, "ANALYSIS_IMPORT", "DISCOVERING", 88, 94, cancel, resume, completed,
                     lambda: json.loads(Path(manifest_path).expanduser().resolve().read_text(encoding="utf-8")),
                 )
                 self.database.import_analysis(project_id, manifest)
-            elif not discovery_executable and not retrieval_executable:
+            elif not planner_executable and not discovery_executable and not retrieval_executable:
                 self.database.update_status(
                     project_id, "UNDERSTANDING", 58 if executable else 42,
                     "전처리 파이프라인 완료 · 장기 방송 이해 AI 결과를 기다립니다.",
@@ -500,6 +518,8 @@ class PipelineManager:
             )
         if step == "SCENE_RETRIEVAL":
             return isinstance(output.get("scenes"), list)
+        if step == "DYNAMIC_PLANNING":
+            return isinstance(output.get("manifest"), dict) and isinstance(output.get("episodes"), list)
         return True
 
     @staticmethod

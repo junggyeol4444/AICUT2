@@ -243,6 +243,42 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(database.get_project(project["project_id"])["status"], "PLANNING")
             manager.shutdown()
 
+    def test_dynamic_planning_versions_non_linear_episode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv"})
+            discovery = {"events": [{"event_id": "event-1", "summary": "event", "mentions": []}],
+                         "candidates": [{"candidate_id": "candidate-1", "summary": "candidate",
+                                         "event_ids": ["event-1"], "independence_score": .8,
+                                         "decision": "MAKE", "decision_reason": "complete"}], "episodes": []}
+            manager = PipelineManager(
+                database,
+                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
+                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 0,
+                }),
+                discover=lambda *_args: {"manifest": discovery},
+                plan=lambda *_args: {"episodes": [{
+                    "episode_id": "episode-1", "candidate_ids": ["candidate-1"], "target_type": "LONG",
+                    "timeline": [{"source_start_sec": 50, "source_end_sec": 55, "scene_role": "result",
+                                  "pacing_mode": "KEEP"},
+                                 {"source_start_sec": 10, "source_end_sec": 20, "scene_role": "context",
+                                  "pacing_mode": "TRIM"}],
+                }], "manifest": {**discovery, "episodes": [{
+                    "episode_id": "episode-1", "candidate_ids": ["candidate-1"], "target_type": "LONG",
+                    "timeline": [{"source_start_sec": 50, "source_end_sec": 55, "scene_role": "result",
+                                  "pacing_mode": "KEEP"},
+                                 {"source_start_sec": 10, "source_end_sec": 20, "scene_role": "context",
+                                  "pacing_mode": "TRIM"}],
+                }]}},
+            )
+            manager._run(project["project_id"], {
+                "discovery_executable": ["discovery"], "planner_executable": ["planner"],
+            }, True, threading.Event())
+            self.assertEqual([item["source_start_sec"] for item in database.get_timeline("episode-1")], [50, 10])
+            versions = database.analysis_input(project["project_id"])["planning_versions"]
+            self.assertEqual(versions[0]["version_number"], 1)
+            manager.shutdown()
+
     def test_chunked_analysis_resumes_from_the_failed_chunk(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "pipeline.db")
