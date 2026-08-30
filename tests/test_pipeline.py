@@ -251,6 +251,13 @@ class PipelineTest(unittest.TestCase):
                          "candidates": [{"candidate_id": "candidate-1", "summary": "candidate",
                                          "event_ids": ["event-1"], "independence_score": .8,
                                          "decision": "MAKE", "decision_reason": "complete"}], "episodes": []}
+
+            def render_episode(plan, loudness_target):
+                output = Path(plan.output_path)
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_bytes(b"rendered")
+                return {"output_path": str(output), "target": loudness_target.integrated_lufs}
+
             manager = PipelineManager(
                 database,
                 probe=lambda _path: SimpleNamespace(to_dict=lambda: {
@@ -276,16 +283,20 @@ class PipelineTest(unittest.TestCase):
                     {"episode_id": "episode-1", "sequence_order": 2, "pacing_mode": "CUT",
                      "reason": "remove repeated context"},
                 ]},
+                render_episode=render_episode,
             )
             manager._run(project["project_id"], {
                 "discovery_executable": ["discovery"], "planner_executable": ["planner"],
-                "pacing_executable": ["pacing"],
+                "pacing_executable": ["pacing"], "render": True,
+                "render_output_directory": str(Path(directory) / "renders"),
             }, True, threading.Event())
             self.assertEqual([item["source_start_sec"] for item in database.get_timeline("episode-1")], [50, 10])
             self.assertEqual([item["pacing_mode"] for item in database.get_timeline("episode-1")], ["KEEP", "CUT"])
             self.assertEqual(database.get_timeline("episode-1")[1]["pacing_reason"], "remove repeated context")
             versions = database.analysis_input(project["project_id"])["planning_versions"]
             self.assertEqual(versions[0]["version_number"], 1)
+            self.assertEqual(database.get_episode("episode-1")["render_status"], "COMPLETE")
+            self.assertEqual(database.get_project(project["project_id"])["status"], "REVIEW_PENDING")
             manager.shutdown()
 
     def test_chunked_analysis_resumes_from_the_failed_chunk(self):

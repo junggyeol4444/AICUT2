@@ -16,6 +16,7 @@ from .longterm import run_window_understanding
 from .multimodal import analyze_audio_tracks, analyze_precision_ranges, analyze_video
 from .producer import run_producer
 from .retrieval import run_scene_retrieval
+from .render import LoudnessTarget, RenderPlan, render
 from .processes import ProcessSupervisor
 from .planning import run_dynamic_planner
 from .pacing import run_smart_pacing
@@ -47,6 +48,7 @@ class PipelineManager:
         retrieve: Callable = run_scene_retrieval,
         plan: Callable = run_dynamic_planner,
         pace: Callable = run_smart_pacing,
+        render_episode: Callable = render,
         produce: Callable = run_producer,
     ):
         self.database = database
@@ -66,6 +68,7 @@ class PipelineManager:
         self.retrieve = retrieve
         self.plan = plan
         self.pace = pace
+        self.render_episode = render_episode
         self.produce = produce
         self._default_preprocess = preprocess is execute_preprocess
         self._default_transcribe = transcribe is transcribe_tracks
@@ -80,6 +83,7 @@ class PipelineManager:
         self._default_retrieve = retrieve is run_scene_retrieval
         self._default_plan = plan is run_dynamic_planner
         self._default_pace = pace is run_smart_pacing
+        self._default_render = render_episode is render
         self._default_producer = produce is run_producer
         self.processes = ProcessSupervisor()
         self._jobs: dict[str, Future] = {}
@@ -359,6 +363,42 @@ class PipelineManager:
                     ),
                 )
                 self.database.apply_pacing_decisions(project_id, paced["decisions"])
+            if options.get("render"):
+                episodes = self.database.list_episodes(project_id)
+                if not episodes:
+                    raise ValueError("렌더링을 실행하려면 기획된 에피소드가 필요합니다.")
+                render_root = Path(options.get("render_output_directory") or artifact_root / "renders").resolve()
+                for index, episode in enumerate(episodes):
+                    progress = self._chunk_progress(97, 100, index, len(episodes))
+                    episode_id = episode["episode_id"]
+                    output_path = render_root / f"{episode_id}.mp4"
+                    plan = RenderPlan(
+                        project["file_path"], str(output_path), tuple(self.database.get_timeline(episode_id)),
+                        width=int(options.get("render_width", 1920)), height=int(options.get("render_height", 1080)),
+                        video_codec=str(options.get("video_codec", "libx264")),
+                        audio_codec=str(options.get("audio_codec", "aac")),
+                    )
+                    target = LoudnessTarget(
+                        integrated_lufs=float(options.get("integrated_lufs", -14)),
+                        true_peak_db=float(options.get("true_peak_db", -1)),
+                        loudness_range=float(options.get("loudness_range", 11)),
+                    )
+                    self.database.set_render_status(episode_id, "RUNNING")
+                    try:
+                        rendered = self._step(
+                            project_id, f"RENDER_{episode_id}", "RENDERING",
+                            progress[0], progress[1], cancel, resume, completed,
+                            lambda plan=plan, target=target: self._invoke(
+                                self.render_episode, self._default_render, runner,
+                                plan, loudness_target=target,
+                            ),
+                        )
+                    except Exception:
+                        self.database.set_render_status(episode_id, "FAILED")
+                        raise
+                    self.database.set_render_status(episode_id, "COMPLETE", rendered["output_path"])
+                self.database.update_status(project_id, "REVIEW_PENDING", 100,
+                                            "모든 에피소드 렌더링 완료 · 사람 검수를 기다립니다.")
         except PipelineCancelled:
             self.database.update_status(project_id, "QUEUED", 0, "사용자 요청으로 분석을 취소했습니다. 재개할 수 있습니다.")
         except Exception as error:
@@ -536,6 +576,8 @@ class PipelineManager:
             return isinstance(output.get("manifest"), dict) and isinstance(output.get("episodes"), list)
         if step == "SMART_PACING":
             return isinstance(output.get("decisions"), list)
+        if step.startswith("RENDER_"):
+            return bool(output.get("output_path")) and Path(output["output_path"]).is_file()
         return True
 
     @staticmethod
