@@ -7,13 +7,14 @@ import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .database import Database
 from .pipeline import PipelineManager
 from .render import RenderError, RenderPlan, export_plan, render
 from .package import MetadataPackage, build_thumbnail_commands, extract_thumbnails, write_metadata_package
 from .upload import UploadManager, client_from_environment
+from .oauth import OAuthYouTubeClient, YouTubeOAuth
 from .calibration import calibrate_pacing
 from .learning import analyze_source_output
 from .performance import performance_insights, validate_metrics
@@ -29,13 +30,19 @@ ROOT = Path(__file__).resolve().parents[1]
 DB = Database(os.environ.get("AICUT_DB", ROOT / "aicut.db"))
 PIPELINE = PipelineManager(DB)
 UPLOADS = UploadManager(DB, client_from_environment())
+YOUTUBE_OAUTH = YouTubeOAuth(
+    os.environ["YOUTUBE_CLIENT_ID"], os.environ["YOUTUBE_CLIENT_SECRET"], os.environ["YOUTUBE_REDIRECT_URI"],
+) if all(os.environ.get(key) for key in (
+    "YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET", "YOUTUBE_REDIRECT_URI",
+)) else None
 
 
 class ApiHandler(BaseHTTPRequestHandler):
     server_version = "AICUT/1.0"
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         try:
             if path == "/api/health":
                 self.json({"status": "ok", "service": "aicut-local-runtime"})
@@ -57,6 +64,19 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.json(DB.logs())
             elif path == "/api/uploads":
                 self.json(DB.list_uploads())
+            elif path == "/api/youtube/oauth/start":
+                if not YOUTUBE_OAUTH:
+                    raise ValueError("YouTube OAuth 환경변수가 설정되지 않았습니다.")
+                self.json(YOUTUBE_OAUTH.authorization_url())
+            elif path == "/api/youtube/oauth/callback":
+                if not YOUTUBE_OAUTH:
+                    raise ValueError("YouTube OAuth 환경변수가 설정되지 않았습니다.")
+                query = parse_qs(parsed.query)
+                tokens = YOUTUBE_OAUTH.exchange_callback(
+                    query.get("code", [""])[0], query.get("state", [""])[0],
+                )
+                UPLOADS.client = OAuthYouTubeClient(YOUTUBE_OAUTH)
+                self.json({"authorized": True, "expires_at": tokens.expires_at})
             elif path == "/api/calibrations":
                 self.json(DB.list_calibrations())
             elif path == "/api/learning/source-output":
