@@ -258,6 +258,25 @@ class PipelineTest(unittest.TestCase):
                 output.write_bytes(b"rendered")
                 return {"output_path": str(output), "target": loudness_target.integrated_lufs}
 
+            def generate_packages(_executable, analysis, _output):
+                self.assertEqual(analysis["episodes"][0]["render_status"], "COMPLETE")
+                return {"packages": [{
+                    "episode_id": "episode-1", "metadata": {
+                        "title_options": ["제목 A", "제목 B", "제목 C"],
+                        "description": "설명", "tags": ["게임"], "chapters": [],
+                    }, "thumbnail_timestamps": [1],
+                }]}
+
+            def package_episode(metadata, _video, _timestamps, output):
+                output.mkdir(parents=True, exist_ok=True)
+                json_path, text_path = output / "metadata.json", output / "metadata.txt"
+                thumbnail = output / "thumbnail-01.jpg"
+                json_path.write_text(json.dumps(metadata))
+                text_path.write_text("metadata")
+                thumbnail.write_bytes(b"image")
+                return {"json_path": str(json_path), "text_path": str(text_path),
+                        "thumbnails": [str(thumbnail)], "metadata": metadata}
+
             manager = PipelineManager(
                 database,
                 probe=lambda _path: SimpleNamespace(to_dict=lambda: {
@@ -284,11 +303,15 @@ class PipelineTest(unittest.TestCase):
                      "reason": "remove repeated context"},
                 ]},
                 render_episode=render_episode,
+                generate_packages=generate_packages,
+                package_episode=package_episode,
             )
             manager._run(project["project_id"], {
                 "discovery_executable": ["discovery"], "planner_executable": ["planner"],
                 "pacing_executable": ["pacing"], "render": True,
                 "render_output_directory": str(Path(directory) / "renders"),
+                "packaging_executable": ["packager"],
+                "package_output_directory": str(Path(directory) / "packages"),
             }, True, threading.Event())
             self.assertEqual([item["source_start_sec"] for item in database.get_timeline("episode-1")], [50, 10])
             self.assertEqual([item["pacing_mode"] for item in database.get_timeline("episode-1")], ["KEEP", "CUT"])
@@ -296,6 +319,8 @@ class PipelineTest(unittest.TestCase):
             versions = database.analysis_input(project["project_id"])["planning_versions"]
             self.assertEqual(versions[0]["version_number"], 1)
             self.assertEqual(database.get_episode("episode-1")["render_status"], "COMPLETE")
+            self.assertEqual(database.get_episode("episode-1")["metadata"]["title_options"][0], "제목 A")
+            self.assertTrue(Path(database.get_episode("episode-1")["thumbnail_path"]).is_file())
             self.assertEqual(database.get_project(project["project_id"])["status"], "REVIEW_PENDING")
             manager.shutdown()
 

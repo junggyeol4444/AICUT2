@@ -14,6 +14,7 @@ from .audio import run_audio_analyzer
 from .media import check_disk_capacity, probe_media
 from .longterm import run_window_understanding
 from .multimodal import analyze_audio_tracks, analyze_precision_ranges, analyze_video
+from .package import build_episode_package, run_packaging_model
 from .producer import run_producer
 from .retrieval import run_scene_retrieval
 from .render import LoudnessTarget, RenderPlan, render
@@ -49,6 +50,8 @@ class PipelineManager:
         plan: Callable = run_dynamic_planner,
         pace: Callable = run_smart_pacing,
         render_episode: Callable = render,
+        generate_packages: Callable = run_packaging_model,
+        package_episode: Callable = build_episode_package,
         produce: Callable = run_producer,
     ):
         self.database = database
@@ -69,6 +72,8 @@ class PipelineManager:
         self.plan = plan
         self.pace = pace
         self.render_episode = render_episode
+        self.generate_packages = generate_packages
+        self.package_episode = package_episode
         self.produce = produce
         self._default_preprocess = preprocess is execute_preprocess
         self._default_transcribe = transcribe is transcribe_tracks
@@ -84,6 +89,8 @@ class PipelineManager:
         self._default_plan = plan is run_dynamic_planner
         self._default_pace = pace is run_smart_pacing
         self._default_render = render_episode is render
+        self._default_generate_packages = generate_packages is run_packaging_model
+        self._default_package_episode = package_episode is build_episode_package
         self._default_producer = produce is run_producer
         self.processes = ProcessSupervisor()
         self._jobs: dict[str, Future] = {}
@@ -397,8 +404,40 @@ class PipelineManager:
                         self.database.set_render_status(episode_id, "FAILED")
                         raise
                     self.database.set_render_status(episode_id, "COMPLETE", rendered["output_path"])
+            packaging_executable = options.get("packaging_executable")
+            if packaging_executable:
+                episodes = self.database.list_episodes(project_id)
+                missing_outputs = [item["episode_id"] for item in episodes
+                                   if not item.get("output_mp4_path") or not Path(item["output_mp4_path"]).is_file()]
+                if missing_outputs:
+                    raise ValueError("패키징 전에 모든 에피소드 렌더가 필요합니다: " + ", ".join(missing_outputs))
+                packaging = self._step(
+                    project_id, "PACKAGING_PLAN", "PACKAGED", 98, 99, cancel, resume, completed,
+                    lambda: self._invoke(
+                        self.generate_packages, self._default_generate_packages, runner,
+                        packaging_executable, self.database.analysis_input(project_id), artifact_root / "packaging",
+                    ),
+                )
+                package_root = Path(options.get("package_output_directory") or artifact_root / "packages").resolve()
+                for index, item in enumerate(packaging["packages"]):
+                    episode_id = item["episode_id"]
+                    episode = self.database.get_episode(episode_id)
+                    output = package_root / episode_id
+                    packaged = self._step(
+                        project_id, f"PACKAGE_{episode_id}", "PACKAGED",
+                        *self._chunk_progress(99, 100, index, len(packaging["packages"])), cancel, resume, completed,
+                        lambda item=item, episode=episode, output=output: self._invoke(
+                            self.package_episode, self._default_package_episode, runner,
+                            item["metadata"], episode["output_mp4_path"], item["thumbnail_timestamps"], output,
+                        ),
+                    )
+                    thumbnails = packaged.get("thumbnails", [])
+                    self.database.set_episode_package(
+                        episode_id, item["metadata"], thumbnails[0] if thumbnails else None,
+                    )
+            if options.get("render") or packaging_executable:
                 self.database.update_status(project_id, "REVIEW_PENDING", 100,
-                                            "모든 에피소드 렌더링 완료 · 사람 검수를 기다립니다.")
+                                            "영상과 패키징 준비 완료 · 사람 검수를 기다립니다.")
         except PipelineCancelled:
             self.database.update_status(project_id, "QUEUED", 0, "사용자 요청으로 분석을 취소했습니다. 재개할 수 있습니다.")
         except Exception as error:
@@ -576,6 +615,11 @@ class PipelineManager:
             return isinstance(output.get("manifest"), dict) and isinstance(output.get("episodes"), list)
         if step == "SMART_PACING":
             return isinstance(output.get("decisions"), list)
+        if step == "PACKAGING_PLAN":
+            return isinstance(output.get("packages"), list)
+        if step.startswith("PACKAGE_"):
+            paths = [output.get("json_path"), output.get("text_path"), *(output.get("thumbnails") or [])]
+            return all(path and Path(path).is_file() for path in paths)
         if step.startswith("RENDER_"):
             return bool(output.get("output_path")) and Path(output["output_path"]).is_file()
         return True

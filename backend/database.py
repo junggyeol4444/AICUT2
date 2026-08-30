@@ -520,6 +520,18 @@ class Database:
             if not result.rowcount:
                 raise KeyError(episode_id)
 
+    def set_episode_package(
+        self, episode_id: str, metadata: dict[str, Any], thumbnail_path: str | None = None,
+    ) -> None:
+        with self.connect() as connection:
+            result = connection.execute(
+                """UPDATE episodes SET metadata_json=?,thumbnail_path=COALESCE(?,thumbnail_path)
+                WHERE episode_id=?""",
+                (json.dumps(metadata, ensure_ascii=False), thumbnail_path, episode_id),
+            )
+            if not result.rowcount:
+                raise KeyError(episode_id)
+
     def queue_upload(self, episode_id: str, privacy_status: str = "PRIVATE") -> dict[str, Any]:
         if privacy_status not in {"PRIVATE", "UNLISTED"}:
             raise ValueError("검수 게이트에서는 PRIVATE 또는 UNLISTED 업로드만 허용됩니다.")
