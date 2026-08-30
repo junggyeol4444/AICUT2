@@ -256,6 +256,7 @@ class PipelineTest(unittest.TestCase):
 
             def render_episode(plan, loudness_target):
                 self.assertEqual(plan.subtitle_path, str(subtitle))
+                self.assertEqual(plan.audio_mix[1]["role"], "GAME")
                 output = Path(plan.output_path)
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_bytes(b"rendered")
@@ -283,7 +284,7 @@ class PipelineTest(unittest.TestCase):
             manager = PipelineManager(
                 database,
                 probe=lambda _path: SimpleNamespace(to_dict=lambda: {
-                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 0,
+                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 2,
                 }),
                 discover=lambda *_args: {"manifest": discovery},
                 plan=lambda *_args: {"episodes": [{
@@ -314,6 +315,8 @@ class PipelineTest(unittest.TestCase):
                 "pacing_executable": ["pacing"], "render": True,
                 "render_output_directory": str(Path(directory) / "renders"),
                 "subtitle_paths": {"episode-1": str(subtitle)},
+                "render_audio_mix": [{"track_index": 0, "volume": 1, "role": "MIC"},
+                                     {"track_index": 1, "volume": 0.4, "role": "GAME"}],
                 "packaging_executable": ["packager"],
                 "package_output_directory": str(Path(directory) / "packages"),
             }, True, threading.Event())

@@ -374,6 +374,10 @@ class PipelineManager:
                 episodes = self.database.list_episodes(project_id)
                 if not episodes:
                     raise ValueError("렌더링을 실행하려면 기획된 에피소드가 필요합니다.")
+                audio_mix = tuple(options.get("render_audio_mix") or ())
+                available_tracks = int(media.get("audio_tracks", 0))
+                if any(int(item.get("track_index", -1)) >= available_tracks for item in audio_mix):
+                    raise ValueError("render_audio_mix가 원본에 존재하지 않는 오디오 트랙을 참조합니다.")
                 render_root = Path(options.get("render_output_directory") or artifact_root / "renders").resolve()
                 for index, episode in enumerate(episodes):
                     progress = self._chunk_progress(97, 100, index, len(episodes))
@@ -385,6 +389,7 @@ class PipelineManager:
                         video_codec=str(options.get("video_codec", "libx264")),
                         audio_codec=str(options.get("audio_codec", "aac")),
                         subtitle_path=(options.get("subtitle_paths") or {}).get(episode_id),
+                        audio_mix=audio_mix,
                     )
                     target = LoudnessTarget(
                         integrated_lufs=float(options.get("integrated_lufs", -14)),

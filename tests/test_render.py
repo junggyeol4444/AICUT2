@@ -54,6 +54,29 @@ class RenderPlanTest(unittest.TestCase):
         self.assertIn("[vconcat]subtitles=filename=", graph)
         self.assertEqual(video, "[vout]")
 
+    def test_multitrack_audio_is_trimmed_mixed_and_normalized_as_one_timeline(self):
+        plan = RenderPlan(
+            self.plan.input_path, self.plan.output_path, self.plan.cuts,
+            audio_mix=({"track_index": 0, "volume": 1.0, "role": "MIC"},
+                       {"track_index": 2, "volume": 0.35, "role": "GAME"}),
+        )
+        graph, _video, audio = build_filter_graph(plan)
+        self.assertIn("[0:a:0]atrim=start=300.000:end=310.000", graph)
+        self.assertIn("[0:a:2]atrim=start=300.000:end=310.000", graph)
+        self.assertIn("volume=0.350", graph)
+        self.assertIn("amix=inputs=2:duration=longest:normalize=0", graph)
+        self.assertEqual(audio, "[aout]")
+
+    def test_multitrack_audio_rejects_duplicate_or_negative_tracks(self):
+        with self.assertRaises(RenderError):
+            build_filter_graph(RenderPlan("in", "out", self.plan.cuts, audio_mix=(
+                {"track_index": 0}, {"track_index": 0},
+            )))
+        with self.assertRaises(RenderError):
+            build_filter_graph(RenderPlan("in", "out", self.plan.cuts, audio_mix=(
+                {"track_index": 1, "volume": -1},
+            )))
+
     def test_two_pass_loudness_measurement_is_configurable(self):
         target = LoudnessTarget(integrated_lufs=-16, true_peak_db=-1.5, loudness_range=9)
         command = build_measurement_command(self.plan, target)

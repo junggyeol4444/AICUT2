@@ -22,6 +22,7 @@ class RenderPlan:
     video_codec: str = "libx264"
     audio_codec: str = "aac"
     subtitle_path: str | None = None
+    audio_mix: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,15 @@ def validate_plan(plan: RenderPlan) -> tuple[dict, ...]:
         end = _number(cut.get("source_end_sec"), "source_end_sec")
         if end <= start:
             raise RenderError(f"컷 {expected}의 종료 시각은 시작 시각보다 커야 합니다.")
+    seen_tracks = set()
+    for track in plan.audio_mix:
+        try:
+            index, volume = int(track["track_index"]), float(track.get("volume", 1.0))
+        except (KeyError, TypeError, ValueError) as error:
+            raise RenderError("오디오 믹스의 트랙 번호와 볼륨이 올바르지 않습니다.") from error
+        if index < 0 or volume < 0 or index in seen_tracks:
+            raise RenderError("오디오 믹스에는 중복되지 않은 트랙 번호와 음수가 아닌 볼륨이 필요합니다.")
+        seen_tracks.add(index)
     return active
 
 
@@ -88,10 +98,24 @@ def build_filter_graph(plan: RenderPlan) -> tuple[str, str, str]:
             zoom_w, zoom_h = int(plan.width / ratio), int(plan.height / ratio)
             video_filters.append(f"crop={zoom_w}:{zoom_h}:(iw-ow)/2:(ih-oh)/2,scale={plan.width}:{plan.height}")
         chains.append(f"[0:v:0]{','.join(video_filters)}[v{index}]")
-        chains.append(
-            f"[0:a:0]atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS,"
-            f"afade=t=in:st=0:d={fade:.3f},afade=t=out:st={max(duration-fade,0):.3f}:d={fade:.3f}[a{index}]"
-        )
+        if plan.audio_mix:
+            audio_inputs = []
+            for mix_index, track in enumerate(plan.audio_mix):
+                label = f"am{index}_{mix_index}"
+                chains.append(
+                    f"[0:a:{int(track['track_index'])}]atrim=start={start:.3f}:end={end:.3f},"
+                    f"asetpts=PTS-STARTPTS,volume={float(track.get('volume', 1.0)):.3f}[{label}]"
+                )
+                audio_inputs.append(f"[{label}]")
+            chains.append(
+                f"{''.join(audio_inputs)}amix=inputs={len(audio_inputs)}:duration=longest:normalize=0,"
+                f"afade=t=in:st=0:d={fade:.3f},afade=t=out:st={max(duration-fade,0):.3f}:d={fade:.3f}[a{index}]"
+            )
+        else:
+            chains.append(
+                f"[0:a:0]atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS,"
+                f"afade=t=in:st=0:d={fade:.3f},afade=t=out:st={max(duration-fade,0):.3f}:d={fade:.3f}[a{index}]"
+            )
         concat_inputs.append(f"[v{index}][a{index}]")
     video_output = "[vout]"
     concat_video = "[vconcat]" if plan.subtitle_path else video_output
@@ -192,6 +216,7 @@ def export_plan(plan: RenderPlan, target: LoudnessTarget | None = None) -> str:
     return json.dumps({
         "input_path": plan.input_path, "output_path": plan.output_path,
         "subtitle_path": plan.subtitle_path,
+        "audio_mix": plan.audio_mix,
         "filter_graph": graph, "video_map": video, "audio_map": audio,
         "loudness_target": target.__dict__,
         "measurement_command": build_measurement_command(plan, target),
