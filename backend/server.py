@@ -17,7 +17,7 @@ from .package import MetadataPackage, build_thumbnail_commands, extract_thumbnai
 from .upload import UploadManager, client_from_environment
 from .oauth import OAuthYouTubeClient, YouTubeOAuth
 from .token_store import EncryptedTokenStore
-from .analytics import YouTubeAnalyticsClient
+from .analytics import AnalyticsCollectionManager, YouTubeAnalyticsClient
 from .calibration import calibrate_pacing
 from .learning import analyze_source_output
 from .performance import performance_insights, validate_metrics
@@ -147,6 +147,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                     date.fromisoformat(payload["end_date"]), duration,
                 )
                 self.json(DB.save_performance(episode_id, metrics), HTTPStatus.CREATED)
+            elif path == "/api/analytics/run-due":
+                if not YOUTUBE_OAUTH:
+                    raise ValueError("YouTube Analytics OAuth가 설정되지 않았습니다.")
+                manager = AnalyticsCollectionManager(DB, YouTubeAnalyticsClient(YOUTUBE_OAUTH.access_token))
+                self.json(manager.run_due(), HTTPStatus.OK)
             elif path.startswith("/api/projects/") and path.endswith("/run"):
                 project_id = path.split("/")[3]
                 DB.get_project(project_id)

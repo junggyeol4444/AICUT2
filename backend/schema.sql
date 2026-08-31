@@ -132,6 +132,20 @@ CREATE TABLE IF NOT EXISTS performance_snapshots (
   collected_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS analytics_collection_jobs (
+  collection_id TEXT PRIMARY KEY,
+  episode_id TEXT NOT NULL REFERENCES episodes(episode_id) ON DELETE CASCADE,
+  youtube_video_id TEXT NOT NULL,
+  snapshot_label TEXT NOT NULL CHECK (snapshot_label IN ('24H','7D','30D')),
+  due_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'QUEUED' CHECK (status IN ('QUEUED','RUNNING','COMPLETE','FAILED')),
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (episode_id, snapshot_label)
+);
+
 CREATE TABLE IF NOT EXISTS transcript_segments (
   segment_id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
@@ -228,6 +242,7 @@ CREATE INDEX IF NOT EXISTS idx_logs_project ON job_logs(project_id, log_id DESC)
 CREATE INDEX IF NOT EXISTS idx_upload_jobs_status ON upload_jobs(status, retry_at);
 CREATE INDEX IF NOT EXISTS idx_source_output_project ON source_output_pairs(project_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_performance_episode ON performance_snapshots(episode_id, collected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analytics_collection_due ON analytics_collection_jobs(status, due_at);
 CREATE INDEX IF NOT EXISTS idx_transcript_project_time ON transcript_segments(project_id, start_sec);
 CREATE INDEX IF NOT EXISTS idx_scan_windows_project ON scan_windows(project_id, pass_kind, start_sec);
 CREATE INDEX IF NOT EXISTS idx_pipeline_steps_project ON pipeline_steps(project_id, updated_at);

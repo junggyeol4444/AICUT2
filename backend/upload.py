@@ -146,6 +146,7 @@ class UploadManager:
             self.database.set_upload_status(upload_id, "UPLOADING")
             video_id = self.client.upload(job["output_mp4_path"], job["metadata"], job["privacy_status"])
             self.database.set_upload_status(upload_id, "COMPLETE", youtube_video_id=video_id)
+            self.database.schedule_analytics_snapshots(job["episode_id"], video_id)
         except QuotaExceeded as error:
             self.database.set_upload_status(
                 upload_id, "RETRY_QUEUED", retry_at=next_quota_reset().isoformat(), error_message=str(error),

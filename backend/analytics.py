@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .performance import PerformanceError, validate_metrics
+from .database import Database
 
 
 class YouTubeAnalyticsClient:
@@ -60,3 +61,36 @@ class YouTubeAnalyticsClient:
             raise PerformanceError(f"YouTube Analytics API 오류 ({error.code}): {detail[-2000:]}") from error
         except (URLError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
             raise PerformanceError(f"YouTube Analytics 응답을 처리할 수 없습니다: {error}") from error
+
+
+class AnalyticsCollectionManager:
+    """Run durable 24-hour, 7-day and 30-day owned-channel performance snapshots."""
+
+    def __init__(self, database: Database, client: YouTubeAnalyticsClient):
+        self.database, self.client = database, client
+
+    def run_due(self, at: datetime | None = None) -> dict[str, int]:
+        moment = at or datetime.now(timezone.utc)
+        completed = failed = 0
+        for job in self.database.due_analytics_collections(moment):
+            self.database.set_analytics_collection_status(job["collection_id"], "RUNNING")
+            try:
+                episode = self.database.get_episode(job["episode_id"])
+                duration = episode.get("planned_duration_sec") or sum(
+                    cut["source_end_sec"] - cut["source_start_sec"]
+                    for cut in self.database.get_timeline(job["episode_id"]) if cut["pacing_mode"] != "CUT"
+                )
+                start = datetime.fromisoformat(job["created_at"]).date()
+                metrics = self.client.collect_video_metrics(
+                    job["youtube_video_id"], start, moment.astimezone(timezone.utc).date(), duration,
+                )
+                metrics["snapshot_label"] = job["snapshot_label"]
+                self.database.save_performance(job["episode_id"], metrics)
+                self.database.set_analytics_collection_status(job["collection_id"], "COMPLETE")
+                completed += 1
+            except Exception as error:
+                self.database.set_analytics_collection_status(
+                    job["collection_id"], "FAILED", str(error),
+                )
+                failed += 1
+        return {"completed": completed, "failed": failed}

@@ -4,7 +4,7 @@ import json
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -591,6 +591,60 @@ class Database:
             if not result.rowcount:
                 raise KeyError(upload_id)
             row = connection.execute("SELECT * FROM upload_jobs WHERE upload_id=?", (upload_id,)).fetchone()
+        return dict(row)
+
+    def schedule_analytics_snapshots(
+        self, episode_id: str, youtube_video_id: str, published_at: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        origin = published_at or datetime.now(timezone.utc)
+        if origin.tzinfo is None:
+            raise ValueError("published_at은 timezone-aware datetime이어야 합니다.")
+        schedules = (("24H", timedelta(hours=24)), ("7D", timedelta(days=7)), ("30D", timedelta(days=30)))
+        timestamp = now()
+        with self.connect() as connection:
+            if not connection.execute("SELECT 1 FROM episodes WHERE episode_id=?", (episode_id,)).fetchone():
+                raise KeyError(episode_id)
+            for label, delay in schedules:
+                connection.execute(
+                    """INSERT OR IGNORE INTO analytics_collection_jobs
+                    (collection_id,episode_id,youtube_video_id,snapshot_label,due_at,status,created_at,updated_at)
+                    VALUES(?,?,?,?,?,'QUEUED',?,?)""",
+                    (str(uuid.uuid4()), episode_id, youtube_video_id, label,
+                     (origin + delay).astimezone(timezone.utc).isoformat(), timestamp, timestamp),
+                )
+            rows = connection.execute(
+                "SELECT * FROM analytics_collection_jobs WHERE episode_id=? ORDER BY due_at", (episode_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def due_analytics_collections(self, at: datetime | None = None) -> list[dict[str, Any]]:
+        moment = (at or datetime.now(timezone.utc))
+        if moment.tzinfo is None:
+            raise ValueError("at은 timezone-aware datetime이어야 합니다.")
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT j.*,e.planned_duration_sec FROM analytics_collection_jobs j
+                JOIN episodes e USING(episode_id) WHERE j.status IN ('QUEUED','FAILED') AND j.due_at<=?
+                ORDER BY j.due_at""", (moment.astimezone(timezone.utc).isoformat(),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_analytics_collection_status(
+        self, collection_id: str, status: str, error_message: str | None = None,
+    ) -> dict[str, Any]:
+        if status not in {"QUEUED", "RUNNING", "COMPLETE", "FAILED"}:
+            raise ValueError("지원하지 않는 Analytics 수집 상태입니다.")
+        with self.connect() as connection:
+            result = connection.execute(
+                """UPDATE analytics_collection_jobs SET status=?,error_message=?,updated_at=?,
+                attempt_count=attempt_count+CASE WHEN ?='RUNNING' THEN 1 ELSE 0 END WHERE collection_id=?""",
+                (status, error_message, now(), status, collection_id),
+            )
+            if not result.rowcount:
+                raise KeyError(collection_id)
+            row = connection.execute(
+                "SELECT * FROM analytics_collection_jobs WHERE collection_id=?", (collection_id,),
+            ).fetchone()
         return dict(row)
 
     def save_calibration(
