@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import threading
+import inspect
 import json
 import mimetypes
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Protocol
@@ -20,6 +21,10 @@ class UploadError(RuntimeError):
 
 
 class QuotaExceeded(UploadError):
+    pass
+
+
+class UploadCancelled(UploadError):
     pass
 
 
@@ -45,7 +50,10 @@ class YouTubeResumableClient:
         self.opener = opener
         self.progress = progress or (lambda _sent, _total: None)
 
-    def upload(self, file_path: str, metadata: dict, privacy_status: str) -> str:
+    def upload(
+        self, file_path: str, metadata: dict, privacy_status: str,
+        cancel_event: threading.Event | None = None,
+    ) -> str:
         path = os.path.abspath(os.path.expanduser(file_path))
         if not os.path.isfile(path):
             raise UploadError(f"업로드할 영상 파일을 찾을 수 없습니다: {path}")
@@ -75,6 +83,8 @@ class YouTubeResumableClient:
         sent = 0
         with open(path, "rb") as source:
             while sent < total:
+                if cancel_event and cancel_event.is_set():
+                    raise UploadCancelled("사용자 요청으로 YouTube 업로드를 취소했습니다.")
                 chunk = source.read(min(self.chunk_size, total - sent))
                 end = sent + len(chunk) - 1
                 upload_request = Request(session_url, data=chunk, method="PUT", headers={
@@ -172,6 +182,7 @@ class UploadManager:
         self.client = client
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="aicut-upload")
         self._active: set[str] = set()
+        self._cancel: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
 
     def submit(self, upload_id: str) -> bool:
@@ -179,7 +190,17 @@ class UploadManager:
             if upload_id in self._active:
                 return False
             self._active.add(upload_id)
+            self._cancel[upload_id] = threading.Event()
         self.executor.submit(self._run, upload_id)
+        return True
+
+    def cancel(self, upload_id: str) -> bool:
+        with self._lock:
+            event = self._cancel.get(upload_id)
+            active = upload_id in self._active
+        if not event or not active:
+            return False
+        event.set()
         return True
 
     def _run(self, upload_id: str) -> None:
@@ -191,9 +212,16 @@ class UploadManager:
             if job["status"] not in {"QUEUED", "RETRY_QUEUED"}:
                 raise UploadError(f"현재 상태에서는 업로드할 수 없습니다: {job['status']}")
             self.database.set_upload_status(upload_id, "UPLOADING")
-            video_id = self.client.upload(job["output_mp4_path"], job["metadata"], job["privacy_status"])
+            event = self._cancel[upload_id]
+            parameters = inspect.signature(self.client.upload).parameters
+            kwargs = {"cancel_event": event} if "cancel_event" in parameters else {}
+            video_id = self.client.upload(
+                job["output_mp4_path"], job["metadata"], job["privacy_status"], **kwargs,
+            )
             self.database.set_upload_status(upload_id, "COMPLETE", youtube_video_id=video_id)
             self.database.schedule_analytics_snapshots(job["episode_id"], video_id)
+        except UploadCancelled as error:
+            self.database.set_upload_status(upload_id, "RETRY_QUEUED", error_message=str(error))
         except QuotaExceeded as error:
             self.database.set_upload_status(
                 upload_id, "RETRY_QUEUED", retry_at=next_quota_reset().isoformat(), error_message=str(error),
@@ -206,6 +234,7 @@ class UploadManager:
         finally:
             with self._lock:
                 self._active.discard(upload_id)
+                self._cancel.pop(upload_id, None)
 
     def shutdown(self) -> None:
         self.executor.shutdown(wait=True, cancel_futures=True)

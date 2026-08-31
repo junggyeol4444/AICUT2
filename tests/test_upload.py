@@ -1,13 +1,21 @@
 import json
 import io
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError
 
 from backend.database import Database
-from backend.upload import QuotaExceeded, UploadError, UploadManager, YouTubeResumableClient, next_quota_reset
+from backend.upload import (
+    QuotaExceeded,
+    UploadCancelled,
+    UploadError,
+    UploadManager,
+    YouTubeResumableClient,
+    next_quota_reset,
+)
 
 
 class FakeClient:
@@ -110,6 +118,54 @@ class UploadTest(unittest.TestCase):
         self.assertEqual([request.get_method() for request in calls], ["POST", "PUT", "PUT"])
         self.assertEqual(calls[1].get_header("Content-range"), "bytes 0-262143/300000")
         self.assertEqual(progress[-1], (300_000, 300_000))
+
+    def test_resumable_client_stops_before_next_chunk_when_cancelled(self):
+        calls = []
+        cancelled = threading.Event()
+
+        def opener(request):
+            calls.append(request)
+            if request.get_method() == "POST":
+                return FakeResponse(headers={"Location": "https://upload.example/session"})
+            return FakeResponse(code=308, headers={"Range": "bytes=0-262143"})
+
+        def progress(_sent, _total):
+            cancelled.set()
+
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "episode.mp4"
+            video.write_bytes(b"x" * 300_000)
+            client = YouTubeResumableClient(
+                "access-token", chunk_size=256 * 1024, opener=opener, progress=progress,
+            )
+            with self.assertRaises(UploadCancelled):
+                client.upload(
+                    str(video), {"selected_title": "title"}, "PRIVATE",
+                    cancel_event=cancelled,
+                )
+        self.assertEqual([request.get_method() for request in calls], ["POST", "PUT"])
+
+    def test_manager_cancel_returns_job_to_retry_queue(self):
+        class CancellableClient:
+            def __init__(inner):
+                inner.started = threading.Event()
+
+            def upload(inner, _path, _metadata, _privacy, cancel_event=None):
+                inner.started.set()
+                self.assertIsNotNone(cancel_event)
+                cancel_event.wait(1)
+                raise UploadCancelled("cancelled")
+
+        client = CancellableClient()
+        manager = UploadManager(self.db, client)
+        self.assertTrue(manager.submit(self.upload["upload_id"]))
+        self.assertTrue(client.started.wait(1))
+        self.assertTrue(manager.cancel(self.upload["upload_id"]))
+        manager.shutdown()
+        job = self.db.list_uploads()[0]
+        self.assertEqual(job["status"], "RETRY_QUEUED")
+        self.assertEqual(job["error_message"], "cancelled")
+        self.assertFalse(manager.cancel(self.upload["upload_id"]))
 
     def test_resumable_client_maps_real_quota_reason(self):
         def opener(_request):

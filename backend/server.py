@@ -299,6 +299,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                 upload_id = path.split("/")[3]
                 accepted = UPLOADS.submit(upload_id)
                 self.json({"upload_id": upload_id, "accepted": accepted}, HTTPStatus.ACCEPTED if accepted else HTTPStatus.CONFLICT)
+            elif path.startswith("/api/uploads/") and path.endswith("/cancel"):
+                upload_id = path.split("/")[3]
+                accepted = UPLOADS.cancel(upload_id)
+                self.json(
+                    {"upload_id": upload_id, "accepted": accepted},
+                    HTTPStatus.ACCEPTED if accepted else HTTPStatus.CONFLICT,
+                )
             elif path.startswith("/api/uploads/") and path.endswith("/thumbnail"):
                 upload_id = path.split("/")[3]
                 job = next((item for item in DB.list_uploads() if item["upload_id"] == upload_id), None)
