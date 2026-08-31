@@ -233,6 +233,7 @@ class Database:
         episode_items = self.list_episodes(project_id)
         for episode in episode_items:
             episode["timeline"] = self.get_timeline(episode["episode_id"])
+        active_strategy = self.active_strategy(project.get("channel_ref")) if project.get("channel_ref") else None
         return {
             "project": {
                 "project_id": project_id, "duration_sec": project["duration_sec"],
@@ -255,6 +256,7 @@ class Database:
             } for item in (self._decode(dict(row), "related_event_ids_json") for row in candidate_rows)],
             "retrieved_scenes": [self._decode(dict(row), "reasons_json") for row in retrieval_rows],
             "planning_versions": [self._decode(dict(row), "manifest_json") for row in planning_rows],
+            "production_strategy": active_strategy,
             "episodes": episode_items,
         }
 
@@ -811,6 +813,16 @@ class Database:
                 "SELECT * FROM strategy_versions WHERE channel_ref=? ORDER BY version_number DESC", (channel_ref,),
             ).fetchall()
         return [self._decode(dict(row), "strategy_json") for row in rows]
+
+    def active_strategy(self, channel_ref: str | None) -> dict[str, Any] | None:
+        if not channel_ref:
+            return None
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM strategy_versions WHERE channel_ref=? AND status='ACTIVE'
+                ORDER BY version_number DESC LIMIT 1""", (channel_ref,),
+            ).fetchone()
+        return self._decode(dict(row), "strategy_json") if row else None
 
     def replace_scan_windows(self, project_id: str, windows: list[dict[str, Any]]) -> int:
         with self.connect() as connection:

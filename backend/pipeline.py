@@ -142,7 +142,9 @@ class PipelineManager:
             completed = {item["step"]: item for item in self.database.pipeline_steps(project_id) if item["status"] == "COMPLETE"}
             project = self.database.get_project(project_id)
             options = self._calibrated_options(project, options)
-            input_hash = self._input_hash(project["file_path"], options)
+            input_hash = self._input_hash(
+                project["file_path"], options, self.database.active_strategy(project.get("channel_ref")),
+            )
             self._retry_context.value = self._validate_retry_policy(options.get("retry_policy") or {})
             runner = self.processes.runner(project_id, cancel)
             media = self._step(project_id, "PROBE", "PARSING", 5, 15, cancel, resume, completed,
@@ -488,12 +490,13 @@ class PipelineManager:
         self.database.update_status(project_id, stage, end, f"{step} 단계를 완료했습니다.")
         return output
 
-    def _input_hash(self, source: str, options: dict[str, Any]) -> str:
+    def _input_hash(self, source: str, options: dict[str, Any], active_strategy: dict | None = None) -> str:
         files = [source, options.get("manifest_path"), *(options.get("audio_paths") or []),
                  *(options.get("subtitle_paths") or {}).values()]
         payload = {
             "checkpoint_version": 2,
             "options": options,
+            "active_strategy": active_strategy,
             "files": [self._file_identity(value) for value in files if value],
         }
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()

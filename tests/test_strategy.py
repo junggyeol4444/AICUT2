@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 from backend.database import Database
@@ -44,6 +45,19 @@ class StrategyLearningTest(unittest.TestCase):
         self.assertEqual(versions[0]["status"], "ACTIVE")
         self.assertEqual(versions[1]["status"], "ROLLED_BACK")
         self.assertEqual([item["version_number"] for item in versions], [2, 1])
+
+    def test_only_explicitly_active_strategy_reaches_planning_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "strategy-input.db")
+            project = database.create_project({"file_path": "/media/live.mkv", "channel_ref": "channel"})
+            manifest = json.loads((Path(__file__).parent / "fixtures" / "analysis-manifest.json").read_text())
+            database.import_analysis(project["project_id"], manifest)
+            draft = database.save_strategy_version("channel", {"proposals": [{"decision": "PROMOTE"}]})
+            self.assertIsNone(database.analysis_input(project["project_id"])["production_strategy"])
+            database.activate_strategy_version(draft["strategy_version_id"])
+            strategy = database.analysis_input(project["project_id"])["production_strategy"]
+        self.assertEqual(strategy["status"], "ACTIVE")
+        self.assertEqual(strategy["strategy"]["proposals"][0]["decision"], "PROMOTE")
 
 
 if __name__ == "__main__":

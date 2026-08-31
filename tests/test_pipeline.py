@@ -99,6 +99,26 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(step["attempt_count"], 2)
             manager.shutdown()
 
+    def test_activating_a_learned_strategy_invalidates_planning_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv", "channel_ref": "channel"})
+            calls = []
+            manager = PipelineManager(database, probe=lambda _path: (
+                calls.append("probe") or SimpleNamespace(to_dict=lambda: {
+                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 0,
+                })
+            ))
+            manager._run(project["project_id"], {}, True, threading.Event())
+            first_hash = database.pipeline_steps(project["project_id"])[0]["input_hash"]
+            strategy = database.save_strategy_version("channel", {"proposals": [{"decision": "PROMOTE"}]})
+            database.activate_strategy_version(strategy["strategy_version_id"])
+            manager._run(project["project_id"], {}, True, threading.Event())
+            second_hash = database.pipeline_steps(project["project_id"])[0]["input_hash"]
+            self.assertNotEqual(first_hash, second_hash)
+            self.assertEqual(calls, ["probe", "probe"])
+            manager.shutdown()
+
     def test_corrupt_checkpoint_output_is_recomputed(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "pipeline.db")
