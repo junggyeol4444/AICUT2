@@ -167,6 +167,28 @@ class UploadTest(unittest.TestCase):
         self.assertEqual(job["error_message"], "cancelled")
         self.assertFalse(manager.cancel(self.upload["upload_id"]))
 
+    def test_manager_submits_only_uploads_whose_retry_deadline_is_due(self):
+        future = self.db.queue_upload("episode-operation")
+        self.db.set_upload_status(
+            future["upload_id"], "RETRY_QUEUED",
+            retry_at="2099-01-01T00:00:00+00:00", error_message="quota",
+        )
+        manager = UploadManager(self.db, FakeClient())
+        result = manager.submit_due(datetime(2026, 8, 31, tzinfo=timezone.utc))
+        manager.shutdown()
+        statuses = {job["upload_id"]: job["status"] for job in self.db.list_uploads()}
+        self.assertEqual(result, {
+            "submitted": [self.upload["upload_id"]], "skipped": [future["upload_id"]],
+        })
+        self.assertEqual(statuses[self.upload["upload_id"]], "COMPLETE")
+        self.assertEqual(statuses[future["upload_id"]], "RETRY_QUEUED")
+
+    def test_manager_rejects_naive_retry_scheduler_time(self):
+        manager = UploadManager(self.db, FakeClient())
+        with self.assertRaises(ValueError):
+            manager.submit_due(datetime(2026, 8, 31))
+        manager.shutdown()
+
     def test_resumable_client_maps_real_quota_reason(self):
         def opener(_request):
             raise HTTPError(

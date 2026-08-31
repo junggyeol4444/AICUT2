@@ -203,6 +203,31 @@ class UploadManager:
         event.set()
         return True
 
+    def submit_due(self, moment: datetime | None = None) -> dict[str, list[str]]:
+        """Submit queued jobs and retry jobs whose UTC deadline has elapsed."""
+        current = moment or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            raise ValueError("업로드 재시도 기준 시각에는 timezone 정보가 필요합니다.")
+        current = current.astimezone(timezone.utc)
+        submitted: list[str] = []
+        skipped: list[str] = []
+        for job in reversed(self.database.list_uploads()):
+            if job["status"] not in {"QUEUED", "RETRY_QUEUED"}:
+                continue
+            retry_at = job.get("retry_at")
+            if retry_at:
+                deadline = datetime.fromisoformat(retry_at)
+                if deadline.tzinfo is None:
+                    deadline = deadline.replace(tzinfo=timezone.utc)
+                if deadline.astimezone(timezone.utc) > current:
+                    skipped.append(job["upload_id"])
+                    continue
+            if self.submit(job["upload_id"]):
+                submitted.append(job["upload_id"])
+            else:
+                skipped.append(job["upload_id"])
+        return {"submitted": submitted, "skipped": skipped}
+
     def _run(self, upload_id: str) -> None:
         try:
             jobs = [job for job in self.database.list_uploads() if job["upload_id"] == upload_id]

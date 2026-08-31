@@ -164,6 +164,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                     raise ValueError("YouTube Analytics OAuth가 설정되지 않았습니다.")
                 manager = AnalyticsCollectionManager(DB, YouTubeAnalyticsClient(YOUTUBE_OAUTH.access_token))
                 self.json(manager.run_due(), HTTPStatus.OK)
+            elif path == "/api/uploads/run-due":
+                self.json(UPLOADS.submit_due(), HTTPStatus.ACCEPTED)
             elif path == "/api/strategies/analyze":
                 channel_ref = str(payload.get("channel_ref", "")).strip()
                 if not channel_ref:
