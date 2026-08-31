@@ -41,3 +41,16 @@ class DatabaseBackupManager:
             return {**result, "removed": removed}
         finally:
             self._lock.release()
+
+    def list(self) -> list[dict]:
+        if not self.directory.exists():
+            return []
+        backups = []
+        for path in sorted(self.directory.glob("aicut-*.sqlite3"), reverse=True):
+            stat = path.stat()
+            backups.append({
+                "name": path.name,
+                "size_bytes": stat.st_size,
+                "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+            })
+        return backups

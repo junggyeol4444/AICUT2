@@ -21,6 +21,8 @@ class DatabaseBackupTest(unittest.TestCase):
                 ).fetchone()
         self.assertEqual(stored[0], project["project_id"])
         self.assertGreater(result["size_bytes"], 0)
+        self.assertEqual(result["integrity"], "ok")
+        self.assertEqual(len(result["sha256"]), 64)
 
     def test_retention_prunes_only_old_aicut_backups(self):
         moments = iter([
@@ -41,9 +43,11 @@ class DatabaseBackupTest(unittest.TestCase):
             second = manager.create()
             owned = list(backup_dir.glob("aicut-*.sqlite3"))
             unrelated_exists = unrelated.exists()
+            listed = manager.list()
         self.assertEqual(len(owned), 1)
         self.assertIn(first["path"], second["removed"])
         self.assertTrue(unrelated_exists)
+        self.assertEqual([item["name"] for item in listed], [Path(second["path"]).name])
 
     def test_invalid_retention_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

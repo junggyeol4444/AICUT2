@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -73,10 +74,21 @@ class Database:
         try:
             with self.connect() as source_connection, sqlite3.connect(temporary) as backup_connection:
                 source_connection.backup(backup_connection)
+            with sqlite3.connect(temporary) as verification_connection:
+                integrity = verification_connection.execute("PRAGMA quick_check").fetchone()[0]
+            if integrity != "ok":
+                raise RuntimeError(f"SQLite backup 무결성 검사에 실패했습니다: {integrity}")
             os.replace(temporary, target)
         finally:
             temporary.unlink(missing_ok=True)
-        return {"path": str(target), "size_bytes": target.stat().st_size, "created_at": now()}
+        digest = hashlib.sha256()
+        with target.open("rb") as source_file:
+            for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return {
+            "path": str(target), "size_bytes": target.stat().st_size,
+            "sha256": digest.hexdigest(), "integrity": integrity, "created_at": now(),
+        }
 
     def create_project(self, payload: dict[str, Any]) -> dict[str, Any]:
         project_id = str(uuid.uuid4())
