@@ -14,7 +14,7 @@ from .database import Database
 from .pipeline import PipelineManager
 from .render import RenderError, RenderPlan, export_plan, render
 from .package import MetadataPackage, build_thumbnail_commands, extract_thumbnails, write_metadata_package
-from .upload import UploadManager, client_from_environment
+from .upload import UnconfiguredYouTubeClient, UploadManager, client_from_environment
 from .oauth import OAuthYouTubeClient, YouTubeOAuth
 from .token_store import EncryptedTokenStore
 from .analytics import AnalyticsCollectionManager, YouTubeAnalyticsClient
@@ -28,6 +28,7 @@ from .understanding import (
     validate_transcript_segments,
 )
 from .stt import build_stt_command, SttJob, transcribe_tracks
+from .scheduler import RuntimeScheduler
 from dataclasses import asdict
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +46,20 @@ YOUTUBE_OAUTH = YouTubeOAuth(
 )) else None
 if YOUTUBE_OAUTH and YOUTUBE_OAUTH.tokens:
     UPLOADS.client = OAuthYouTubeClient(YOUTUBE_OAUTH)
+SCHEDULER: RuntimeScheduler | None = None
+
+
+def scheduled_uploads() -> object:
+    if isinstance(UPLOADS.client, UnconfiguredYouTubeClient):
+        return {"disabled": "YouTube OAuth 또는 access token이 필요합니다."}
+    return UPLOADS.submit_due()
+
+
+def scheduled_analytics() -> object:
+    if not YOUTUBE_OAUTH or not YOUTUBE_OAUTH.tokens:
+        return {"disabled": "YouTube Analytics OAuth가 필요합니다."}
+    client = YouTubeAnalyticsClient(YOUTUBE_OAUTH.access_token)
+    return AnalyticsCollectionManager(DB, client).run_due()
 
 
 class ApiHandler(BaseHTTPRequestHandler):
@@ -74,6 +89,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.json(DB.logs())
             elif path == "/api/uploads":
                 self.json(DB.list_uploads())
+            elif path == "/api/runtime/scheduler":
+                self.json(SCHEDULER.status() if SCHEDULER else {"running": False})
             elif path == "/api/youtube/oauth/start":
                 if not YOUTUBE_OAUTH:
                     raise ValueError("YouTube OAuth 환경변수가 설정되지 않았습니다.")
@@ -377,12 +394,25 @@ class ApiHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    global SCHEDULER
     parser = argparse.ArgumentParser(description="AICUT local API and web server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
     args = parser.parse_args()
+    interval = float(os.environ.get("AICUT_SCHEDULER_INTERVAL_SEC", "60"))
+    SCHEDULER = RuntimeScheduler({
+        "uploads": scheduled_uploads,
+        "analytics": scheduled_analytics,
+    }, interval)
+    SCHEDULER.start()
     print(f"AICUT local runtime: http://{args.host}:{args.port}")
-    ThreadingHTTPServer((args.host, args.port), ApiHandler).serve_forever()
+    server = ThreadingHTTPServer((args.host, args.port), ApiHandler)
+    try:
+        server.serve_forever()
+    finally:
+        SCHEDULER.stop(5)
+        UPLOADS.shutdown()
+        server.server_close()
 
 
 if __name__ == "__main__":
