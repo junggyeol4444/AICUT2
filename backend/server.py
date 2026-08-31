@@ -32,6 +32,7 @@ from .scheduler import RuntimeScheduler
 from .auth import ApiKeyGuard
 from .http_utils import read_json_object
 from .backup import DatabaseBackupManager
+from .health import runtime_readiness
 from dataclasses import asdict
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +59,11 @@ BACKUPS = DatabaseBackupManager(
     DB, os.environ.get("AICUT_BACKUP_DIR", ROOT / "backups"),
     retention_count=int(os.environ.get("AICUT_BACKUP_RETENTION", "7")),
 )
+READINESS_STORAGE = os.environ.get("AICUT_OUTPUT_DIR", ROOT / "outputs")
+READINESS_MIN_FREE_BYTES = int(os.environ.get("AICUT_MIN_FREE_BYTES", "0"))
+READINESS_TOOLS = tuple(filter(None, (
+    item.strip() for item in os.environ.get("AICUT_REQUIRED_TOOLS", "").split(",")
+)))
 
 
 def scheduled_uploads() -> object:
@@ -84,6 +90,13 @@ class ApiHandler(BaseHTTPRequestHandler):
         try:
             if path == "/api/health":
                 self.json({"status": "ok", "service": "aicut-local-runtime"})
+            elif path == "/api/ready":
+                readiness = runtime_readiness(
+                    DB, READINESS_STORAGE, SCHEDULER.status() if SCHEDULER else {},
+                    min_free_bytes=READINESS_MIN_FREE_BYTES, required_tools=READINESS_TOOLS,
+                )
+                status = HTTPStatus.OK if readiness["status"] == "READY" else HTTPStatus.SERVICE_UNAVAILABLE
+                self.json(readiness, status)
             elif path == "/api/projects":
                 self.json(DB.list_projects())
             elif path.startswith("/api/projects/") and path.endswith("/candidates"):
