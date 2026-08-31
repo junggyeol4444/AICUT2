@@ -289,6 +289,15 @@ class Database:
             ).fetchone()
         return self._decode(dict(row), "manifest_json")
 
+    def latest_planning_version_for_episode(self, episode_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT v.planning_version_id,v.version_number,v.created_at FROM planning_versions v
+                JOIN episodes e ON e.project_id=v.project_id WHERE e.episode_id=?
+                ORDER BY v.version_number DESC LIMIT 1""", (episode_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def replace_retrieved_scenes(self, project_id: str, scenes: list[dict[str, Any]]) -> int:
         duration = float(self.get_project(project_id)["duration_sec"])
         with self.connect() as connection:

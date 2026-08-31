@@ -85,6 +85,10 @@ class AnalyticsCollectionManager:
                     job["youtube_video_id"], start, moment.astimezone(timezone.utc).date(), duration,
                 )
                 metrics["snapshot_label"] = job["snapshot_label"]
+                version = self.database.latest_planning_version_for_episode(job["episode_id"])
+                if version:
+                    metrics["planning_version_id"] = version["planning_version_id"]
+                    metrics["planning_version_number"] = version["version_number"]
                 self.database.save_performance(job["episode_id"], metrics)
                 self.database.set_analytics_collection_status(job["collection_id"], "COMPLETE")
                 completed += 1

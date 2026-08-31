@@ -4,7 +4,9 @@ import unittest
 from pathlib import Path
 
 from backend.database import Database
-from backend.performance import PerformanceError, performance_insights, validate_metrics
+from backend.performance import (
+    PerformanceError, attribute_retention_to_cuts, performance_insights, validate_metrics,
+)
 
 
 class PerformanceLearningTest(unittest.TestCase):
@@ -45,6 +47,28 @@ class PerformanceLearningTest(unittest.TestCase):
             snapshots = database.list_performance("episode-operation")
         self.assertEqual(snapshots[0]["performance_id"], saved["performance_id"])
         self.assertEqual(snapshots[0]["metrics"]["views"], 12000)
+
+    def test_retention_changes_are_mapped_to_non_linear_cut_roles(self):
+        cuts = [
+            {"sequence_order": 1, "source_start_sec": 500, "source_end_sec": 560,
+             "scene_role": "RESULT", "pacing_mode": "KEEP"},
+            {"sequence_order": 2, "source_start_sec": 100, "source_end_sec": 200,
+             "scene_role": "CONTEXT", "pacing_mode": "TRIM"},
+        ]
+        result = attribute_retention_to_cuts(self.metrics, cuts, {
+            "min_views": 1000, "min_retention_points": 4, "meaningful_change_ratio": .1,
+        })
+        self.assertEqual(result["status"], "READY")
+        self.assertEqual(result["observations"][0]["scene_role"], "RESULT")
+        self.assertEqual(result["observations"][0]["source_start_sec"], 500)
+        self.assertTrue(all(item["interpretation"] == "CORRELATION_ONLY" for item in result["observations"]))
+
+    def test_cut_attribution_marks_small_samples_instead_of_learning(self):
+        result = attribute_retention_to_cuts({**self.metrics, "views": 5}, [], {
+            "min_views": 100, "min_retention_points": 4, "meaningful_change_ratio": .1,
+        })
+        self.assertEqual(result["status"], "INSUFFICIENT_SAMPLE")
+        self.assertIn("MINIMUM_VIEWS_NOT_MET", result["reasons"])
 
 
 if __name__ == "__main__":

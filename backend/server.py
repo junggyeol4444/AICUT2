@@ -20,7 +20,7 @@ from .token_store import EncryptedTokenStore
 from .analytics import AnalyticsCollectionManager, YouTubeAnalyticsClient
 from .calibration import calibrate_pacing
 from .learning import analyze_source_output
-from .performance import performance_insights, validate_metrics
+from .performance import attribute_retention_to_cuts, performance_insights, validate_metrics
 from .producer import run_producer
 from .understanding import (
     PreprocessPlan, build_preprocess_commands, build_scan_plan, execute_preprocess,
@@ -126,6 +126,14 @@ class ApiHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/episodes/") and path.endswith("/performance"):
                 episode_id = path.split("/")[3]
                 metrics = validate_metrics(payload["metrics"])
+                version = DB.latest_planning_version_for_episode(episode_id)
+                if version:
+                    metrics["planning_version_id"] = version["planning_version_id"]
+                    metrics["planning_version_number"] = version["version_number"]
+                if payload.get("attribution_profile"):
+                    metrics["cut_attribution"] = attribute_retention_to_cuts(
+                        metrics, DB.get_timeline(episode_id), payload["attribution_profile"],
+                    )
                 snapshot = DB.save_performance(episode_id, metrics)
                 snapshot["insights"] = performance_insights(metrics, payload["profile"])
                 self.json(snapshot, HTTPStatus.CREATED)
