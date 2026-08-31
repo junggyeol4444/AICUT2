@@ -30,6 +30,7 @@ from .understanding import (
 from .stt import build_stt_command, SttJob, transcribe_tracks
 from .scheduler import RuntimeScheduler
 from .auth import ApiKeyGuard
+from .http_utils import read_json_object
 from dataclasses import asdict
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +50,9 @@ if YOUTUBE_OAUTH and YOUTUBE_OAUTH.tokens:
     UPLOADS.client = OAuthYouTubeClient(YOUTUBE_OAUTH)
 SCHEDULER: RuntimeScheduler | None = None
 API_AUTH = ApiKeyGuard(os.environ.get("AICUT_API_KEY"))
+MAX_REQUEST_BYTES = int(os.environ.get("AICUT_MAX_REQUEST_BYTES", str(1024 * 1024)))
+if MAX_REQUEST_BYTES <= 0:
+    raise ValueError("AICUT_MAX_REQUEST_BYTES는 0보다 커야 합니다.")
 
 
 def scheduled_uploads() -> object:
@@ -368,8 +372,10 @@ class ApiHandler(BaseHTTPRequestHandler):
             self.json({"error": "not_found", "id": str(error.args[0])}, HTTPStatus.NOT_FOUND)
 
     def body(self) -> dict:
-        length = int(self.headers.get("Content-Length", 0))
-        return json.loads(self.rfile.read(length) or b"{}")
+        return read_json_object(
+            self.rfile, self.headers.get("Content-Length"), self.headers.get("Content-Type"),
+            max_bytes=MAX_REQUEST_BYTES,
+        )
 
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
