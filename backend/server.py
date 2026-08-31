@@ -29,6 +29,7 @@ from .understanding import (
 )
 from .stt import build_stt_command, SttJob, transcribe_tracks
 from .scheduler import RuntimeScheduler
+from .auth import ApiKeyGuard
 from dataclasses import asdict
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +48,7 @@ YOUTUBE_OAUTH = YouTubeOAuth(
 if YOUTUBE_OAUTH and YOUTUBE_OAUTH.tokens:
     UPLOADS.client = OAuthYouTubeClient(YOUTUBE_OAUTH)
 SCHEDULER: RuntimeScheduler | None = None
+API_AUTH = ApiKeyGuard(os.environ.get("AICUT_API_KEY"))
 
 
 def scheduled_uploads() -> object:
@@ -68,6 +70,8 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        if not API_AUTH.authorized(path, self.headers):
+            return self.unauthorized()
         try:
             if path == "/api/health":
                 self.json({"status": "ok", "service": "aicut-local-runtime"})
@@ -122,6 +126,8 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if not API_AUTH.authorized(path, self.headers):
+            return self.unauthorized()
         try:
             payload = self.body()
             if path == "/api/projects":
@@ -364,6 +370,25 @@ class ApiHandler(BaseHTTPRequestHandler):
     def body(self) -> dict:
         length = int(self.headers.get("Content-Length", 0))
         return json.loads(self.rfile.read(length) or b"{}")
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.end_headers()
+
+    def unauthorized(self) -> None:
+        encoded = json.dumps({
+            "error": "unauthorized", "message": "유효한 Bearer API key가 필요합니다.",
+        }, ensure_ascii=False).encode()
+        self.send_response(HTTPStatus.UNAUTHORIZED)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("WWW-Authenticate", 'Bearer realm="aicut"')
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(encoded)
 
     def json(self, value: object, status: HTTPStatus = HTTPStatus.OK) -> None:
         encoded = json.dumps(value, ensure_ascii=False).encode()
