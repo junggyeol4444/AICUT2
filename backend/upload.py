@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import threading
 import json
+import mimetypes
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Protocol
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
@@ -93,6 +95,51 @@ class YouTubeResumableClient:
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
             raise UploadError("YouTube 업로드 완료 응답에 video id가 없습니다.") from error
         return video_id
+
+    def upload_thumbnail(self, video_id: str, image_path: str) -> dict:
+        path = os.path.abspath(os.path.expanduser(image_path))
+        content_type = mimetypes.guess_type(path)[0]
+        if not video_id or not os.path.isfile(path) or content_type not in {"image/jpeg", "image/png"}:
+            raise UploadError("썸네일에는 업로드된 video id와 JPEG 또는 PNG 파일이 필요합니다.")
+        with open(path, "rb") as source:
+            data = source.read()
+        endpoint = f"https://www.googleapis.com/upload/youtube/v3/thumbnails/set?{urlencode({'videoId': video_id})}"
+        response = self._open(Request(endpoint, data=data, method="POST", headers={
+            "Authorization": f"Bearer {self.access_token}", "Content-Type": content_type,
+            "Content-Length": str(len(data)),
+        }))
+        return self._json_response(response, "YouTube 썸네일 응답이 올바르지 않습니다.")
+
+    def update_video_status(
+        self, video_id: str, privacy_status: str, publish_at: datetime | None = None,
+    ) -> dict:
+        if privacy_status not in {"PRIVATE", "UNLISTED", "PUBLIC"} or not video_id:
+            raise UploadError("영상 공개 상태 또는 video id가 올바르지 않습니다.")
+        status = {"privacyStatus": privacy_status.lower()}
+        if publish_at:
+            if publish_at.tzinfo is None or publish_at <= datetime.now(timezone.utc):
+                raise UploadError("예약 공개 시각은 timezone-aware 미래 시각이어야 합니다.")
+            if privacy_status != "PRIVATE":
+                raise UploadError("YouTube 예약 공개는 PRIVATE 상태에서만 설정할 수 있습니다.")
+            status["publishAt"] = publish_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        data = json.dumps({"id": video_id, "status": status}).encode()
+        response = self._open(Request(
+            "https://www.googleapis.com/youtube/v3/videos?part=status", data=data, method="PUT", headers={
+                "Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json",
+                "Content-Length": str(len(data)),
+            },
+        ))
+        return self._json_response(response, "YouTube 공개 상태 응답이 올바르지 않습니다.")
+
+    @staticmethod
+    def _json_response(response, message: str) -> dict:
+        try:
+            payload = json.loads(response.read().decode("utf-8"))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise UploadError(message) from error
+        if not isinstance(payload, dict):
+            raise UploadError(message)
+        return payload
 
     def _open(self, request: Request, allow_resume: bool = False):
         try:

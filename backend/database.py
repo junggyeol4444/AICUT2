@@ -49,6 +49,15 @@ class Database:
             timeline_columns = {row["name"] for row in connection.execute("PRAGMA table_info(edit_timeline)")}
             if "pacing_reason" not in timeline_columns:
                 connection.execute("ALTER TABLE edit_timeline ADD COLUMN pacing_reason TEXT NOT NULL DEFAULT ''")
+            upload_columns = {row["name"] for row in connection.execute("PRAGMA table_info(upload_jobs)")}
+            upload_migrations = {
+                "publication_status": "ALTER TABLE upload_jobs ADD COLUMN publication_status TEXT NOT NULL DEFAULT 'PRIVATE'",
+                "scheduled_publish_at": "ALTER TABLE upload_jobs ADD COLUMN scheduled_publish_at TEXT",
+                "thumbnail_uploaded_at": "ALTER TABLE upload_jobs ADD COLUMN thumbnail_uploaded_at TEXT",
+            }
+            for column, statement in upload_migrations.items():
+                if column not in upload_columns:
+                    connection.execute(statement)
 
     def create_project(self, payload: dict[str, Any]) -> dict[str, Any]:
         project_id = str(uuid.uuid4())
@@ -571,12 +580,12 @@ class Database:
         with self.connect() as connection:
             if status:
                 rows = connection.execute(
-                    """SELECT u.*,e.output_mp4_path,e.metadata_json FROM upload_jobs u
+                    """SELECT u.*,e.output_mp4_path,e.thumbnail_path,e.metadata_json FROM upload_jobs u
                     JOIN episodes e USING(episode_id) WHERE u.status=? ORDER BY u.created_at""", (status,),
                 ).fetchall()
             else:
                 rows = connection.execute(
-                    """SELECT u.*,e.output_mp4_path,e.metadata_json FROM upload_jobs u
+                    """SELECT u.*,e.output_mp4_path,e.thumbnail_path,e.metadata_json FROM upload_jobs u
                     JOIN episodes e USING(episode_id) ORDER BY u.created_at DESC"""
                 ).fetchall()
         result = []
@@ -601,6 +610,33 @@ class Database:
             )
             if not result.rowcount:
                 raise KeyError(upload_id)
+            row = connection.execute("SELECT * FROM upload_jobs WHERE upload_id=?", (upload_id,)).fetchone()
+        return dict(row)
+
+    def record_upload_publication(
+        self, upload_id: str, publication_status: str, scheduled_publish_at: str | None = None,
+    ) -> dict[str, Any]:
+        if publication_status not in {"PRIVATE", "UNLISTED", "PUBLIC", "SCHEDULED"}:
+            raise ValueError("지원하지 않는 YouTube 공개 상태입니다.")
+        with self.connect() as connection:
+            result = connection.execute(
+                """UPDATE upload_jobs SET publication_status=?,scheduled_publish_at=?,updated_at=?
+                WHERE upload_id=? AND status='COMPLETE'""",
+                (publication_status, scheduled_publish_at, now(), upload_id),
+            )
+            if not result.rowcount:
+                raise ValueError("완료된 업로드만 공개 상태를 변경할 수 있습니다.")
+            row = connection.execute("SELECT * FROM upload_jobs WHERE upload_id=?", (upload_id,)).fetchone()
+        return dict(row)
+
+    def record_thumbnail_uploaded(self, upload_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            result = connection.execute(
+                """UPDATE upload_jobs SET thumbnail_uploaded_at=?,updated_at=?
+                WHERE upload_id=? AND status='COMPLETE'""", (now(), now(), upload_id),
+            )
+            if not result.rowcount:
+                raise ValueError("완료된 업로드에만 썸네일을 적용할 수 있습니다.")
             row = connection.execute("SELECT * FROM upload_jobs WHERE upload_id=?", (upload_id,)).fetchone()
         return dict(row)
 

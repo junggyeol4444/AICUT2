@@ -5,6 +5,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -119,3 +120,13 @@ class OAuthYouTubeClient:
 
     def upload(self, file_path: str, metadata: dict, privacy_status: str) -> str:
         return self.uploader_factory(self.oauth.access_token()).upload(file_path, metadata, privacy_status)
+
+    def upload_thumbnail(self, video_id: str, image_path: str) -> dict:
+        return self.uploader_factory(self.oauth.access_token()).upload_thumbnail(video_id, image_path)
+
+    def update_video_status(
+        self, video_id: str, privacy_status: str, publish_at: datetime | None = None,
+    ) -> dict:
+        return self.uploader_factory(self.oauth.access_token()).update_video_status(
+            video_id, privacy_status, publish_at,
+        )

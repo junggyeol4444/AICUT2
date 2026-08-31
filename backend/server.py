@@ -4,7 +4,7 @@ import argparse
 import json
 import mimetypes
 import os
-from datetime import date
+from datetime import date, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -299,6 +299,33 @@ class ApiHandler(BaseHTTPRequestHandler):
                 upload_id = path.split("/")[3]
                 accepted = UPLOADS.submit(upload_id)
                 self.json({"upload_id": upload_id, "accepted": accepted}, HTTPStatus.ACCEPTED if accepted else HTTPStatus.CONFLICT)
+            elif path.startswith("/api/uploads/") and path.endswith("/thumbnail"):
+                upload_id = path.split("/")[3]
+                job = next((item for item in DB.list_uploads() if item["upload_id"] == upload_id), None)
+                if not job or job["status"] != "COMPLETE" or not job.get("youtube_video_id"):
+                    raise ValueError("완료된 YouTube 업로드가 필요합니다.")
+                thumbnail_path = payload.get("thumbnail_path") or job.get("thumbnail_path")
+                method = getattr(UPLOADS.client, "upload_thumbnail", None)
+                if not method:
+                    raise ValueError("현재 YouTube 클라이언트가 썸네일 업로드를 지원하지 않습니다.")
+                result = method(job["youtube_video_id"], thumbnail_path)
+                self.json({"upload": DB.record_thumbnail_uploaded(upload_id), "youtube": result})
+            elif path.startswith("/api/uploads/") and path.endswith("/publication"):
+                upload_id = path.split("/")[3]
+                job = next((item for item in DB.list_uploads() if item["upload_id"] == upload_id), None)
+                if not job or job["status"] != "COMPLETE" or not job.get("youtube_video_id"):
+                    raise ValueError("완료된 YouTube 업로드가 필요합니다.")
+                privacy = str(payload.get("privacy_status", "")).upper()
+                publish_at = datetime.fromisoformat(payload["publish_at"]) if payload.get("publish_at") else None
+                method = getattr(UPLOADS.client, "update_video_status", None)
+                if not method:
+                    raise ValueError("현재 YouTube 클라이언트가 공개 상태 변경을 지원하지 않습니다.")
+                result = method(job["youtube_video_id"], privacy, publish_at)
+                recorded = DB.record_upload_publication(
+                    upload_id, "SCHEDULED" if publish_at else privacy,
+                    publish_at.isoformat() if publish_at else None,
+                )
+                self.json({"upload": recorded, "youtube": result})
             else:
                 self.json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
         except ValueError as error:

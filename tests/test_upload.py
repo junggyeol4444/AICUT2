@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 
 from backend.database import Database
-from backend.upload import QuotaExceeded, UploadManager, YouTubeResumableClient, next_quota_reset
+from backend.upload import QuotaExceeded, UploadError, UploadManager, YouTubeResumableClient, next_quota_reset
 
 
 class FakeClient:
@@ -53,6 +53,10 @@ class UploadTest(unittest.TestCase):
         job = self.db.list_uploads()[0]
         self.assertEqual((job["status"], job["youtube_video_id"]), ("COMPLETE", "youtube-video-123"))
         self.assertEqual(client.calls[0][2], "PRIVATE")
+        published = self.db.record_upload_publication(self.upload["upload_id"], "PUBLIC")
+        thumbnail = self.db.record_thumbnail_uploaded(self.upload["upload_id"])
+        self.assertEqual(published["publication_status"], "PUBLIC")
+        self.assertIsNotNone(thumbnail["thumbnail_uploaded_at"])
 
     def test_quota_retry_uses_next_pacific_midnight(self):
         # 2026-08-27 is PDT (UTC-7), so the next PT midnight is 07:00 UTC.
@@ -120,3 +124,35 @@ class UploadTest(unittest.TestCase):
             client = YouTubeResumableClient("access-token", opener=opener)
             with self.assertRaises(QuotaExceeded):
                 client.upload(str(video), {"selected_title": "title"}, "UNLISTED")
+
+    def test_thumbnail_upload_uses_owned_video_id_and_image_content_type(self):
+        calls = []
+
+        def opener(request):
+            calls.append(request)
+            return FakeResponse(json.dumps({"items": [{"default": {"url": "thumbnail"}}]}).encode())
+
+        with tempfile.TemporaryDirectory() as directory:
+            thumbnail = Path(directory) / "thumbnail.jpg"
+            thumbnail.write_bytes(b"jpeg")
+            result = YouTubeResumableClient("token", opener=opener).upload_thumbnail("video-1", str(thumbnail))
+        self.assertIn("videoId=video-1", calls[0].full_url)
+        self.assertEqual(calls[0].get_header("Content-type"), "image/jpeg")
+        self.assertIn("items", result)
+
+    def test_publication_update_supports_public_and_scheduled_private(self):
+        calls = []
+
+        def opener(request):
+            calls.append(json.loads(request.data))
+            return FakeResponse(json.dumps({"id": "video-1", "status": calls[-1]["status"]}).encode())
+
+        client = YouTubeResumableClient("token", opener=opener)
+        client.update_video_status("video-1", "PUBLIC")
+        client.update_video_status(
+            "video-1", "PRIVATE", datetime(2099, 1, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(calls[0]["status"]["privacyStatus"], "public")
+        self.assertEqual(calls[1]["status"]["publishAt"], "2099-01-01T00:00:00Z")
+        with self.assertRaises(UploadError):
+            client.update_video_status("video-1", "PUBLIC", datetime(2099, 1, 1, tzinfo=timezone.utc))
