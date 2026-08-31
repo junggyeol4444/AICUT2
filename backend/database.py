@@ -634,6 +634,22 @@ class Database:
             row = connection.execute("SELECT * FROM upload_jobs WHERE upload_id=?", (upload_id,)).fetchone()
         return dict(row)
 
+    def recover_interrupted_uploads(self) -> list[str]:
+        """Move uploads abandoned by a previous process back to the durable retry queue."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT upload_id FROM upload_jobs WHERE status='UPLOADING' ORDER BY created_at"
+            ).fetchall()
+            upload_ids = [row["upload_id"] for row in rows]
+            if upload_ids:
+                connection.execute(
+                    """UPDATE upload_jobs SET status='RETRY_QUEUED',retry_at=NULL,
+                    error_message='이전 프로세스에서 중단된 업로드를 복구했습니다.',updated_at=?
+                    WHERE status='UPLOADING'""",
+                    (now(),),
+                )
+        return upload_ids
+
     def record_upload_publication(
         self, upload_id: str, publication_status: str, scheduled_publish_at: str | None = None,
     ) -> dict[str, Any]:

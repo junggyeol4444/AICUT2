@@ -239,6 +239,19 @@ class UploadTest(unittest.TestCase):
         self.assertEqual(completed["uploaded_bytes"], 0)
         self.assertIsNone(completed["upload_session_url"])
 
+    def test_new_manager_recovers_upload_abandoned_by_previous_process(self):
+        self.db.set_upload_progress(
+            self.upload["upload_id"], "https://upload.example/interrupted", 262_144,
+        )
+        self.db.set_upload_status(self.upload["upload_id"], "UPLOADING")
+        manager = UploadManager(self.db, FakeClient())
+        recovered = self.db.list_uploads(include_resume_state=True)[0]
+        self.assertEqual(manager.recovered_upload_ids, [self.upload["upload_id"]])
+        self.assertEqual(recovered["status"], "RETRY_QUEUED")
+        self.assertEqual(recovered["uploaded_bytes"], 262_144)
+        self.assertIn("이전 프로세스", recovered["error_message"])
+        manager.shutdown()
+
     def test_resumable_client_maps_real_quota_reason(self):
         def opener(_request):
             raise HTTPError(

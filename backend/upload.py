@@ -188,13 +188,19 @@ def next_quota_reset(now: datetime | None = None) -> datetime:
 
 
 class UploadManager:
-    def __init__(self, database: Database, client: UploadClient, max_workers: int = 1):
+    def __init__(
+        self, database: Database, client: UploadClient, max_workers: int = 1,
+        *, recover_interrupted: bool = True,
+    ):
         self.database = database
         self.client = client
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="aicut-upload")
         self._active: set[str] = set()
         self._cancel: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
+        self.recovered_upload_ids = (
+            self.database.recover_interrupted_uploads() if recover_interrupted else []
+        )
 
     def submit(self, upload_id: str) -> bool:
         with self._lock:
