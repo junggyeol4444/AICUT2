@@ -118,8 +118,17 @@ class OAuthYouTubeClient:
     def __init__(self, oauth: YouTubeOAuth, *, uploader_factory: Callable = YouTubeResumableClient):
         self.oauth, self.uploader_factory = oauth, uploader_factory
 
-    def upload(self, file_path: str, metadata: dict, privacy_status: str) -> str:
-        return self.uploader_factory(self.oauth.access_token()).upload(file_path, metadata, privacy_status)
+    def upload(
+        self, file_path: str, metadata: dict, privacy_status: str,
+        cancel_event: threading.Event | None = None,
+        resume_session_url: str | None = None, resume_offset: int = 0,
+        checkpoint: Callable[[str, int], None] | None = None,
+    ) -> str:
+        return self.uploader_factory(self.oauth.access_token()).upload(
+            file_path, metadata, privacy_status, cancel_event=cancel_event,
+            resume_session_url=resume_session_url, resume_offset=resume_offset,
+            checkpoint=checkpoint,
+        )
 
     def upload_thumbnail(self, video_id: str, image_path: str) -> dict:
         return self.uploader_factory(self.oauth.access_token()).upload_thumbnail(video_id, image_path)

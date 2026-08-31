@@ -113,6 +113,8 @@ CREATE TABLE IF NOT EXISTS upload_jobs (
   publication_status TEXT NOT NULL DEFAULT 'PRIVATE' CHECK (publication_status IN ('PRIVATE','UNLISTED','PUBLIC','SCHEDULED')),
   scheduled_publish_at TEXT,
   thumbnail_uploaded_at TEXT,
+  upload_session_url TEXT,
+  uploaded_bytes INTEGER NOT NULL DEFAULT 0 CHECK (uploaded_bytes >= 0),
   retry_at TEXT,
   error_message TEXT,
   created_at TEXT NOT NULL,

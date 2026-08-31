@@ -46,19 +46,24 @@ class OAuthTest(unittest.TestCase):
             oauth.exchange_callback("code", "unknown-state")
 
     def test_oauth_upload_client_uses_fresh_access_token(self):
-        uploads = []
+        uploads, options = [], []
 
         class Uploader:
             def __init__(self, token):
                 uploads.append(token)
 
-            def upload(self, *_args):
+            def upload(self, *_args, **kwargs):
+                options.append(kwargs)
                 return "video-1"
 
         oauth = SimpleNamespace(access_token=lambda: "fresh-token")
         client = OAuthYouTubeClient(oauth, uploader_factory=Uploader)
-        self.assertEqual(client.upload("video.mp4", {}, "PRIVATE"), "video-1")
+        self.assertEqual(client.upload(
+            "video.mp4", {}, "PRIVATE", resume_session_url="session", resume_offset=256,
+        ), "video-1")
         self.assertEqual(uploads, ["fresh-token"])
+        self.assertEqual(options[0]["resume_session_url"], "session")
+        self.assertEqual(options[0]["resume_offset"], 256)
 
     def test_encrypted_refresh_token_restores_after_restart(self):
         def opener(_request):

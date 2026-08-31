@@ -54,6 +54,8 @@ class Database:
                 "publication_status": "ALTER TABLE upload_jobs ADD COLUMN publication_status TEXT NOT NULL DEFAULT 'PRIVATE'",
                 "scheduled_publish_at": "ALTER TABLE upload_jobs ADD COLUMN scheduled_publish_at TEXT",
                 "thumbnail_uploaded_at": "ALTER TABLE upload_jobs ADD COLUMN thumbnail_uploaded_at TEXT",
+                "upload_session_url": "ALTER TABLE upload_jobs ADD COLUMN upload_session_url TEXT",
+                "uploaded_bytes": "ALTER TABLE upload_jobs ADD COLUMN uploaded_bytes INTEGER NOT NULL DEFAULT 0",
             }
             for column, statement in upload_migrations.items():
                 if column not in upload_columns:
@@ -576,7 +578,9 @@ class Database:
             row = connection.execute("SELECT * FROM upload_jobs WHERE upload_id=?", (upload_id,)).fetchone()
         return dict(row)
 
-    def list_uploads(self, status: str | None = None) -> list[dict[str, Any]]:
+    def list_uploads(
+        self, status: str | None = None, *, include_resume_state: bool = False,
+    ) -> list[dict[str, Any]]:
         with self.connect() as connection:
             if status:
                 rows = connection.execute(
@@ -592,6 +596,9 @@ class Database:
         for row in rows:
             item = dict(row)
             item["metadata"] = json.loads(item.pop("metadata_json"))
+            if not include_resume_state:
+                item.pop("upload_session_url", None)
+                item.pop("uploaded_bytes", None)
             result.append(item)
         return result
 
@@ -607,6 +614,20 @@ class Database:
                 """UPDATE upload_jobs SET status=?,youtube_video_id=COALESCE(?,youtube_video_id),
                 retry_at=?,error_message=?,updated_at=? WHERE upload_id=?""",
                 (status, youtube_video_id, retry_at, error_message, now(), upload_id),
+            )
+            if not result.rowcount:
+                raise KeyError(upload_id)
+            row = connection.execute("SELECT * FROM upload_jobs WHERE upload_id=?", (upload_id,)).fetchone()
+        return dict(row)
+
+    def set_upload_progress(self, upload_id: str, session_url: str | None, uploaded_bytes: int) -> dict[str, Any]:
+        if uploaded_bytes < 0 or (uploaded_bytes and not session_url):
+            raise ValueError("업로드 진행률에는 세션 URL과 0 이상의 바이트가 필요합니다.")
+        with self.connect() as connection:
+            result = connection.execute(
+                """UPDATE upload_jobs SET upload_session_url=?,uploaded_bytes=?,updated_at=?
+                WHERE upload_id=?""",
+                (session_url, uploaded_bytes, now(), upload_id),
             )
             if not result.rowcount:
                 raise KeyError(upload_id)

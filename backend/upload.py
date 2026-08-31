@@ -53,6 +53,8 @@ class YouTubeResumableClient:
     def upload(
         self, file_path: str, metadata: dict, privacy_status: str,
         cancel_event: threading.Event | None = None,
+        resume_session_url: str | None = None, resume_offset: int = 0,
+        checkpoint: Callable[[str, int], None] | None = None,
     ) -> str:
         path = os.path.abspath(os.path.expanduser(file_path))
         if not os.path.isfile(path):
@@ -66,22 +68,29 @@ class YouTubeResumableClient:
         total = os.path.getsize(path)
         if total <= 0:
             raise UploadError("빈 영상 파일은 업로드할 수 없습니다.")
+        if resume_offset < 0 or resume_offset >= total or (resume_offset and not resume_session_url):
+            raise UploadError("저장된 resumable upload 진행 위치가 영상 범위를 벗어났습니다.")
         body = json.dumps({
             "snippet": {"title": title, "description": str(metadata.get("description", "")),
                         "tags": list(metadata.get("tags", []))},
             "status": {"privacyStatus": privacy_status.lower()},
         }, ensure_ascii=False).encode()
-        request = Request(self.endpoint, data=body, method="POST", headers={
-            "Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json; charset=UTF-8",
-            "Content-Length": str(len(body)), "X-Upload-Content-Length": str(total),
-            "X-Upload-Content-Type": "video/mp4",
-        })
-        response = self._open(request)
-        session_url = response.headers.get("Location")
+        session_url = resume_session_url
         if not session_url:
-            raise UploadError("YouTube가 resumable upload 세션 URL을 반환하지 않았습니다.")
-        sent = 0
+            request = Request(self.endpoint, data=body, method="POST", headers={
+                "Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json; charset=UTF-8",
+                "Content-Length": str(len(body)), "X-Upload-Content-Length": str(total),
+                "X-Upload-Content-Type": "video/mp4",
+            })
+            response = self._open(request)
+            session_url = response.headers.get("Location")
+            if not session_url:
+                raise UploadError("YouTube가 resumable upload 세션 URL을 반환하지 않았습니다.")
+            if checkpoint:
+                checkpoint(session_url, 0)
+        sent = resume_offset
         with open(path, "rb") as source:
+            source.seek(sent)
             while sent < total:
                 if cancel_event and cancel_event.is_set():
                     raise UploadCancelled("사용자 요청으로 YouTube 업로드를 취소했습니다.")
@@ -96,6 +105,8 @@ class YouTubeResumableClient:
                     accepted = response.headers.get("Range", "").rsplit("-", 1)[-1]
                     sent = int(accepted) + 1 if accepted.isdigit() else end + 1
                     source.seek(sent)
+                    if checkpoint:
+                        checkpoint(session_url, sent)
                 else:
                     sent = end + 1
                 self.progress(sent, total)
@@ -211,7 +222,7 @@ class UploadManager:
         current = current.astimezone(timezone.utc)
         submitted: list[str] = []
         skipped: list[str] = []
-        for job in reversed(self.database.list_uploads()):
+        for job in reversed(self.database.list_uploads(include_resume_state=True)):
             if job["status"] not in {"QUEUED", "RETRY_QUEUED"}:
                 continue
             retry_at = job.get("retry_at")
@@ -230,7 +241,10 @@ class UploadManager:
 
     def _run(self, upload_id: str) -> None:
         try:
-            jobs = [job for job in self.database.list_uploads() if job["upload_id"] == upload_id]
+            jobs = [
+                job for job in self.database.list_uploads(include_resume_state=True)
+                if job["upload_id"] == upload_id
+            ]
             if not jobs:
                 raise KeyError(upload_id)
             job = jobs[0]
@@ -240,9 +254,18 @@ class UploadManager:
             event = self._cancel[upload_id]
             parameters = inspect.signature(self.client.upload).parameters
             kwargs = {"cancel_event": event} if "cancel_event" in parameters else {}
+            if "resume_session_url" in parameters:
+                kwargs.update({
+                    "resume_session_url": job.get("upload_session_url"),
+                    "resume_offset": int(job.get("uploaded_bytes") or 0),
+                    "checkpoint": lambda url, offset: self.database.set_upload_progress(
+                        upload_id, url, offset,
+                    ),
+                })
             video_id = self.client.upload(
                 job["output_mp4_path"], job["metadata"], job["privacy_status"], **kwargs,
             )
+            self.database.set_upload_progress(upload_id, None, 0)
             self.database.set_upload_status(upload_id, "COMPLETE", youtube_video_id=video_id)
             self.database.schedule_analytics_snapshots(job["episode_id"], video_id)
         except UploadCancelled as error:

@@ -145,6 +145,27 @@ class UploadTest(unittest.TestCase):
                 )
         self.assertEqual([request.get_method() for request in calls], ["POST", "PUT"])
 
+    def test_resumable_client_continues_from_persisted_session_and_offset(self):
+        calls = []
+
+        def opener(request):
+            calls.append(request)
+            return FakeResponse(json.dumps({"id": "video-resumed"}).encode())
+
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "episode.mp4"
+            video.write_bytes(b"x" * 300_000)
+            client = YouTubeResumableClient("token", chunk_size=256 * 1024, opener=opener)
+            video_id = client.upload(
+                str(video), {"selected_title": "title"}, "PRIVATE",
+                resume_session_url="https://upload.example/existing", resume_offset=262_144,
+            )
+        self.assertEqual(video_id, "video-resumed")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].get_method(), "PUT")
+        self.assertEqual(calls[0].full_url, "https://upload.example/existing")
+        self.assertEqual(calls[0].get_header("Content-range"), "bytes 262144-299999/300000")
+
     def test_manager_cancel_returns_job_to_retry_queue(self):
         class CancellableClient:
             def __init__(inner):
@@ -188,6 +209,35 @@ class UploadTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             manager.submit_due(datetime(2026, 8, 31))
         manager.shutdown()
+
+    def test_manager_persists_chunk_checkpoint_and_reuses_it_after_cancel(self):
+        class CheckpointClient:
+            def upload(
+                inner, _path, _metadata, _privacy, cancel_event=None,
+                resume_session_url=None, resume_offset=0, checkpoint=None,
+            ):
+                if not resume_session_url:
+                    checkpoint("https://upload.example/durable", 262_144)
+                    raise UploadCancelled("restart")
+                self.assertEqual(resume_session_url, "https://upload.example/durable")
+                self.assertEqual(resume_offset, 262_144)
+                return "resumed-video"
+
+        manager = UploadManager(self.db, CheckpointClient())
+        manager.submit(self.upload["upload_id"])
+        manager.shutdown()
+        interrupted = self.db.list_uploads(include_resume_state=True)[0]
+        self.assertEqual(interrupted["uploaded_bytes"], 262_144)
+        self.assertEqual(interrupted["status"], "RETRY_QUEUED")
+        self.assertNotIn("upload_session_url", self.db.list_uploads()[0])
+
+        manager = UploadManager(self.db, CheckpointClient())
+        manager.submit(self.upload["upload_id"])
+        manager.shutdown()
+        completed = self.db.list_uploads(include_resume_state=True)[0]
+        self.assertEqual(completed["status"], "COMPLETE")
+        self.assertEqual(completed["uploaded_bytes"], 0)
+        self.assertIsNone(completed["upload_session_url"])
 
     def test_resumable_client_maps_real_quota_reason(self):
         def opener(_request):
