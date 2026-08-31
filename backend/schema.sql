@@ -146,6 +146,16 @@ CREATE TABLE IF NOT EXISTS analytics_collection_jobs (
   UNIQUE (episode_id, snapshot_label)
 );
 
+CREATE TABLE IF NOT EXISTS strategy_versions (
+  strategy_version_id TEXT PRIMARY KEY,
+  channel_ref TEXT NOT NULL,
+  version_number INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('DRAFT','ACTIVE','ROLLED_BACK')),
+  strategy_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (channel_ref, version_number)
+);
+
 CREATE TABLE IF NOT EXISTS transcript_segments (
   segment_id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,

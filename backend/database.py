@@ -754,6 +754,64 @@ class Database:
             result.append(value)
         return result
 
+    def list_channel_performance(self, channel_ref: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT s.* FROM performance_snapshots s JOIN episodes e USING(episode_id)
+                JOIN projects p USING(project_id) WHERE p.channel_ref=? ORDER BY s.collected_at""",
+                (channel_ref,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            value["metrics"] = json.loads(value.pop("metrics_json"))
+            result.append(value)
+        return result
+
+    def save_strategy_version(self, channel_ref: str, strategy: dict[str, Any]) -> dict[str, Any]:
+        with self.connect() as connection:
+            version = connection.execute(
+                "SELECT COALESCE(MAX(version_number),0)+1 FROM strategy_versions WHERE channel_ref=?",
+                (channel_ref,),
+            ).fetchone()[0]
+            strategy_id = str(uuid.uuid4())
+            connection.execute(
+                """INSERT INTO strategy_versions
+                (strategy_version_id,channel_ref,version_number,status,strategy_json,created_at)
+                VALUES(?,?,?,'DRAFT',?,?)""",
+                (strategy_id, channel_ref, version, json.dumps(strategy, ensure_ascii=False), now()),
+            )
+            row = connection.execute(
+                "SELECT * FROM strategy_versions WHERE strategy_version_id=?", (strategy_id,),
+            ).fetchone()
+        return self._decode(dict(row), "strategy_json")
+
+    def activate_strategy_version(self, strategy_version_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            target = connection.execute(
+                "SELECT channel_ref FROM strategy_versions WHERE strategy_version_id=?", (strategy_version_id,),
+            ).fetchone()
+            if not target:
+                raise KeyError(strategy_version_id)
+            connection.execute(
+                "UPDATE strategy_versions SET status='ROLLED_BACK' WHERE channel_ref=? AND status='ACTIVE'",
+                (target["channel_ref"],),
+            )
+            connection.execute(
+                "UPDATE strategy_versions SET status='ACTIVE' WHERE strategy_version_id=?", (strategy_version_id,),
+            )
+            row = connection.execute(
+                "SELECT * FROM strategy_versions WHERE strategy_version_id=?", (strategy_version_id,),
+            ).fetchone()
+        return self._decode(dict(row), "strategy_json")
+
+    def list_strategy_versions(self, channel_ref: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM strategy_versions WHERE channel_ref=? ORDER BY version_number DESC", (channel_ref,),
+            ).fetchall()
+        return [self._decode(dict(row), "strategy_json") for row in rows]
+
     def replace_scan_windows(self, project_id: str, windows: list[dict[str, Any]]) -> int:
         with self.connect() as connection:
             if not connection.execute("SELECT 1 FROM projects WHERE project_id=?", (project_id,)).fetchone():

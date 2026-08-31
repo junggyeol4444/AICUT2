@@ -18,6 +18,7 @@ from .upload import UploadManager, client_from_environment
 from .oauth import OAuthYouTubeClient, YouTubeOAuth
 from .token_store import EncryptedTokenStore
 from .analytics import AnalyticsCollectionManager, YouTubeAnalyticsClient
+from .strategy import aggregate_edit_strategies
 from .calibration import calibrate_pacing
 from .learning import analyze_source_output
 from .performance import attribute_retention_to_cuts, performance_insights, validate_metrics
@@ -88,6 +89,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.json({"authorized": True, "expires_at": tokens.expires_at})
             elif path == "/api/calibrations":
                 self.json(DB.list_calibrations())
+            elif path == "/api/strategies":
+                channel_ref = parse_qs(parsed.query).get("channel_ref", [""])[0]
+                self.json(DB.list_strategy_versions(channel_ref))
             elif path == "/api/learning/source-output":
                 self.json(DB.list_source_output_pairs())
             elif path.startswith("/api/episodes/") and path.endswith("/performance"):
@@ -160,6 +164,16 @@ class ApiHandler(BaseHTTPRequestHandler):
                     raise ValueError("YouTube Analytics OAuth가 설정되지 않았습니다.")
                 manager = AnalyticsCollectionManager(DB, YouTubeAnalyticsClient(YOUTUBE_OAUTH.access_token))
                 self.json(manager.run_due(), HTTPStatus.OK)
+            elif path == "/api/strategies/analyze":
+                channel_ref = str(payload.get("channel_ref", "")).strip()
+                if not channel_ref:
+                    raise ValueError("channel_ref가 필요합니다.")
+                strategy = aggregate_edit_strategies(
+                    DB.list_channel_performance(channel_ref), payload["profile"],
+                )
+                self.json(DB.save_strategy_version(channel_ref, strategy), HTTPStatus.CREATED)
+            elif path.startswith("/api/strategies/") and path.endswith("/activate"):
+                self.json(DB.activate_strategy_version(path.split("/")[3]))
             elif path.startswith("/api/projects/") and path.endswith("/run"):
                 project_id = path.split("/")[3]
                 DB.get_project(project_id)
