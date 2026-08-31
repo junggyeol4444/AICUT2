@@ -4,6 +4,7 @@ import argparse
 import json
 import mimetypes
 import os
+from datetime import date
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,6 +17,7 @@ from .package import MetadataPackage, build_thumbnail_commands, extract_thumbnai
 from .upload import UploadManager, client_from_environment
 from .oauth import OAuthYouTubeClient, YouTubeOAuth
 from .token_store import EncryptedTokenStore
+from .analytics import YouTubeAnalyticsClient
 from .calibration import calibrate_pacing
 from .learning import analyze_source_output
 from .performance import performance_insights, validate_metrics
@@ -127,6 +129,24 @@ class ApiHandler(BaseHTTPRequestHandler):
                 snapshot = DB.save_performance(episode_id, metrics)
                 snapshot["insights"] = performance_insights(metrics, payload["profile"])
                 self.json(snapshot, HTTPStatus.CREATED)
+            elif path.startswith("/api/episodes/") and path.endswith("/analytics/collect"):
+                episode_id = path.split("/")[3]
+                episode = DB.get_episode(episode_id)
+                if not YOUTUBE_OAUTH:
+                    raise ValueError("YouTube Analytics OAuth가 설정되지 않았습니다.")
+                video_id = payload.get("video_id") or next((
+                    item["youtube_video_id"] for item in DB.list_uploads()
+                    if item["episode_id"] == episode_id and item["status"] == "COMPLETE"
+                ), None)
+                duration = episode.get("planned_duration_sec") or sum(
+                    item["source_end_sec"] - item["source_start_sec"]
+                    for item in DB.get_timeline(episode_id) if item["pacing_mode"] != "CUT"
+                )
+                metrics = YouTubeAnalyticsClient(YOUTUBE_OAUTH.access_token).collect_video_metrics(
+                    video_id, date.fromisoformat(payload["start_date"]),
+                    date.fromisoformat(payload["end_date"]), duration,
+                )
+                self.json(DB.save_performance(episode_id, metrics), HTTPStatus.CREATED)
             elif path.startswith("/api/projects/") and path.endswith("/run"):
                 project_id = path.split("/")[3]
                 DB.get_project(project_id)

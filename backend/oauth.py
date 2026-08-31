@@ -24,7 +24,11 @@ class OAuthTokens:
 class YouTubeOAuth:
     authorization_endpoint = "https://accounts.google.com/o/oauth2/v2/auth"
     token_endpoint = "https://oauth2.googleapis.com/token"
-    scope = "https://www.googleapis.com/auth/youtube.upload"
+    scope = " ".join((
+        "https://www.googleapis.com/auth/youtube.upload",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly",
+    ))
 
     def __init__(
         self, client_id: str, client_secret: str, redirect_uri: str, *, opener: Callable = urlopen,
