@@ -31,6 +31,7 @@ from .stt import build_stt_command, SttJob, transcribe_tracks
 from .scheduler import RuntimeScheduler
 from .auth import ApiKeyGuard
 from .http_utils import read_json_object
+from .backup import DatabaseBackupManager
 from dataclasses import asdict
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +54,10 @@ API_AUTH = ApiKeyGuard(os.environ.get("AICUT_API_KEY"))
 MAX_REQUEST_BYTES = int(os.environ.get("AICUT_MAX_REQUEST_BYTES", str(1024 * 1024)))
 if MAX_REQUEST_BYTES <= 0:
     raise ValueError("AICUT_MAX_REQUEST_BYTES는 0보다 커야 합니다.")
+BACKUPS = DatabaseBackupManager(
+    DB, os.environ.get("AICUT_BACKUP_DIR", ROOT / "backups"),
+    retention_count=int(os.environ.get("AICUT_BACKUP_RETENTION", "7")),
+)
 
 
 def scheduled_uploads() -> object:
@@ -193,6 +198,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.json(manager.run_due(), HTTPStatus.OK)
             elif path == "/api/uploads/run-due":
                 self.json(UPLOADS.submit_due(), HTTPStatus.ACCEPTED)
+            elif path == "/api/runtime/backup":
+                self.json(BACKUPS.create(), HTTPStatus.CREATED)
             elif path == "/api/strategies/analyze":
                 channel_ref = str(payload.get("channel_ref", "")).strip()
                 if not channel_ref:

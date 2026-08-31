@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -46,6 +47,7 @@ class Database:
             for column, statement in migrations.items():
                 if column not in columns:
                     connection.execute(statement)
+
             timeline_columns = {row["name"] for row in connection.execute("PRAGMA table_info(edit_timeline)")}
             if "pacing_reason" not in timeline_columns:
                 connection.execute("ALTER TABLE edit_timeline ADD COLUMN pacing_reason TEXT NOT NULL DEFAULT ''")
@@ -60,6 +62,21 @@ class Database:
             for column, statement in upload_migrations.items():
                 if column not in upload_columns:
                     connection.execute(statement)
+
+    def backup_to(self, destination: str | Path) -> dict[str, Any]:
+        target = Path(destination).expanduser().resolve()
+        source = Path(self.path).expanduser().resolve()
+        if target == source:
+            raise ValueError("backup 대상은 현재 SQLite DB와 달라야 합니다.")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with self.connect() as source_connection, sqlite3.connect(temporary) as backup_connection:
+                source_connection.backup(backup_connection)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return {"path": str(target), "size_bytes": target.stat().st_size, "created_at": now()}
 
     def create_project(self, payload: dict[str, Any]) -> dict[str, Any]:
         project_id = str(uuid.uuid4())
