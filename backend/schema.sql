@@ -250,6 +250,12 @@ CREATE TABLE IF NOT EXISTS planning_versions (
   UNIQUE(project_id, version_number)
 );
 
+CREATE TABLE IF NOT EXISTS runtime_scheduler_runs (
+  run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  completed_at TEXT NOT NULL,
+  results_json TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id);
 CREATE INDEX IF NOT EXISTS idx_candidates_project ON content_candidates(project_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_project ON episodes(project_id);
@@ -265,3 +271,4 @@ CREATE INDEX IF NOT EXISTS idx_observations_project_time ON analysis_observation
 CREATE INDEX IF NOT EXISTS idx_understanding_project_time ON understanding_windows(project_id, start_sec);
 CREATE INDEX IF NOT EXISTS idx_retrieval_candidate_score ON scene_retrieval_results(candidate_id, score DESC);
 CREATE INDEX IF NOT EXISTS idx_planning_versions_project ON planning_versions(project_id, version_number DESC);
+CREATE INDEX IF NOT EXISTS idx_runtime_scheduler_runs_time ON runtime_scheduler_runs(completed_at DESC);

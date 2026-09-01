@@ -90,6 +90,35 @@ class Database:
             "sha256": digest.hexdigest(), "integrity": integrity, "created_at": now(),
         }
 
+    def save_scheduler_run(self, results: dict, completed_at: str | None = None) -> dict[str, Any]:
+        timestamp = completed_at or now()
+        payload = json.dumps(results, ensure_ascii=False, sort_keys=True)
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO runtime_scheduler_runs(completed_at,results_json) VALUES(?,?)",
+                (timestamp, payload),
+            )
+            row = connection.execute(
+                "SELECT * FROM runtime_scheduler_runs WHERE run_id=?", (cursor.lastrowid,),
+            ).fetchone()
+        item = dict(row)
+        item["results"] = json.loads(item.pop("results_json"))
+        return item
+
+    def list_scheduler_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        if limit <= 0 or limit > 500:
+            raise ValueError("scheduler run 조회 limit은 1~500이어야 합니다.")
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM runtime_scheduler_runs ORDER BY run_id DESC LIMIT ?", (limit,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["results"] = json.loads(item.pop("results_json"))
+            result.append(item)
+        return result
+
     def create_project(self, payload: dict[str, Any]) -> dict[str, Any]:
         project_id = str(uuid.uuid4())
         timestamp = now()

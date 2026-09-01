@@ -119,6 +119,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.json(SCHEDULER.status() if SCHEDULER else {"running": False})
             elif path == "/api/runtime/backups":
                 self.json(BACKUPS.list())
+            elif path == "/api/runtime/scheduler/runs":
+                query = parse_qs(parsed.query)
+                self.json(DB.list_scheduler_runs(int(query.get("limit", ["50"])[0])))
             elif path == "/api/youtube/oauth/start":
                 if not YOUTUBE_OAUTH:
                     raise ValueError("YouTube OAuth 환경변수가 설정되지 않았습니다.")
@@ -458,7 +461,7 @@ def main() -> None:
         "uploads": scheduled_uploads,
         "analytics": scheduled_analytics,
         "backups": PeriodicTask(BACKUPS.create, backup_interval),
-    }, interval)
+    }, interval, on_run=lambda results, completed_at: DB.save_scheduler_run(results, completed_at))
     SCHEDULER.start()
     print(f"AICUT local runtime: http://{args.host}:{args.port}")
     server = ThreadingHTTPServer((args.host, args.port), ApiHandler)

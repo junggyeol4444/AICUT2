@@ -1,6 +1,9 @@
 import threading
+import tempfile
 import unittest
+from pathlib import Path
 
+from backend.database import Database
 from backend.scheduler import PeriodicTask, RuntimeScheduler
 
 
@@ -49,6 +52,29 @@ class RuntimeSchedulerTest(unittest.TestCase):
     def test_periodic_task_can_run_immediately(self):
         task = PeriodicTask(lambda: "ran", 60, run_immediately=True, clock=lambda: 100.0)
         self.assertEqual(task(), "ran")
+
+    def test_scheduler_runs_are_persisted_for_restart_observability(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "scheduler.db")
+            scheduler = RuntimeScheduler(
+                {"uploads": lambda: {"submitted": ["one"]}}, 60,
+                on_run=lambda results, completed_at: database.save_scheduler_run(results, completed_at),
+            )
+            scheduler.run_once()
+            runs = database.list_scheduler_runs()
+            with self.assertRaises(ValueError):
+                database.list_scheduler_runs(0)
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["results"]["uploads"]["status"], "COMPLETE")
+        self.assertEqual(runs[0]["results"]["uploads"]["result"]["submitted"], ["one"])
+
+    def test_scheduler_continues_when_run_persistence_fails(self):
+        scheduler = RuntimeScheduler(
+            {"task": lambda: "done"}, 60,
+            on_run=lambda _results, _completed: (_ for _ in ()).throw(RuntimeError("db unavailable")),
+        )
+        self.assertEqual(scheduler.run_once()["task"]["result"], "done")
+        self.assertEqual(scheduler.status()["results"]["persistence"]["status"], "FAILED")
 
 
 if __name__ == "__main__":

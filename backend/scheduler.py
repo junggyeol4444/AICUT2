@@ -34,11 +34,15 @@ class PeriodicTask:
 class RuntimeScheduler:
     """Small in-process scheduler for durable queues; task failures are isolated."""
 
-    def __init__(self, tasks: dict[str, Callable[[], object]], interval_sec: float = 60):
+    def __init__(
+        self, tasks: dict[str, Callable[[], object]], interval_sec: float = 60,
+        *, on_run: Callable[[dict, str], object] | None = None,
+    ):
         if interval_sec <= 0:
             raise ValueError("scheduler interval_sec는 0보다 커야 합니다.")
         self.tasks = dict(tasks)
         self.interval_sec = float(interval_sec)
+        self.on_run = on_run
         self._stop = threading.Event()
         self._run_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -59,6 +63,15 @@ class RuntimeScheduler:
             with self._state_lock:
                 self._last_run_at = datetime.now(timezone.utc).isoformat()
                 self._results = results
+                completed_at = self._last_run_at
+            if self.on_run:
+                try:
+                    self.on_run(results, completed_at)
+                except Exception as error:
+                    with self._state_lock:
+                        self._results = {**results, "persistence": {
+                            "status": "FAILED", "error": str(error),
+                        }}
             return results
         finally:
             self._run_lock.release()
