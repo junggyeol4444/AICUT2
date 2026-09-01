@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import mimetypes
@@ -25,6 +26,10 @@ class QuotaExceeded(UploadError):
 
 
 class UploadCancelled(UploadError):
+    pass
+
+
+class TransientUploadError(UploadError):
     pass
 
 
@@ -171,9 +176,11 @@ class YouTubeResumableClient:
                 return error
             if error.code == 403 and any(reason in payload for reason in ("quotaExceeded", "dailyLimitExceeded")):
                 raise QuotaExceeded("YouTube Data API 업로드 쿼터를 초과했습니다.") from error
+            if error.code in {408, 429, 500, 502, 503, 504}:
+                raise TransientUploadError(f"YouTube API 임시 오류 ({error.code})") from error
             raise UploadError(f"YouTube API 오류 ({error.code}): {payload[-2000:]}") from error
         except URLError as error:
-            raise UploadError(f"YouTube 업로드 네트워크 오류: {error.reason}") from error
+            raise TransientUploadError(f"YouTube 업로드 네트워크 오류: {error.reason}") from error
 
 
 def next_quota_reset(now: datetime | None = None) -> datetime:
@@ -187,10 +194,24 @@ def next_quota_reset(now: datetime | None = None) -> datetime:
     return reset.astimezone(timezone.utc)
 
 
+def transient_retry_at(
+    upload_id: str, attempt_count: int, now: datetime | None = None,
+    *, base_delay_sec: float = 30, max_delay_sec: float = 3600,
+) -> datetime:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None or attempt_count <= 0 or base_delay_sec <= 0 or max_delay_sec <= 0:
+        raise ValueError("transient retry 계산 인자가 올바르지 않습니다.")
+    exponential = base_delay_sec * (2 ** min(attempt_count - 1, 20))
+    fraction = int(hashlib.sha256(upload_id.encode()).hexdigest()[:4], 16) / 65535
+    jittered = exponential * (.75 + .5 * fraction)
+    return current + timedelta(seconds=min(jittered, max_delay_sec))
+
+
 class UploadManager:
     def __init__(
         self, database: Database, client: UploadClient, max_workers: int = 1,
-        *, recover_interrupted: bool = True,
+        *, recover_interrupted: bool = True, transient_base_delay_sec: float = 30,
+        transient_max_delay_sec: float = 3600,
     ):
         self.database = database
         self.client = client
@@ -198,6 +219,10 @@ class UploadManager:
         self._active: set[str] = set()
         self._cancel: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
+        if transient_base_delay_sec <= 0 or transient_max_delay_sec <= 0:
+            raise ValueError("upload transient retry delay는 0보다 커야 합니다.")
+        self.transient_base_delay_sec = transient_base_delay_sec
+        self.transient_max_delay_sec = transient_max_delay_sec
         self.recovered_upload_ids = (
             self.database.recover_interrupted_uploads() if recover_interrupted else []
         )
@@ -256,7 +281,7 @@ class UploadManager:
             job = jobs[0]
             if job["status"] not in {"QUEUED", "RETRY_QUEUED"}:
                 raise UploadError(f"현재 상태에서는 업로드할 수 없습니다: {job['status']}")
-            self.database.set_upload_status(upload_id, "UPLOADING")
+            started = self.database.set_upload_status(upload_id, "UPLOADING")
             event = self._cancel[upload_id]
             parameters = inspect.signature(self.client.upload).parameters
             kwargs = {"cancel_event": event} if "cancel_event" in parameters else {}
@@ -279,6 +304,15 @@ class UploadManager:
         except QuotaExceeded as error:
             self.database.set_upload_status(
                 upload_id, "RETRY_QUEUED", retry_at=next_quota_reset().isoformat(), error_message=str(error),
+            )
+        except TransientUploadError as error:
+            retry_at = transient_retry_at(
+                upload_id, int(started["attempt_count"]),
+                base_delay_sec=self.transient_base_delay_sec,
+                max_delay_sec=self.transient_max_delay_sec,
+            )
+            self.database.set_upload_status(
+                upload_id, "RETRY_QUEUED", retry_at=retry_at.isoformat(), error_message=str(error),
             )
         except Exception as error:
             try:

@@ -5,16 +5,18 @@ import threading
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 from backend.database import Database
 from backend.upload import (
     QuotaExceeded,
+    TransientUploadError,
     UploadCancelled,
     UploadError,
     UploadManager,
     YouTubeResumableClient,
     next_quota_reset,
+    transient_retry_at,
 )
 
 
@@ -265,6 +267,37 @@ class UploadTest(unittest.TestCase):
             client = YouTubeResumableClient("access-token", opener=opener)
             with self.assertRaises(QuotaExceeded):
                 client.upload(str(video), {"selected_title": "title"}, "UNLISTED")
+
+    def test_transient_network_and_server_errors_are_retryable(self):
+        for error in (
+            URLError("offline"),
+            HTTPError("https://youtube.example", 503, "unavailable", {}, io.BytesIO(b"later")),
+        ):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as directory:
+                video = Path(directory) / "episode.mp4"
+                video.write_bytes(b"video")
+                client = YouTubeResumableClient("token", opener=lambda _request, error=error: (_ for _ in ()).throw(error))
+                with self.assertRaises(TransientUploadError):
+                    client.upload(str(video), {"selected_title": "title"}, "PRIVATE")
+
+    def test_transient_failure_uses_bounded_exponential_retry_and_attempt_count(self):
+        class TransientClient(FakeClient):
+            def upload(inner, *_args):
+                raise TransientUploadError("temporary")
+
+        manager = UploadManager(
+            self.db, TransientClient(), transient_base_delay_sec=10, transient_max_delay_sec=60,
+        )
+        manager.submit(self.upload["upload_id"])
+        manager.shutdown()
+        job = self.db.list_uploads(include_resume_state=True)[0]
+        retry_at = datetime.fromisoformat(job["retry_at"])
+        self.assertEqual(job["status"], "RETRY_QUEUED")
+        self.assertEqual(job["attempt_count"], 1)
+        self.assertGreater(retry_at, datetime.now(timezone.utc))
+        delay = transient_retry_at("same-id", 10, datetime(2026, 1, 1, tzinfo=timezone.utc),
+                                   base_delay_sec=10, max_delay_sec=60)
+        self.assertEqual(delay, datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc))
 
     def test_thumbnail_upload_uses_owned_video_id_and_image_content_type(self):
         calls = []

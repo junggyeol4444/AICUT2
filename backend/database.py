@@ -59,6 +59,7 @@ class Database:
                 "thumbnail_uploaded_at": "ALTER TABLE upload_jobs ADD COLUMN thumbnail_uploaded_at TEXT",
                 "upload_session_url": "ALTER TABLE upload_jobs ADD COLUMN upload_session_url TEXT",
                 "uploaded_bytes": "ALTER TABLE upload_jobs ADD COLUMN uploaded_bytes INTEGER NOT NULL DEFAULT 0",
+                "attempt_count": "ALTER TABLE upload_jobs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
             }
             for column, statement in upload_migrations.items():
                 if column not in upload_columns:
@@ -670,8 +671,9 @@ class Database:
         with self.connect() as connection:
             result = connection.execute(
                 """UPDATE upload_jobs SET status=?,youtube_video_id=COALESCE(?,youtube_video_id),
-                retry_at=?,error_message=?,updated_at=? WHERE upload_id=?""",
-                (status, youtube_video_id, retry_at, error_message, now(), upload_id),
+                retry_at=?,error_message=?,attempt_count=attempt_count+CASE WHEN ?='UPLOADING' THEN 1 ELSE 0 END,
+                updated_at=? WHERE upload_id=?""",
+                (status, youtube_video_id, retry_at, error_message, status, now(), upload_id),
             )
             if not result.rowcount:
                 raise KeyError(upload_id)
