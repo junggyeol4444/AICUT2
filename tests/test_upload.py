@@ -191,6 +191,25 @@ class UploadTest(unittest.TestCase):
         self.assertEqual(job["error_message"], "cancelled")
         self.assertFalse(manager.cancel(self.upload["upload_id"]))
 
+    def test_manager_shutdown_cooperatively_cancels_active_uploads(self):
+        class ShutdownAwareClient:
+            def __init__(inner):
+                inner.started = threading.Event()
+
+            def upload(inner, _path, _metadata, _privacy, cancel_event=None):
+                inner.started.set()
+                self.assertTrue(cancel_event.wait(1))
+                raise UploadCancelled("runtime shutdown")
+
+        client = ShutdownAwareClient()
+        manager = UploadManager(self.db, client)
+        manager.submit(self.upload["upload_id"])
+        self.assertTrue(client.started.wait(1))
+        manager.shutdown()
+        job = self.db.list_uploads()[0]
+        self.assertEqual(job["status"], "RETRY_QUEUED")
+        self.assertEqual(job["error_message"], "runtime shutdown")
+
     def test_manager_submits_only_uploads_whose_retry_deadline_is_due(self):
         future = self.db.queue_upload("episode-operation")
         self.db.set_upload_status(

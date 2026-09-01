@@ -656,5 +656,18 @@ class PipelineManager:
         if event.is_set():
             raise PipelineCancelled()
 
-    def shutdown(self) -> None:
+    def cancel_all(self) -> int:
+        with self._lock:
+            active = [
+                (project_id, event) for project_id, event in self._cancel.items()
+                if self._jobs.get(project_id) and not self._jobs[project_id].done()
+            ]
+        for project_id, event in active:
+            event.set()
+            self.processes.cancel(project_id)
+        return len(active)
+
+    def shutdown(self, *, cancel_running: bool = True) -> None:
+        if cancel_running:
+            self.cancel_all()
         self.executor.shutdown(wait=True, cancel_futures=True)

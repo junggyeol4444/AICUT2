@@ -340,7 +340,16 @@ class UploadManager:
                 self._active.discard(upload_id)
                 self._cancel.pop(upload_id, None)
 
-    def shutdown(self) -> None:
+    def cancel_all(self) -> int:
+        with self._lock:
+            events = list(self._cancel.values())
+        for event in events:
+            event.set()
+        return len(events)
+
+    def shutdown(self, *, cancel_running: bool = True) -> None:
+        if cancel_running:
+            self.cancel_all()
         self.executor.shutdown(wait=True, cancel_futures=True)
 
 

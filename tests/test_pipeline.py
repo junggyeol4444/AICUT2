@@ -2,6 +2,7 @@ import json
 import tempfile
 import threading
 import unittest
+from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,6 +33,20 @@ class PipelineTest(unittest.TestCase):
             manager._run(project["project_id"], {"coarse_window_sec": 30}, True, threading.Event())
             self.assertEqual(calls, ["probe"])
             manager.shutdown()
+
+    def test_shutdown_cancels_active_project_events_and_child_processes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = PipelineManager(Database(Path(directory) / "pipeline.db"))
+            event = threading.Event()
+            future = Future()
+            cancelled = []
+            manager._jobs["project-one"] = future
+            manager._cancel["project-one"] = event
+            manager.processes = SimpleNamespace(cancel=lambda project_id: cancelled.append(project_id))
+            self.assertEqual(manager.cancel_all(), 1)
+            manager.shutdown(cancel_running=False)
+        self.assertTrue(event.is_set())
+        self.assertEqual(cancelled, ["project-one"])
 
     def test_failed_step_is_durable_and_project_can_retry(self):
         with tempfile.TemporaryDirectory() as directory:

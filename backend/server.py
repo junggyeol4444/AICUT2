@@ -469,7 +469,10 @@ def main() -> None:
         server.serve_forever()
     finally:
         SCHEDULER.stop(5)
-        UPLOADS.shutdown()
+        PIPELINE.cancel_all()
+        UPLOADS.cancel_all()
+        PIPELINE.shutdown(cancel_running=False)
+        UPLOADS.shutdown(cancel_running=False)
         server.server_close()
 
 
