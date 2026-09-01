@@ -33,6 +33,10 @@ class TransientUploadError(UploadError):
     pass
 
 
+class ExpiredUploadSession(TransientUploadError):
+    pass
+
+
 class UploadClient(Protocol):
     def upload(self, file_path: str, metadata: dict, privacy_status: str) -> str: ...
 
@@ -174,6 +178,8 @@ class YouTubeResumableClient:
             payload = error.read().decode("utf-8", errors="replace")
             if allow_resume and error.code == 308:
                 return error
+            if allow_resume and error.code in {404, 410}:
+                raise ExpiredUploadSession("YouTube resumable upload 세션이 만료되었습니다.") from error
             if error.code == 403 and any(reason in payload for reason in ("quotaExceeded", "dailyLimitExceeded")):
                 raise QuotaExceeded("YouTube Data API 업로드 쿼터를 초과했습니다.") from error
             if error.code in {408, 429, 500, 502, 503, 504}:
@@ -304,6 +310,16 @@ class UploadManager:
         except QuotaExceeded as error:
             self.database.set_upload_status(
                 upload_id, "RETRY_QUEUED", retry_at=next_quota_reset().isoformat(), error_message=str(error),
+            )
+        except ExpiredUploadSession as error:
+            self.database.set_upload_progress(upload_id, None, 0)
+            retry_at = transient_retry_at(
+                upload_id, int(started["attempt_count"]),
+                base_delay_sec=self.transient_base_delay_sec,
+                max_delay_sec=self.transient_max_delay_sec,
+            )
+            self.database.set_upload_status(
+                upload_id, "RETRY_QUEUED", retry_at=retry_at.isoformat(), error_message=str(error),
             )
         except TransientUploadError as error:
             retry_at = transient_retry_at(

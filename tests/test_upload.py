@@ -10,6 +10,7 @@ from urllib.error import HTTPError, URLError
 from backend.database import Database
 from backend.upload import (
     QuotaExceeded,
+    ExpiredUploadSession,
     TransientUploadError,
     UploadCancelled,
     UploadError,
@@ -279,6 +280,44 @@ class UploadTest(unittest.TestCase):
                 client = YouTubeResumableClient("token", opener=lambda _request, error=error: (_ for _ in ()).throw(error))
                 with self.assertRaises(TransientUploadError):
                     client.upload(str(video), {"selected_title": "title"}, "PRIVATE")
+
+    def test_expired_resumable_session_is_distinguished_from_permanent_errors(self):
+        expired = HTTPError(
+            "https://upload.example/session", 410, "gone", {}, io.BytesIO(b"expired"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "episode.mp4"
+            video.write_bytes(b"x" * 300_000)
+            client = YouTubeResumableClient(
+                "token", opener=lambda _request: (_ for _ in ()).throw(expired),
+            )
+            with self.assertRaises(ExpiredUploadSession):
+                client.upload(
+                    str(video), {"selected_title": "title"}, "PRIVATE",
+                    resume_session_url="https://upload.example/session", resume_offset=262_144,
+                )
+
+    def test_manager_discards_expired_session_before_retrying(self):
+        class ExpiredClient:
+            def upload(
+                inner, *_args, resume_session_url=None, resume_offset=0, checkpoint=None,
+                cancel_event=None,
+            ):
+                self.assertEqual(resume_session_url, "https://upload.example/expired")
+                self.assertEqual(resume_offset, 262_144)
+                raise ExpiredUploadSession("expired")
+
+        self.db.set_upload_progress(
+            self.upload["upload_id"], "https://upload.example/expired", 262_144,
+        )
+        manager = UploadManager(self.db, ExpiredClient(), transient_base_delay_sec=1)
+        manager.submit(self.upload["upload_id"])
+        manager.shutdown()
+        job = self.db.list_uploads(include_resume_state=True)[0]
+        self.assertEqual(job["status"], "RETRY_QUEUED")
+        self.assertIsNone(job["upload_session_url"])
+        self.assertEqual(job["uploaded_bytes"], 0)
+        self.assertIsNotNone(job["retry_at"])
 
     def test_transient_failure_uses_bounded_exponential_retry_and_attempt_count(self):
         class TransientClient(FakeClient):
