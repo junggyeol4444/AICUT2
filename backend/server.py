@@ -28,7 +28,7 @@ from .understanding import (
     validate_transcript_segments,
 )
 from .stt import build_stt_command, SttJob, transcribe_tracks
-from .scheduler import RuntimeScheduler
+from .scheduler import PeriodicTask, RuntimeScheduler
 from .auth import ApiKeyGuard
 from .http_utils import read_json_object
 from .backup import DatabaseBackupManager
@@ -453,9 +453,11 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8787)
     args = parser.parse_args()
     interval = float(os.environ.get("AICUT_SCHEDULER_INTERVAL_SEC", "60"))
+    backup_interval = float(os.environ.get("AICUT_BACKUP_INTERVAL_SEC", "86400"))
     SCHEDULER = RuntimeScheduler({
         "uploads": scheduled_uploads,
         "analytics": scheduled_analytics,
+        "backups": PeriodicTask(BACKUPS.create, backup_interval),
     }, interval)
     SCHEDULER.start()
     print(f"AICUT local runtime: http://{args.host}:{args.port}")

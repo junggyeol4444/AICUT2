@@ -1,8 +1,34 @@
 from __future__ import annotations
 
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Callable
+
+
+class PeriodicTask:
+    """Gate a task to its own monotonic interval while a scheduler ticks more frequently."""
+
+    def __init__(
+        self, task: Callable[[], object], interval_sec: float, *,
+        run_immediately: bool = False, clock: Callable[[], float] = time.monotonic,
+    ):
+        if interval_sec <= 0:
+            raise ValueError("periodic task interval_sec는 0보다 커야 합니다.")
+        self.task = task
+        self.interval_sec = float(interval_sec)
+        self.clock = clock
+        now = self.clock()
+        self._next_run = now if run_immediately else now + self.interval_sec
+        self._lock = threading.Lock()
+
+    def __call__(self) -> object:
+        now = self.clock()
+        with self._lock:
+            if now < self._next_run:
+                return {"status": "SKIPPED", "next_run_in_sec": self._next_run - now}
+            self._next_run = now + self.interval_sec
+        return self.task()
 
 
 class RuntimeScheduler:
