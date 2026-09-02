@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS edit_timeline (
   speaker_tag TEXT NOT NULL DEFAULT 'UNKNOWN',
   scene_role TEXT NOT NULL,
   pacing_mode TEXT NOT NULL CHECK (pacing_mode IN ('KEEP','TRIM','CUT')),
+  pacing_reason TEXT NOT NULL DEFAULT '',
   visual_effect_json TEXT NOT NULL DEFAULT '{}',
   subtitle_ref TEXT,
   UNIQUE (episode_id, sequence_order),
@@ -109,6 +110,12 @@ CREATE TABLE IF NOT EXISTS upload_jobs (
   privacy_status TEXT NOT NULL CHECK (privacy_status IN ('PRIVATE','UNLISTED')),
   status TEXT NOT NULL CHECK (status IN ('QUEUED','UPLOADING','RETRY_QUEUED','COMPLETE','FAILED')),
   youtube_video_id TEXT,
+  publication_status TEXT NOT NULL DEFAULT 'PRIVATE' CHECK (publication_status IN ('PRIVATE','UNLISTED','PUBLIC','SCHEDULED')),
+  scheduled_publish_at TEXT,
+  thumbnail_uploaded_at TEXT,
+  upload_session_url TEXT,
+  uploaded_bytes INTEGER NOT NULL DEFAULT 0 CHECK (uploaded_bytes >= 0),
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
   retry_at TEXT,
   error_message TEXT,
   created_at TEXT NOT NULL,
@@ -129,6 +136,30 @@ CREATE TABLE IF NOT EXISTS performance_snapshots (
   episode_id TEXT NOT NULL REFERENCES episodes(episode_id) ON DELETE CASCADE,
   metrics_json TEXT NOT NULL,
   collected_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS analytics_collection_jobs (
+  collection_id TEXT PRIMARY KEY,
+  episode_id TEXT NOT NULL REFERENCES episodes(episode_id) ON DELETE CASCADE,
+  youtube_video_id TEXT NOT NULL,
+  snapshot_label TEXT NOT NULL CHECK (snapshot_label IN ('24H','7D','30D')),
+  due_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'QUEUED' CHECK (status IN ('QUEUED','RUNNING','COMPLETE','FAILED')),
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (episode_id, snapshot_label)
+);
+
+CREATE TABLE IF NOT EXISTS strategy_versions (
+  strategy_version_id TEXT PRIMARY KEY,
+  channel_ref TEXT NOT NULL,
+  version_number INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('DRAFT','ACTIVE','ROLLED_BACK')),
+  strategy_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (channel_ref, version_number)
 );
 
 CREATE TABLE IF NOT EXISTS transcript_segments (
@@ -162,11 +193,68 @@ CREATE TABLE IF NOT EXISTS pipeline_steps (
   status TEXT NOT NULL CHECK (status IN ('PENDING','RUNNING','COMPLETE','FAILED','CANCELLED')),
   progress INTEGER NOT NULL CHECK (progress BETWEEN 0 AND 100),
   output_json TEXT NOT NULL DEFAULT '{}',
+  input_hash TEXT,
+  checkpoint_version INTEGER NOT NULL DEFAULT 1,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
   error_message TEXT,
   started_at TEXT,
   completed_at TEXT,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (project_id, step)
+);
+
+CREATE TABLE IF NOT EXISTS analysis_observations (
+  observation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  modality TEXT NOT NULL CHECK (modality IN ('AUDIO','VISION')),
+  kind TEXT NOT NULL,
+  track_index INTEGER,
+  start_sec REAL NOT NULL,
+  end_sec REAL NOT NULL,
+  confidence REAL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  CHECK (start_sec >= 0 AND end_sec > start_sec),
+  CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1)
+);
+
+CREATE TABLE IF NOT EXISTS understanding_windows (
+  project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  sequence_order INTEGER NOT NULL,
+  start_sec REAL NOT NULL,
+  end_sec REAL NOT NULL,
+  summary TEXT NOT NULL,
+  memory_json TEXT NOT NULL,
+  precision_ranges_json TEXT NOT NULL DEFAULT '[]',
+  PRIMARY KEY(project_id, sequence_order),
+  CHECK(start_sec >= 0 AND end_sec > start_sec)
+);
+
+CREATE TABLE IF NOT EXISTS scene_retrieval_results (
+  retrieval_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  candidate_id TEXT NOT NULL REFERENCES content_candidates(candidate_id) ON DELETE CASCADE,
+  query TEXT NOT NULL DEFAULT '',
+  start_sec REAL NOT NULL,
+  end_sec REAL NOT NULL,
+  score REAL NOT NULL CHECK(score BETWEEN 0 AND 1),
+  scene_role TEXT NOT NULL,
+  reasons_json TEXT NOT NULL,
+  CHECK(start_sec >= 0 AND end_sec > start_sec)
+);
+
+CREATE TABLE IF NOT EXISTS planning_versions (
+  planning_version_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  version_number INTEGER NOT NULL,
+  manifest_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(project_id, version_number)
+);
+
+CREATE TABLE IF NOT EXISTS runtime_scheduler_runs (
+  run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  completed_at TEXT NOT NULL,
+  results_json TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id);
@@ -176,6 +264,12 @@ CREATE INDEX IF NOT EXISTS idx_logs_project ON job_logs(project_id, log_id DESC)
 CREATE INDEX IF NOT EXISTS idx_upload_jobs_status ON upload_jobs(status, retry_at);
 CREATE INDEX IF NOT EXISTS idx_source_output_project ON source_output_pairs(project_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_performance_episode ON performance_snapshots(episode_id, collected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analytics_collection_due ON analytics_collection_jobs(status, due_at);
 CREATE INDEX IF NOT EXISTS idx_transcript_project_time ON transcript_segments(project_id, start_sec);
 CREATE INDEX IF NOT EXISTS idx_scan_windows_project ON scan_windows(project_id, pass_kind, start_sec);
 CREATE INDEX IF NOT EXISTS idx_pipeline_steps_project ON pipeline_steps(project_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_observations_project_time ON analysis_observations(project_id, start_sec, modality);
+CREATE INDEX IF NOT EXISTS idx_understanding_project_time ON understanding_windows(project_id, start_sec);
+CREATE INDEX IF NOT EXISTS idx_retrieval_candidate_score ON scene_retrieval_results(candidate_id, score DESC);
+CREATE INDEX IF NOT EXISTS idx_planning_versions_project ON planning_versions(project_id, version_number DESC);
+CREATE INDEX IF NOT EXISTS idx_runtime_scheduler_runs_time ON runtime_scheduler_runs(completed_at DESC);

@@ -4,41 +4,99 @@ import argparse
 import json
 import mimetypes
 import os
+from datetime import date, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .database import Database
 from .pipeline import PipelineManager
 from .render import RenderError, RenderPlan, export_plan, render
 from .package import MetadataPackage, build_thumbnail_commands, extract_thumbnails, write_metadata_package
-from .upload import UnconfiguredYouTubeClient, UploadManager
+from .upload import UnconfiguredYouTubeClient, UploadManager, client_from_environment
+from .oauth import OAuthYouTubeClient, YouTubeOAuth
+from .token_store import EncryptedTokenStore
+from .analytics import AnalyticsCollectionManager, YouTubeAnalyticsClient
+from .strategy import aggregate_edit_strategies
 from .calibration import calibrate_pacing
 from .learning import analyze_source_output
-from .performance import performance_insights, validate_metrics
+from .performance import attribute_retention_to_cuts, performance_insights, validate_metrics
 from .producer import run_producer
 from .understanding import (
     PreprocessPlan, build_preprocess_commands, build_scan_plan, execute_preprocess,
     validate_transcript_segments,
 )
 from .stt import build_stt_command, SttJob, transcribe_tracks
+from .scheduler import PeriodicTask, RuntimeScheduler
+from .auth import ApiKeyGuard
+from .http_utils import read_json_object
+from .backup import DatabaseBackupManager
+from .health import runtime_readiness
 from dataclasses import asdict
 
 ROOT = Path(__file__).resolve().parents[1]
 DB = Database(os.environ.get("AICUT_DB", ROOT / "aicut.db"))
 PIPELINE = PipelineManager(DB)
-UPLOADS = UploadManager(DB, UnconfiguredYouTubeClient())
+UPLOADS = UploadManager(DB, client_from_environment())
+YOUTUBE_TOKEN_STORE = EncryptedTokenStore(
+    os.environ["YOUTUBE_TOKEN_STORE"], os.environ["YOUTUBE_TOKEN_KEY"],
+) if os.environ.get("YOUTUBE_TOKEN_STORE") and os.environ.get("YOUTUBE_TOKEN_KEY") else None
+YOUTUBE_OAUTH = YouTubeOAuth(
+    os.environ["YOUTUBE_CLIENT_ID"], os.environ["YOUTUBE_CLIENT_SECRET"], os.environ["YOUTUBE_REDIRECT_URI"],
+    token_store=YOUTUBE_TOKEN_STORE,
+) if all(os.environ.get(key) for key in (
+    "YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET", "YOUTUBE_REDIRECT_URI",
+)) else None
+if YOUTUBE_OAUTH and YOUTUBE_OAUTH.tokens:
+    UPLOADS.client = OAuthYouTubeClient(YOUTUBE_OAUTH)
+SCHEDULER: RuntimeScheduler | None = None
+API_AUTH = ApiKeyGuard(os.environ.get("AICUT_API_KEY"))
+MAX_REQUEST_BYTES = int(os.environ.get("AICUT_MAX_REQUEST_BYTES", str(1024 * 1024)))
+if MAX_REQUEST_BYTES <= 0:
+    raise ValueError("AICUT_MAX_REQUEST_BYTES는 0보다 커야 합니다.")
+BACKUPS = DatabaseBackupManager(
+    DB, os.environ.get("AICUT_BACKUP_DIR", ROOT / "backups"),
+    retention_count=int(os.environ.get("AICUT_BACKUP_RETENTION", "7")),
+)
+READINESS_STORAGE = os.environ.get("AICUT_OUTPUT_DIR", ROOT / "outputs")
+READINESS_MIN_FREE_BYTES = int(os.environ.get("AICUT_MIN_FREE_BYTES", "0"))
+READINESS_TOOLS = tuple(filter(None, (
+    item.strip() for item in os.environ.get("AICUT_REQUIRED_TOOLS", "").split(",")
+)))
+
+
+def scheduled_uploads() -> object:
+    if isinstance(UPLOADS.client, UnconfiguredYouTubeClient):
+        return {"disabled": "YouTube OAuth 또는 access token이 필요합니다."}
+    return UPLOADS.submit_due()
+
+
+def scheduled_analytics() -> object:
+    if not YOUTUBE_OAUTH or not YOUTUBE_OAUTH.tokens:
+        return {"disabled": "YouTube Analytics OAuth가 필요합니다."}
+    client = YouTubeAnalyticsClient(YOUTUBE_OAUTH.access_token)
+    return AnalyticsCollectionManager(DB, client).run_due()
 
 
 class ApiHandler(BaseHTTPRequestHandler):
     server_version = "AICUT/1.0"
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if not API_AUTH.authorized(path, self.headers):
+            return self.unauthorized()
         try:
             if path == "/api/health":
                 self.json({"status": "ok", "service": "aicut-local-runtime"})
+            elif path == "/api/ready":
+                readiness = runtime_readiness(
+                    DB, READINESS_STORAGE, SCHEDULER.status() if SCHEDULER else {},
+                    min_free_bytes=READINESS_MIN_FREE_BYTES, required_tools=READINESS_TOOLS,
+                )
+                status = HTTPStatus.OK if readiness["status"] == "READY" else HTTPStatus.SERVICE_UNAVAILABLE
+                self.json(readiness, status)
             elif path == "/api/projects":
                 self.json(DB.list_projects())
             elif path.startswith("/api/projects/") and path.endswith("/candidates"):
@@ -57,8 +115,31 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.json(DB.logs())
             elif path == "/api/uploads":
                 self.json(DB.list_uploads())
+            elif path == "/api/runtime/scheduler":
+                self.json(SCHEDULER.status() if SCHEDULER else {"running": False})
+            elif path == "/api/runtime/backups":
+                self.json(BACKUPS.list())
+            elif path == "/api/runtime/scheduler/runs":
+                query = parse_qs(parsed.query)
+                self.json(DB.list_scheduler_runs(int(query.get("limit", ["50"])[0])))
+            elif path == "/api/youtube/oauth/start":
+                if not YOUTUBE_OAUTH:
+                    raise ValueError("YouTube OAuth 환경변수가 설정되지 않았습니다.")
+                self.json(YOUTUBE_OAUTH.authorization_url())
+            elif path == "/api/youtube/oauth/callback":
+                if not YOUTUBE_OAUTH:
+                    raise ValueError("YouTube OAuth 환경변수가 설정되지 않았습니다.")
+                query = parse_qs(parsed.query)
+                tokens = YOUTUBE_OAUTH.exchange_callback(
+                    query.get("code", [""])[0], query.get("state", [""])[0],
+                )
+                UPLOADS.client = OAuthYouTubeClient(YOUTUBE_OAUTH)
+                self.json({"authorized": True, "expires_at": tokens.expires_at})
             elif path == "/api/calibrations":
                 self.json(DB.list_calibrations())
+            elif path == "/api/strategies":
+                channel_ref = parse_qs(parsed.query).get("channel_ref", [""])[0]
+                self.json(DB.list_strategy_versions(channel_ref))
             elif path == "/api/learning/source-output":
                 self.json(DB.list_source_output_pairs())
             elif path.startswith("/api/episodes/") and path.endswith("/performance"):
@@ -72,6 +153,8 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if not API_AUTH.authorized(path, self.headers):
+            return self.unauthorized()
         try:
             payload = self.body()
             if path == "/api/projects":
@@ -97,9 +180,54 @@ class ApiHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/episodes/") and path.endswith("/performance"):
                 episode_id = path.split("/")[3]
                 metrics = validate_metrics(payload["metrics"])
+                version = DB.latest_planning_version_for_episode(episode_id)
+                if version:
+                    metrics["planning_version_id"] = version["planning_version_id"]
+                    metrics["planning_version_number"] = version["version_number"]
+                if payload.get("attribution_profile"):
+                    metrics["cut_attribution"] = attribute_retention_to_cuts(
+                        metrics, DB.get_timeline(episode_id), payload["attribution_profile"],
+                    )
                 snapshot = DB.save_performance(episode_id, metrics)
                 snapshot["insights"] = performance_insights(metrics, payload["profile"])
                 self.json(snapshot, HTTPStatus.CREATED)
+            elif path.startswith("/api/episodes/") and path.endswith("/analytics/collect"):
+                episode_id = path.split("/")[3]
+                episode = DB.get_episode(episode_id)
+                if not YOUTUBE_OAUTH:
+                    raise ValueError("YouTube Analytics OAuth가 설정되지 않았습니다.")
+                video_id = payload.get("video_id") or next((
+                    item["youtube_video_id"] for item in DB.list_uploads()
+                    if item["episode_id"] == episode_id and item["status"] == "COMPLETE"
+                ), None)
+                duration = episode.get("planned_duration_sec") or sum(
+                    item["source_end_sec"] - item["source_start_sec"]
+                    for item in DB.get_timeline(episode_id) if item["pacing_mode"] != "CUT"
+                )
+                metrics = YouTubeAnalyticsClient(YOUTUBE_OAUTH.access_token).collect_video_metrics(
+                    video_id, date.fromisoformat(payload["start_date"]),
+                    date.fromisoformat(payload["end_date"]), duration,
+                )
+                self.json(DB.save_performance(episode_id, metrics), HTTPStatus.CREATED)
+            elif path == "/api/analytics/run-due":
+                if not YOUTUBE_OAUTH:
+                    raise ValueError("YouTube Analytics OAuth가 설정되지 않았습니다.")
+                manager = AnalyticsCollectionManager(DB, YouTubeAnalyticsClient(YOUTUBE_OAUTH.access_token))
+                self.json(manager.run_due(), HTTPStatus.OK)
+            elif path == "/api/uploads/run-due":
+                self.json(UPLOADS.submit_due(), HTTPStatus.ACCEPTED)
+            elif path == "/api/runtime/backup":
+                self.json(BACKUPS.create(), HTTPStatus.CREATED)
+            elif path == "/api/strategies/analyze":
+                channel_ref = str(payload.get("channel_ref", "")).strip()
+                if not channel_ref:
+                    raise ValueError("channel_ref가 필요합니다.")
+                strategy = aggregate_edit_strategies(
+                    DB.list_channel_performance(channel_ref), payload["profile"],
+                )
+                self.json(DB.save_strategy_version(channel_ref, strategy), HTTPStatus.CREATED)
+            elif path.startswith("/api/strategies/") and path.endswith("/activate"):
+                self.json(DB.activate_strategy_version(path.split("/")[3]))
             elif path.startswith("/api/projects/") and path.endswith("/run"):
                 project_id = path.split("/")[3]
                 DB.get_project(project_id)
@@ -225,6 +353,40 @@ class ApiHandler(BaseHTTPRequestHandler):
                 upload_id = path.split("/")[3]
                 accepted = UPLOADS.submit(upload_id)
                 self.json({"upload_id": upload_id, "accepted": accepted}, HTTPStatus.ACCEPTED if accepted else HTTPStatus.CONFLICT)
+            elif path.startswith("/api/uploads/") and path.endswith("/cancel"):
+                upload_id = path.split("/")[3]
+                accepted = UPLOADS.cancel(upload_id)
+                self.json(
+                    {"upload_id": upload_id, "accepted": accepted},
+                    HTTPStatus.ACCEPTED if accepted else HTTPStatus.CONFLICT,
+                )
+            elif path.startswith("/api/uploads/") and path.endswith("/thumbnail"):
+                upload_id = path.split("/")[3]
+                job = next((item for item in DB.list_uploads() if item["upload_id"] == upload_id), None)
+                if not job or job["status"] != "COMPLETE" or not job.get("youtube_video_id"):
+                    raise ValueError("완료된 YouTube 업로드가 필요합니다.")
+                thumbnail_path = payload.get("thumbnail_path") or job.get("thumbnail_path")
+                method = getattr(UPLOADS.client, "upload_thumbnail", None)
+                if not method:
+                    raise ValueError("현재 YouTube 클라이언트가 썸네일 업로드를 지원하지 않습니다.")
+                result = method(job["youtube_video_id"], thumbnail_path)
+                self.json({"upload": DB.record_thumbnail_uploaded(upload_id), "youtube": result})
+            elif path.startswith("/api/uploads/") and path.endswith("/publication"):
+                upload_id = path.split("/")[3]
+                job = next((item for item in DB.list_uploads() if item["upload_id"] == upload_id), None)
+                if not job or job["status"] != "COMPLETE" or not job.get("youtube_video_id"):
+                    raise ValueError("완료된 YouTube 업로드가 필요합니다.")
+                privacy = str(payload.get("privacy_status", "")).upper()
+                publish_at = datetime.fromisoformat(payload["publish_at"]) if payload.get("publish_at") else None
+                method = getattr(UPLOADS.client, "update_video_status", None)
+                if not method:
+                    raise ValueError("현재 YouTube 클라이언트가 공개 상태 변경을 지원하지 않습니다.")
+                result = method(job["youtube_video_id"], privacy, publish_at)
+                recorded = DB.record_upload_publication(
+                    upload_id, "SCHEDULED" if publish_at else privacy,
+                    publish_at.isoformat() if publish_at else None,
+                )
+                self.json({"upload": recorded, "youtube": result})
             else:
                 self.json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
         except ValueError as error:
@@ -235,8 +397,29 @@ class ApiHandler(BaseHTTPRequestHandler):
             self.json({"error": "not_found", "id": str(error.args[0])}, HTTPStatus.NOT_FOUND)
 
     def body(self) -> dict:
-        length = int(self.headers.get("Content-Length", 0))
-        return json.loads(self.rfile.read(length) or b"{}")
+        return read_json_object(
+            self.rfile, self.headers.get("Content-Length"), self.headers.get("Content-Type"),
+            max_bytes=MAX_REQUEST_BYTES,
+        )
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.end_headers()
+
+    def unauthorized(self) -> None:
+        encoded = json.dumps({
+            "error": "unauthorized", "message": "유효한 Bearer API key가 필요합니다.",
+        }, ensure_ascii=False).encode()
+        self.send_response(HTTPStatus.UNAUTHORIZED)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("WWW-Authenticate", 'Bearer realm="aicut"')
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(encoded)
 
     def json(self, value: object, status: HTTPStatus = HTTPStatus.OK) -> None:
         encoded = json.dumps(value, ensure_ascii=False).encode()
@@ -267,12 +450,30 @@ class ApiHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    global SCHEDULER
     parser = argparse.ArgumentParser(description="AICUT local API and web server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
     args = parser.parse_args()
+    interval = float(os.environ.get("AICUT_SCHEDULER_INTERVAL_SEC", "60"))
+    backup_interval = float(os.environ.get("AICUT_BACKUP_INTERVAL_SEC", "86400"))
+    SCHEDULER = RuntimeScheduler({
+        "uploads": scheduled_uploads,
+        "analytics": scheduled_analytics,
+        "backups": PeriodicTask(BACKUPS.create, backup_interval),
+    }, interval, on_run=lambda results, completed_at: DB.save_scheduler_run(results, completed_at))
+    SCHEDULER.start()
     print(f"AICUT local runtime: http://{args.host}:{args.port}")
-    ThreadingHTTPServer((args.host, args.port), ApiHandler).serve_forever()
+    server = ThreadingHTTPServer((args.host, args.port), ApiHandler)
+    try:
+        server.serve_forever()
+    finally:
+        SCHEDULER.stop(5)
+        PIPELINE.cancel_all()
+        UPLOADS.cancel_all()
+        PIPELINE.shutdown(cancel_running=False)
+        UPLOADS.shutdown(cancel_running=False)
+        server.server_close()
 
 
 if __name__ == "__main__":

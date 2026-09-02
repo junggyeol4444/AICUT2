@@ -8,6 +8,7 @@ from backend.database import Database
 from backend.understanding import (
     PreprocessPlan, UnderstandingError, build_preprocess_commands, build_scan_plan,
     execute_preprocess, validate_transcript_segments,
+    select_precision_ranges,
 )
 
 
@@ -57,6 +58,29 @@ class BroadcastUnderstandingTest(unittest.TestCase):
                 "words": [{"start_sec": 9, "end_sec": 11, "word": "오류"}],
             }], 100)
 
+    def test_precision_ranges_use_calibrated_multimodal_signals_and_merge_context(self):
+        ranges = select_precision_ranges(100, [{
+            "start_sec": 10, "end_sec": 12, "confidence": 0.4,
+        }], [{
+            "modality": "AUDIO", "kind": "SIGNAL_WINDOW", "track_index": 0,
+            "start_sec": 12, "end_sec": 13, "payload": {"rms_dbfs": -30},
+        }, {
+            "modality": "AUDIO", "kind": "SIGNAL_WINDOW", "track_index": 0,
+            "start_sec": 13, "end_sec": 14, "payload": {"rms_dbfs": -10},
+        }, {
+            "modality": "VISION", "kind": "FRAME_SIGNAL", "start_sec": 50, "end_sec": 55,
+            "payload": {"scd.score": 0.8},
+        }], {
+            "context_before_sec": 2, "context_after_sec": 3, "stt_confidence_below": 0.5,
+            "audio_rms_delta_db": 15, "vision_scene_score_above": 0.7,
+        })
+        self.assertEqual([(item["start_sec"], item["end_sec"]) for item in ranges], [(8, 17), (48, 58)])
+        self.assertEqual(ranges[0]["reason"], "low_stt_confidence,audio_rms_change")
+
+    def test_precision_policy_requires_context_values(self):
+        with self.assertRaises(UnderstandingError):
+            select_precision_ranges(10, [], [], {})
+
     def test_scan_and_transcript_are_persisted(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "understanding.db")
@@ -67,6 +91,24 @@ class BroadcastUnderstandingTest(unittest.TestCase):
                 "start_sec": 1, "end_sec": 2, "text": "테스트", "words": [],
             }], 100)
             self.assertEqual(database.replace_transcript(project["project_id"], segments), 1)
+
+    def test_stt_audio_and_vision_share_one_ordered_timeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "understanding.db")
+            project = database.create_project({"file_path": "/media/live.mkv", "duration_sec": 20})
+            database.replace_transcript(project["project_id"], validate_transcript_segments([{
+                "start_sec": 5, "end_sec": 7, "text": "대사", "confidence": .9, "words": [],
+            }], 20))
+            database.replace_observations(project["project_id"], "AUDIO", [{
+                "kind": "SIGNAL_WINDOW", "track_index": 0, "start_sec": 0, "end_sec": 1,
+                "payload": {"rms_dbfs": -10},
+            }])
+            database.replace_observations(project["project_id"], "VISION", [{
+                "kind": "FRAME_SIGNAL", "start_sec": 5, "end_sec": 6, "payload": {"scd.score": .8},
+            }])
+            timeline = database.analysis_input(project["project_id"])["timeline"]
+            self.assertEqual([item["modality"] for item in timeline], ["AUDIO", "VISION", "STT"])
+            self.assertEqual(timeline[-1]["payload"]["text"], "대사")
 
 
 if __name__ == "__main__":

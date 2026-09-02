@@ -99,6 +99,68 @@ def build_scan_plan(
     return windows
 
 
+def select_precision_ranges(
+    duration_sec: float, transcript: list[dict], observations: list[dict], policy: dict,
+) -> list[dict]:
+    """Select second-pass ranges from aligned signals using channel-calibrated policy values."""
+    before = _policy_number(policy, "context_before_sec", minimum=0)
+    after = _policy_number(policy, "context_after_sec", minimum=0)
+    candidates: list[tuple[float, float, str]] = []
+    if policy.get("stt_confidence_below") is not None:
+        limit = _policy_number(policy, "stt_confidence_below", minimum=0, maximum=1)
+        for segment in transcript:
+            confidence = segment.get("confidence")
+            if confidence is not None and float(confidence) < limit:
+                candidates.append((float(segment["start_sec"]), float(segment["end_sec"]), "low_stt_confidence"))
+    if policy.get("audio_rms_delta_db") is not None:
+        limit = _policy_number(policy, "audio_rms_delta_db", minimum=0)
+        previous: dict[int, dict] = {}
+        for item in observations:
+            if item.get("modality") != "AUDIO" or item.get("kind") != "SIGNAL_WINDOW":
+                continue
+            rms = item.get("payload", {}).get("rms_dbfs")
+            track = int(item.get("track_index") or 0)
+            if rms is not None and track in previous:
+                prior = previous[track]
+                prior_rms = prior.get("payload", {}).get("rms_dbfs")
+                if prior_rms is not None and abs(float(rms) - float(prior_rms)) >= limit:
+                    candidates.append((float(prior["start_sec"]), float(item["end_sec"]), "audio_rms_change"))
+            if rms is not None:
+                previous[track] = item
+    if policy.get("vision_scene_score_above") is not None:
+        limit = _policy_number(policy, "vision_scene_score_above", minimum=0)
+        for item in observations:
+            score = item.get("payload", {}).get("scd.score")
+            if item.get("modality") == "VISION" and score is not None and float(score) >= limit:
+                candidates.append((float(item["start_sec"]), float(item["end_sec"]), "vision_scene_change"))
+    expanded = [{
+        "start_sec": max(0, start - before), "end_sec": min(duration_sec, end + after), "reason": reason,
+    } for start, end, reason in candidates]
+    return _merge_precision_ranges(expanded)
+
+
+def _policy_number(policy: dict, key: str, *, minimum: float, maximum: float | None = None) -> float:
+    if key not in policy:
+        raise UnderstandingError(f"정밀 분석 정책에 {key} 값이 필요합니다.")
+    value = float(policy[key])
+    if value < minimum or (maximum is not None and value > maximum):
+        raise UnderstandingError(f"정밀 분석 정책 {key} 값이 범위를 벗어났습니다.")
+    return value
+
+
+def _merge_precision_ranges(ranges: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    for item in sorted(ranges, key=lambda value: (value["start_sec"], value["end_sec"])):
+        if merged and item["start_sec"] <= merged[-1]["end_sec"]:
+            merged[-1]["end_sec"] = max(merged[-1]["end_sec"], item["end_sec"])
+            reasons = merged[-1]["reason"].split(",")
+            if item["reason"] not in reasons:
+                merged[-1]["reason"] += f",{item['reason']}"
+        else:
+            merged.append(dict(item))
+    return merged
+
+
 def validate_transcript_segments(raw_segments: list[dict], duration_sec: float) -> list[dict]:
     result = []
     for value in raw_segments:

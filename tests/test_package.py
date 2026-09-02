@@ -6,8 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from backend.package import (
-    MetadataPackage, PackageError, build_thumbnail_commands,
-    description_with_chapters, extract_thumbnails, write_metadata_package,
+    MetadataPackage, PackageError, build_episode_package, build_thumbnail_commands,
+    description_with_chapters, extract_thumbnails, run_packaging_model, write_metadata_package,
 )
 
 
@@ -51,3 +51,49 @@ class PackageTest(unittest.TestCase):
                 "title_options": ["A", "B", "C"],
                 "chapters": [{"start_sec": 10, "title": "뒤"}, {"start_sec": 2, "title": "앞"}],
             })
+
+    def test_external_packager_validates_episode_and_output_timestamps(self):
+        analysis = {"episodes": [{"episode_id": "episode-1", "timeline": [
+            {"source_start_sec": 10, "source_end_sec": 20, "pacing_mode": "KEEP"},
+        ]}]}
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+
+            def runner(_command, **_kwargs):
+                (output / "packaging-output.json").write_text(json.dumps({"packages": [{
+                    "episode_id": "episode-1", "metadata": {
+                        "title_options": ["A", "B", "C"], "description": "summary", "tags": ["game"],
+                        "chapters": [{"start_sec": 0, "title": "start"}],
+                    }, "thumbnail_timestamps": [2.5, 9.5],
+                }]}))
+                return SimpleNamespace(returncode=0, stderr="")
+
+            result = run_packaging_model(["packager"], analysis, output, runner)
+        self.assertEqual(result["packages"][0]["thumbnail_timestamps"], [2.5, 9.5])
+
+    def test_external_packager_rejects_thumbnail_outside_edited_duration(self):
+        analysis = {"episodes": [{"episode_id": "episode-1", "timeline": [
+            {"source_start_sec": 10, "source_end_sec": 12, "pacing_mode": "KEEP"},
+        ]}]}
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+
+            def runner(_command, **_kwargs):
+                (output / "packaging-output.json").write_text(json.dumps({"packages": [{
+                    "episode_id": "episode-1", "metadata": {"title_options": ["A", "B", "C"]},
+                    "thumbnail_timestamps": [3],
+                }]}))
+                return SimpleNamespace(returncode=0, stderr="")
+
+            with self.assertRaises(PackageError):
+                run_packaging_model(["packager"], analysis, output, runner)
+
+    def test_build_episode_package_returns_persistable_assets(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "backend.package.extract_thumbnails", return_value=[str(Path(directory) / "thumbnail-01.jpg")]
+        ):
+            result = build_episode_package(
+                {"title_options": ["A", "B", "C"]}, "episode.mp4", [1], directory,
+            )
+        self.assertEqual(result["metadata"]["title_options"], ("A", "B", "C"))
+        self.assertEqual(len(result["thumbnails"]), 1)
