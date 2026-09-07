@@ -131,10 +131,41 @@
 
 | 화면 | 엔드포인트 | 문서 |
 |---|---|---|
-| 입력 패널 | `POST /api/projects` | 15.2 |
+| 입력 패널 | `POST /api/projects`, `GET /api/profiles` | 15.2 |
 | 진행 모니터 | `GET /api/jobs/<id>` (상태 + 실시간 로그) | 15.3 |
 | 콘텐츠 후보 검토 | `GET/POST /api/projects/<id>/candidates` | 15.4 |
-| 결과 패널 | `GET /api/projects/<id>/episodes`, `/api/episodes/<id>/plan`, `POST …/review` | 15.5 |
+| 결과 패널 | `GET /api/projects/<id>/episodes`, `/api/episodes/<id>/plan`, `/thumbnail/<n>`, `/video`, `POST …/review`, `POST …/reveal` | 15.5 |
+
+15.2가 요구하는 네 가지가 모두 화면에 있다.
+
+- **드래그 앤 드롭** — 브라우저는 JavaScript에 파일의 **이름**만 준다. 경로는 주지
+  않는다. 그래서 떨어뜨린 것을 그대로 보내면 파일명을 경로라고 우기는 셈이 된다
+  (Codex 구현의 `file?.path`가 정확히 그것이었고, 그 UI로는 실제 파일 등록이
+  불가능하다). 파일 관리자에서 끈 드롭은 보통 `file://` URI도 같이 실어 보내므로
+  그게 있으면 그걸 쓰고, 없으면 무엇이 빠졌는지 화면에 적는다.
+- **목표 길이 힌트** — 2.6대로 강제가 아니며 어긋나면 리포트의 `length_deviations`에 남는다.
+- **채널 프로필**
+- **캘리브레이션 프로파일 선택** — `GET /api/profiles`가 기본 프로파일(과 그 중
+  무엇이 아직 추측값인지)과 측정된 프로파일 목록을 함께 준다. 17장은 프로파일을
+  채널 단위로 못박으므로 선택은 제출 단위여야 한다. 프로젝트는 자기가 분석된
+  프로파일 이름을 들고 있고, `context()`는 나중에 그것으로 다시 읽는다 — 끝난
+  프로젝트를 다른 프로파일로 읽으면 그 결과를 만든 적 없는 임계값으로 보고하게 된다.
+
+15.5의 결과 패널:
+
+| 요구 | 어디 |
+|---|---|
+| 썸네일 프리뷰 | `GET /api/episodes/<id>/thumbnail/<n>` — 11.1의 후보 프레임, 템플릿 없이 사람이 고른다 |
+| 제목 후보 3종 | `episodes` 응답의 `titles` |
+| 재생 프리뷰 | `GET /api/episodes/<id>/video` — Range 지원. 없으면 스크럽할 때마다 처음부터 다시 받는다 |
+| 편집 계획 열람 | `GET /api/episodes/<id>/plan` |
+| 폴더 열기 | `POST /api/episodes/<id>/reveal` |
+| 작업 리포트 | `GET /api/projects/<id>/report` |
+
+미디어 라우트는 DB에 적힌 경로를 워크스페이스 안으로 가둔다. 경로는 이 파이프라인이
+`workspace/<project>/…`에 직접 쓴 것이지만, 그래도 가두는 이유는 손으로 고친 행 하나가
+프리뷰 라우트를 임의 파일 읽기로 바꾸지 못하게 하기 위해서다. 확장자도 허용 목록이다.
+`reveal`은 프로그램을 실행하므로 루프백에서 온 요청만 받고, 셸 없이 고정 argv로 연다.
 
 - 후보 화면은 AI의 결정과 **판단 근거**를 함께 띄우고, 동의/반대를 받아
   `TB_CONTENT_CANDIDATE.human_verdict`에 적재한다 (12.3 B 학습 데이터).

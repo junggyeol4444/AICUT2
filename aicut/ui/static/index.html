@@ -48,6 +48,17 @@
   td, th { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
   th { color: var(--dim); font-weight: 500; font-size: 12px; }
   a { color: var(--accent); }
+  .drop { border: 1px dashed var(--line); border-radius: 6px; padding: 14px; text-align: center;
+          color: var(--dim); font-size: 12.5px; margin-bottom: 10px; transition: .12s; }
+  .drop.over { border-color: var(--accent); color: var(--accent); background: #10161d; }
+  .thumbs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .thumbs img { height: 84px; border-radius: 4px; border: 1px solid var(--line); cursor: zoom-in;
+                background: #000; }
+  .thumbs img:hover { border-color: var(--accent); }
+  video { width: 100%; max-height: 340px; border-radius: 4px; background: #000; margin-top: 10px; }
+  .titles { margin-top: 8px; }
+  .titles li { font-size: 13px; margin: 3px 0; }
+  .titles li span { color: var(--dim); margin-right: 6px; }
 </style>
 </head>
 <body>
@@ -68,6 +79,7 @@
   <section id="input" class="on">
     <div class="card">
       <label>원본 파일 경로 (.mp4 / .mkv)</label>
+      <div class="drop" id="drop">파일을 여기에 끌어다 놓거나, 아래에 전체 경로를 입력한다</div>
       <input id="source" placeholder="/media/stream_2026-08-19.mkv">
       <label>기존 트랜스크립트 (선택, WhisperX JSON) — 없으면 저장된 발화를 쓴다</label>
       <input id="transcript" placeholder="/media/stream.transcript.json">
@@ -79,6 +91,10 @@
         <div class="grow">
           <label>채널</label>
           <input id="channel" placeholder="mychannel">
+        </div>
+        <div class="grow">
+          <label>캘리브레이션 프로파일 (17장)</label>
+          <select id="profile-pick"></select>
         </div>
         <div class="grow">
           <label>어디까지</label>
@@ -215,6 +231,7 @@ el("submit").onclick = async () => {
       transcript: el("transcript").value || null,
       length_hint_sec: el("hint").value || null,
       channel_ref: el("channel").value,
+      profile_id: el("profile-pick").value || null,
       render: el("mode").value === "render",
     });
     currentJob = res.job_id;
@@ -285,16 +302,51 @@ el("ep-load").onclick = async () => {
       </div>
       <div class="muted" style="margin-top:6px">구조 ${esc(e.structure)} — ${esc(e.rationale)}</div>
       ${e.notes ? `<div class="muted">${esc(e.notes)}</div>` : ""}
-      ${e.titles.length > 1 ? `<div class="muted">다른 제목 후보: ${e.titles.slice(1).map(esc).join(" | ")}</div>` : ""}
-      ${e.output ? `<div class="muted">출력: ${esc(e.output)}</div>` : ""}
+      ${e.titles.length ? `<ol class="titles">${e.titles.map((t) =>
+          `<li><span>후보</span>${esc(t)}</li>`).join("")}</ol>` : ""}
+      ${(e.thumbnails || []).length ? `<div class="thumbs">${e.thumbnails.map((_, i) =>
+          `<img loading="lazy" alt="썸네일 후보 ${i + 1}" data-thumb="${esc(e.episode_id)}" data-i="${i}">`
+        ).join("")}</div><div class="muted">썸네일 후보 — 템플릿 없이 사람이 고른다 (11.1)</div>` : ""}
+      ${e.output ? `<video controls preload="none" data-video="${esc(e.episode_id)}"></video>
+        <div class="muted">출력: ${esc(e.output)}</div>` : ""}
       <div class="row" style="margin-top:10px">
         <button class="small" data-plan="${esc(e.episode_id)}">편집 계획 보기</button>
+        ${e.output ? `<button class="small" data-reveal="${esc(e.episode_id)}">폴더 열기</button>` : ""}
         <button class="small" data-review="approve" data-e="${esc(e.episode_id)}">승인</button>
         <button class="small" data-review="reject" data-e="${esc(e.episode_id)}">반려</button>
         <span class="tag">${esc(e.review_status)}</span>
       </div>
     </div>`).join("") || `<div class="card muted">에피소드가 없다.</div>`;
 
+  // Media rides on the API, so it needs the same key. Fetch as a blob rather
+  // than pointing src at the URL: an <img src>/<video src> cannot carry a
+  // header, and putting the key in the query string would land it in the log.
+  const mediaUrl = async (path) => {
+    const key = apiKey();
+    const res = await fetch(path, key ? { headers: { Authorization: `Bearer ${key}` } } : {});
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return URL.createObjectURL(await res.blob());
+  };
+  el("ep-list").querySelectorAll("img[data-thumb]").forEach(async (img) => {
+    try { img.src = await mediaUrl(`/api/episodes/${img.dataset.thumb}/thumbnail/${img.dataset.i}`); }
+    catch { img.replaceWith(Object.assign(document.createElement("span"),
+      { className: "muted", textContent: "썸네일 파일이 없다" })); }
+  });
+  el("ep-list").querySelectorAll("video[data-video]").forEach((v) => {
+    // Loaded on demand: a rendered episode is hundreds of MB and the operator
+    // may only want the plan.
+    v.onplay = v.onclick = async () => {
+      if (v.src) return;
+      try { v.src = await mediaUrl(`/api/episodes/${v.dataset.video}/video`); v.play(); }
+      catch (e) { alert(`재생할 수 없다: ${e.message}`); }
+    };
+  });
+  el("ep-list").querySelectorAll("button[data-reveal]").forEach((b) => b.onclick = async () => {
+    try { const r = await post(`/api/episodes/${b.dataset.reveal}/reveal`, {});
+          b.textContent = "열었다"; setTimeout(() => b.textContent = "폴더 열기", 1500);
+          console.info(r.opened); }
+    catch (e) { alert(e.message); }
+  });
   el("ep-list").querySelectorAll("button[data-plan]").forEach((b) => b.onclick = async () => {
     const data = await api(`/api/episodes/${b.dataset.plan}/plan`);
     el("plan-card").style.display = "";
@@ -310,7 +362,44 @@ el("ep-load").onclick = async () => {
   });
 };
 
+// 15.2 drag and drop. A browser hands JavaScript only the file's NAME, never
+// its path — so a page that posts what it was dropped is posting a filename and
+// calling it a path. A drop from a file manager usually also carries a file://
+// URI, which does have the path; use that when it is there, and say plainly
+// what is missing when it is not.
+const drop = el("drop");
+["dragenter", "dragover"].forEach((type) => drop.addEventListener(type, (ev) => {
+  ev.preventDefault(); drop.classList.add("over");
+}));
+["dragleave", "drop"].forEach((type) => drop.addEventListener(type, () => drop.classList.remove("over")));
+drop.addEventListener("drop", (ev) => {
+  ev.preventDefault();
+  const uri = (ev.dataTransfer.getData("text/uri-list") || ev.dataTransfer.getData("text/plain") || "").trim();
+  if (uri.startsWith("file://")) {
+    el("source").value = decodeURIComponent(new URL(uri).pathname);
+    drop.textContent = "경로를 읽었다";
+    return;
+  }
+  const file = ev.dataTransfer.files[0];
+  if (!file) return;
+  el("source").value = file.name;
+  drop.textContent = `${file.name} — 브라우저는 파일명만 넘겨준다. 앞에 전체 경로를 붙여라`;
+});
+
+async function loadProfiles() {
+  const sel = el("profile-pick");
+  try {
+    const data = await api("/api/profiles");
+    const measured = data.measured.map((m) =>
+      `<option value="${esc(m.profile_id)}">${esc(m.name)} · ${esc(m.channel_ref || "채널 미지정")} · ${esc(m.measured_at || "미측정")}</option>`);
+    sel.innerHTML =
+      `<option value="">기본 프로파일 (${esc(data.default.name)})${data.default.provisional.length ? " — 추측값 포함" : ""}</option>`
+      + measured.join("");
+  } catch { sel.innerHTML = `<option value="">기본 프로파일</option>`; }
+}
+
 loadProfile();
+loadProfiles();
 loadProjects();
 </script>
 </body>

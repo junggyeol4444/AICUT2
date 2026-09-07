@@ -23,9 +23,13 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import os
 import re
+import subprocess
+import sys
 import threading
 import uuid
+from dataclasses import dataclass
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -58,6 +62,26 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 # on the strength of a header the sender chose is how a local tool becomes a
 # way to exhaust the machine.
 MAX_BODY_BYTES = 4 * 1024 * 1024
+
+#: Media the result panel (15.5) is allowed to show. The extension decides the
+#: Content-Type; anything not listed is not served, so a stray path in the
+#: database cannot turn a preview route into a general file reader.
+MEDIA_TYPES = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".webp": "image/webp", ".mp4": "video/mp4",
+}
+
+
+@dataclass(frozen=True)
+class FileResponse:
+    """A route's answer that is bytes on disk rather than JSON.
+
+    Returned by the thumbnail and video routes of 15.5 and streamed by the
+    handler; keeping it a value means routing still lives in one table.
+    """
+
+    path: Path
+    content_type: str
 
 
 class UiServer:
@@ -130,18 +154,128 @@ class UiServer:
         except Exception:                     # a connection already gone
             pass
 
-    def profile(self) -> CalibrationProfile:
-        return CalibrationProfile.load(self.profile_path)
+    def profile(self, profile_id: str | None = None) -> CalibrationProfile:
+        """The server default, or one measured profile from the database.
 
-    def pipeline(self) -> Pipeline:
+        17장 makes a profile channel-scoped: a mic or game change means the
+        numbers no longer describe the broadcast being analysed. So the choice
+        belongs per submission (15.2), not only to the process.
+        """
+        if not profile_id:
+            return CalibrationProfile.load(self.profile_path)
+        for row in self.store.profiles():
+            if row["profile_id"] == profile_id:
+                return CalibrationProfile.from_mapping(row["params"])
+        raise KeyError(f"no calibration profile {profile_id}")
+
+    def profiles(self) -> dict[str, Any]:
+        """What 15.2's profile picker offers, and what is still a guess (17.5)."""
+        default = self.profile()
+        return {
+            "default": {
+                "name": default.name,
+                "source": str(default.source_path),
+                "measured_at": default.measured_at,
+                "provisional": sorted(default.provisional),
+            },
+            "measured": [
+                {"profile_id": row["profile_id"], "name": row["name"],
+                 "channel_ref": row["channel_ref"], "measured_at": row["measured_at"],
+                 "eval_score": row["eval_score"]}
+                for row in self.store.profiles()
+            ],
+        }
+
+    def workspace_file(self, raw: str | None, *, what: str) -> Path:
+        """Resolve a stored path, refusing anything outside the workspace.
+
+        The paths come from the database, written by this pipeline into
+        `workspace/<project>/…`. Confining anyway is what keeps a hand-edited
+        row from turning a preview route into an arbitrary file read.
+        """
+        if not raw:
+            raise KeyError(f"no {what} for this episode yet")
+        target = Path(raw).expanduser().resolve()
+        root = self.workspace.resolve()
+        if root not in target.parents:
+            raise PermissionError(f"{what} is outside the workspace")
+        if not target.is_file():
+            raise KeyError(f"{what} is recorded but missing: {target}")
+        content_type = MEDIA_TYPES.get(target.suffix.lower())
+        if not content_type:
+            raise PermissionError(f"{target.suffix} is not a previewable type")
+        return target
+
+    def thumbnail(self, episode_id: str, index: str) -> FileResponse:
+        """One of 11.1's candidate frames. The operator picks; no template."""
+        episode = self.store.get_episode(episode_id)
+        if episode is None:
+            raise KeyError(f"unknown episode {episode_id}")
+        candidates = episode.thumbnail_candidates
+        position = int(index)
+        if not 0 <= position < len(candidates):
+            raise KeyError(f"episode {episode_id} has no thumbnail {position}")
+        target = self.workspace_file(candidates[position], what="thumbnail")
+        return FileResponse(target, MEDIA_TYPES[target.suffix.lower()])
+
+    def video(self, episode_id: str) -> FileResponse:
+        """The rendered episode, for 15.5's preview."""
+        episode = self.store.get_episode(episode_id)
+        if episode is None:
+            raise KeyError(f"unknown episode {episode_id}")
+        target = self.workspace_file(episode.output_mp4_path, what="rendered video")
+        return FileResponse(target, MEDIA_TYPES[target.suffix.lower()])
+
+    def reveal(self, episode_id: str, body: dict[str, Any], *, remote: str) -> dict[str, Any]:
+        """Open the output folder in the OS file manager (15.5 "폴더 열기").
+
+        Only for a request from this machine. The route runs a program, and a
+        desktop affordance is not one a remote caller should reach even when
+        the API key is off — which is exactly when an exposed port is at risk.
+        """
+        if remote not in ("127.0.0.1", "::1", "localhost"):
+            raise PermissionError("the folder can only be opened from this machine")
+        episode = self.store.get_episode(episode_id)
+        if episode is None:
+            raise KeyError(f"unknown episode {episode_id}")
+        target = self.workspace_file(episode.output_mp4_path, what="rendered video")
+        directory = target.parent
+        # A fixed argv per platform, never a shell: the path is data.
+        if sys.platform == "darwin":
+            command = ["open", "-R", str(target)]
+        elif os.name == "nt":
+            command = ["explorer", f"/select,{target}"]
+        else:
+            command = ["xdg-open", str(directory)]
+        try:
+            subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as exc:
+            raise AicutError(
+                f"could not open a file manager ({command[0]}: {exc}). The folder is {directory}"
+            ) from exc
+        return {"opened": str(directory)}
+
+    def pipeline(self, profile_id: str | None = None) -> Pipeline:
         knowledge = ProductionKnowledge.load(self.workspace / "knowledge.json").summary_for_planner()
         return Pipeline(
             self.store,
-            self.profile(),
+            self.profile(profile_id),
             get_producer(self.producer_name),
             workspace=self.workspace,
             knowledge=knowledge,
         )
+
+    def profile_for_project(self, project) -> CalibrationProfile:
+        """The profile this project was analysed with, not whatever is current.
+
+        `Pipeline.submit` records the profile's name on the project. Reading a
+        finished project back under a different profile would report thresholds
+        that never produced it — the silent mismatch 17장 is written to prevent.
+        """
+        for row in self.store.profiles():
+            if row["name"] == project.profile_name:
+                return CalibrationProfile.from_mapping(row["params"])
+        return CalibrationProfile.load(self.profile_path)
 
     def context(self, project_id: str) -> RunContext:
         project = self.store.get_project(project_id)
@@ -150,7 +284,7 @@ class UiServer:
         return RunContext(
             project=project,
             store=self.store,
-            profile=self.profile(),
+            profile=self.profile_for_project(project),
             producer=get_producer(self.producer_name),
             workspace=self.workspace,
         )
@@ -163,7 +297,9 @@ class UiServer:
         if not Path(source).exists():
             raise ValueError(f"file not found: {source}")
 
-        pipeline = self.pipeline()
+        # 15.2's profile picker. Unset means the server default, which is what
+        # a first run has before anything has been measured (17.4).
+        pipeline = self.pipeline(body.get("profile_id") or None)
         project = pipeline.submit(
             source,
             length_hint_sec=_optional_float(body.get("length_hint_sec")),
@@ -359,6 +495,12 @@ class _Handler(BaseHTTPRequestHandler):
             (re.compile(r"^/api/health$"), "GET", lambda: {"status": "ok", "service": "aicut"}),
             (re.compile(r"^/api/runtime$"), "GET", lambda: ui.runtime()),
             (re.compile(r"^/api/profile$"), "GET", lambda: ui.profile_info()),
+            (re.compile(r"^/api/profiles$"), "GET", lambda: ui.profiles()),
+            (re.compile(r"^/api/episodes/([\w-]+)/thumbnail/(\d+)$"), "GET",
+             lambda eid, index: ui.thumbnail(eid, index)),
+            (re.compile(r"^/api/episodes/([\w-]+)/video$"), "GET", lambda eid: ui.video(eid)),
+            (re.compile(r"^/api/episodes/([\w-]+)/reveal$"), "POST",
+             lambda eid, body: ui.reveal(eid, body, remote=self.client_address[0])),
             (re.compile(r"^/api/projects$"), "GET", lambda: ui.projects()),
             (re.compile(r"^/api/projects$"), "POST", lambda body: ui.submit(body)),
             (re.compile(r"^/api/jobs$"), "GET", lambda: ui.jobs.list()),
@@ -384,6 +526,59 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_file(self, response: FileResponse) -> None:
+        """Stream a file, honouring a byte range.
+
+        Without ranges a browser will still play an mp4, but it cannot seek —
+        it has to refetch from zero for every scrub. 15.5 calls for a preview,
+        and a preview you cannot scrub is not one.
+        """
+        size = response.path.stat().st_size
+        start, end = 0, size - 1
+        partial = False
+        header = self.headers.get("Range", "")
+        if header.startswith("bytes="):
+            first, _, last = header[len("bytes="):].partition("-")
+            try:
+                if first:
+                    start = int(first)
+                    end = int(last) if last else size - 1
+                elif last:                       # bytes=-N: the final N bytes
+                    start = max(0, size - int(last))
+            except ValueError:
+                start, end = 0, size - 1
+            else:
+                partial = True
+            end = min(end, size - 1)
+            if start > end or start >= size:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+        length = end - start + 1
+        self.send_response(206 if partial else 200)
+        self.send_header("Content-Type", response.content_type)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        # The rendered episode is the operator's own footage; nothing about it
+        # should be embedded by another page.
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
+        if partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        with response.path.open("rb") as handle:
+            handle.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = handle.read(min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+
     def _dispatch(self, method: str, body: dict[str, Any] | None = None) -> None:
         path = urlparse(self.path).path
         if not self.ui.guard.authorized(path, self.headers):
@@ -405,7 +600,11 @@ class _Handler(BaseHTTPRequestHandler):
             if body is not None:
                 args.append(body)
             try:
-                self._send(200, handler(*args))
+                result = handler(*args)
+                if isinstance(result, FileResponse):
+                    self._send_file(result)
+                else:
+                    self._send(200, result)
             except KeyError as exc:
                 self._send(404, {"error": str(exc)})
             except (ValueError, PermissionError, AicutError) as exc:

@@ -457,3 +457,160 @@ class SchedulerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# 5. The result panel's media routes (15.5) and the profile picker (15.2)
+# ---------------------------------------------------------------------------
+class UiMediaTests(unittest.TestCase):
+    """Thumbnails, video preview and the folder button — plus their confinement."""
+
+    @classmethod
+    def setUpClass(cls):
+        from aicut.models import Episode, Project
+
+        cls._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        cls.workspace = Path(cls._tmp.name)
+        cls.httpd, cls.ui = serve(cls.workspace, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+        store = cls.ui.store
+        project = Project(file_path="/media/stream.mkv", duration_sec=3600.0)
+        store.create_project(project)
+        cls.project_id = project.project_id
+
+        out_dir = cls.workspace / cls.project_id / "output"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cls.video_bytes = bytes(range(256)) * 40          # 10,240 bytes
+        (out_dir / "ep.mp4").write_bytes(cls.video_bytes)
+        (out_dir / "thumb0.jpg").write_bytes(b"\xff\xd8\xff-jpeg-bytes")
+
+        # A path deliberately outside the workspace, as a tampered row would hold.
+        cls.outside = Path(cls._tmp.name).parent / "outside-the-workspace.jpg"
+        cls.outside.write_bytes(b"\xff\xd8\xffSHOULD-NOT-BE-SERVED")
+
+        episode = Episode(
+            project_id=cls.project_id,
+            episode_id="ep",
+            target_type="장편",
+            title_candidates=["첫 번째", "두 번째", "세 번째"],
+            thumbnail_candidates=[str(out_dir / "thumb0.jpg"), str(cls.outside)],
+            output_mp4_path=str(out_dir / "ep.mp4"),
+        )
+        store.save_episode(episode)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.ui.close()
+        cls.outside.unlink(missing_ok=True)
+        cls._tmp.cleanup()
+
+    def _get(self, path: str, headers: dict | None = None):
+        req = urllib.request.Request(self.base + path, headers=headers or {})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as res:
+                return res.status, res.read(), dict(res.headers)
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read(), dict(exc.headers)
+
+    # -- 15.2 profile picker -------------------------------------------------
+    def test_profiles_lists_the_default_and_says_what_is_a_guess(self):
+        status, body, _ = self._get("/api/profiles")
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertIn("name", data["default"])
+        self.assertTrue(data["default"]["provisional"], "17.5: 미측정 항목을 선언해야 한다")
+        self.assertIsInstance(data["measured"], list)
+
+    def test_a_measured_profile_shows_up_and_can_be_selected(self):
+        self.ui.store.save_profile("게임합방", "mychannel", {"silence": {"level_db": -41.2}},
+                                   "2026-09-01T00:00:00Z", {"f1": 0.81})
+        status, body, _ = self._get("/api/profiles")
+        self.assertEqual(status, 200)
+        measured = json.loads(body)["measured"]
+        self.assertEqual([m["name"] for m in measured], ["게임합방"])
+        chosen = self.ui.profile(measured[0]["profile_id"])
+        self.assertAlmostEqual(chosen.get("silence.level_db"), -41.2)
+
+    def test_an_unknown_profile_id_is_404_not_a_silent_default(self):
+        """Falling back would analyse under thresholds the operator did not pick."""
+        with self.assertRaises(KeyError):
+            self.ui.profile("no-such-profile")
+
+    # -- 15.5 thumbnails -----------------------------------------------------
+    def test_a_thumbnail_candidate_is_served_as_an_image(self):
+        status, body, headers = self._get("/api/episodes/ep/thumbnail/0")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "image/jpeg")
+        self.assertEqual(body, b"\xff\xd8\xff-jpeg-bytes")
+
+    def test_a_thumbnail_outside_the_workspace_is_refused(self):
+        """A tampered row must not turn the preview route into a file reader."""
+        status, body, _ = self._get("/api/episodes/ep/thumbnail/1")
+        self.assertEqual(status, 400)
+        self.assertNotIn(b"SHOULD-NOT-BE-SERVED", body)
+
+    def test_an_out_of_range_thumbnail_index_is_404(self):
+        self.assertEqual(self._get("/api/episodes/ep/thumbnail/9")[0], 404)
+
+    # -- 15.5 video preview --------------------------------------------------
+    def test_the_rendered_video_is_served_whole(self):
+        status, body, headers = self._get("/api/episodes/ep/video")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, self.video_bytes)
+        self.assertEqual(headers["Accept-Ranges"], "bytes")
+        self.assertEqual(headers["Content-Type"], "video/mp4")
+
+    def test_a_byte_range_comes_back_as_206(self):
+        """Without this the operator cannot scrub the preview."""
+        status, body, headers = self._get("/api/episodes/ep/video", {"Range": "bytes=100-199"})
+        self.assertEqual(status, 206)
+        self.assertEqual(body, self.video_bytes[100:200])
+        self.assertEqual(headers["Content-Range"], f"bytes 100-199/{len(self.video_bytes)}")
+        self.assertEqual(headers["Content-Length"], "100")
+
+    def test_an_open_ended_range_runs_to_the_end(self):
+        status, body, _ = self._get("/api/episodes/ep/video", {"Range": "bytes=10200-"})
+        self.assertEqual(status, 206)
+        self.assertEqual(body, self.video_bytes[10200:])
+
+    def test_a_suffix_range_returns_the_tail(self):
+        status, body, _ = self._get("/api/episodes/ep/video", {"Range": "bytes=-50"})
+        self.assertEqual(status, 206)
+        self.assertEqual(body, self.video_bytes[-50:])
+
+    def test_a_range_past_the_end_is_416(self):
+        status, _, headers = self._get("/api/episodes/ep/video", {"Range": "bytes=999999-"})
+        self.assertEqual(status, 416)
+        self.assertEqual(headers["Content-Range"], f"bytes */{len(self.video_bytes)}")
+
+    def test_media_is_not_embeddable_or_sniffable(self):
+        _, _, headers = self._get("/api/episodes/ep/video")
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+        self.assertIn("default-src 'none'", headers["Content-Security-Policy"])
+
+    def test_an_unrendered_episode_is_404_not_500(self):
+        from aicut.models import Episode
+
+        self.ui.store.save_episode(Episode(project_id=self.project_id, episode_id="unrendered"))
+        self.assertEqual(self._get("/api/episodes/unrendered/video")[0], 404)
+
+    # -- 15.5 folder button --------------------------------------------------
+    def test_reveal_refuses_a_caller_that_is_not_this_machine(self):
+        """The route runs a program; a remote caller must not reach it."""
+        with self.assertRaises(PermissionError):
+            self.ui.reveal("ep", {}, remote="10.0.0.5")
+
+    def test_reveal_confines_itself_to_the_workspace(self):
+        from aicut.models import Episode
+
+        self.ui.store.save_episode(Episode(
+            project_id=self.project_id, episode_id="elsewhere",
+            output_mp4_path=str(self.outside),
+        ))
+        with self.assertRaises(PermissionError):
+            self.ui.reveal("elsewhere", {}, remote="127.0.0.1")
