@@ -66,3 +66,52 @@ def performance_insights(metrics: dict, profile: dict) -> list[dict]:
                     "recommendation": "해당 시점의 장면 역할과 연출을 성공 패턴 후보로 검토하세요.",
                 })
     return insights
+
+
+def attribute_retention_to_cuts(metrics: dict, cuts: list[dict], profile: dict) -> dict:
+    """Map measured retention changes to the non-linear output timeline without claiming causality."""
+    value = validate_metrics(metrics)
+    required = {"min_views", "min_retention_points", "meaningful_change_ratio"}
+    if not required.issubset(profile):
+        raise PerformanceError("컷 성과 귀속 기준은 채널 프로파일에서 모두 제공해야 합니다.")
+    minimum_views = int(profile["min_views"])
+    minimum_points = int(profile["min_retention_points"])
+    change_threshold = float(profile["meaningful_change_ratio"])
+    if minimum_views < 1 or minimum_points < 2 or change_threshold < 0:
+        raise PerformanceError("컷 성과 귀속 프로파일 값이 올바르지 않습니다.")
+    points = [RetentionPoint(**point) for point in value["retention"]]
+    reasons = []
+    if value["views"] < minimum_views:
+        reasons.append("MINIMUM_VIEWS_NOT_MET")
+    if len(points) < minimum_points:
+        reasons.append("RETENTION_POINTS_NOT_MET")
+    if reasons:
+        return {"status": "INSUFFICIENT_SAMPLE", "reasons": reasons, "observations": []}
+    output_cursor = 0.0
+    ranges = []
+    for cut in cuts:
+        if cut.get("pacing_mode") == "CUT":
+            continue
+        duration = float(cut["source_end_sec"]) - float(cut["source_start_sec"])
+        ranges.append({
+            "output_start_sec": output_cursor, "output_end_sec": output_cursor + duration,
+            "sequence_order": cut.get("sequence_order"), "scene_role": cut.get("scene_role"),
+            "pacing_mode": cut.get("pacing_mode"), "source_start_sec": cut["source_start_sec"],
+            "source_end_sec": cut["source_end_sec"],
+        })
+        output_cursor += duration
+    observations = []
+    for previous, current in zip(points, points[1:]):
+        change = current.ratio - previous.ratio
+        if abs(change) < change_threshold:
+            continue
+        cut = next((item for item in ranges
+                    if item["output_start_sec"] <= current.second < item["output_end_sec"]), None)
+        if cut:
+            observations.append({
+                **cut, "at_output_sec": current.second, "retention_change": change,
+                "direction": "GAIN" if change > 0 else "DROP",
+                "interpretation": "CORRELATION_ONLY",
+            })
+    return {"status": "READY", "reasons": [], "observations": observations,
+            "sample": {"views": value["views"], "retention_points": len(points)}}

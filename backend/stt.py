@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -78,3 +79,38 @@ def transcribe_tracks(
         all_segments.extend(normalize_whisperx(payload, track_index, duration_sec))
     all_segments.sort(key=lambda item: (item["start_sec"], item["track_index"]))
     return {"segments": all_segments, "commands": commands}
+
+
+def transcribe_range(
+    executable: list[str], audio_paths: list[str], duration_sec: float, output_directory: str | Path, *,
+    start_sec: float, end_sec: float, language: str | None = None, runner: Callable = subprocess.run,
+) -> dict:
+    """Extract and transcribe one source-time range, then restore absolute timestamps."""
+    if start_sec < 0 or end_sec <= start_sec or end_sec > duration_sec:
+        raise SttError("STT 청크 시간 범위가 원본을 벗어났습니다.")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise SttError("STT 청크 추출에 필요한 ffmpeg가 설치되어 있지 않습니다.")
+    output = Path(output_directory).expanduser().resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    chunk_paths, extraction_commands = [], []
+    for index, audio_path in enumerate(audio_paths):
+        chunk = output / f"chunk-track-{index:02d}.wav"
+        command = [ffmpeg, "-hide_banner", "-y", "-ss", str(start_sec), "-t", str(end_sec - start_sec),
+                   "-i", audio_path, "-vn", "-acodec", "pcm_s16le", str(chunk)]
+        result = runner(command, capture_output=True, text=True, check=False)
+        if result.returncode:
+            raise SttError(result.stderr[-4000:] or f"오디오 트랙 {index} STT 청크 추출에 실패했습니다.")
+        extraction_commands.append(command)
+        chunk_paths.append(str(chunk))
+    result = transcribe_tracks(
+        executable, chunk_paths, end_sec - start_sec, output / "transcript", language, runner,
+    )
+    for segment in result["segments"]:
+        segment["start_sec"] += start_sec
+        segment["end_sec"] += start_sec
+        for word in segment["words"]:
+            word["start_sec"] += start_sec
+            word["end_sec"] += start_sec
+    return {"segments": validate_transcript_segments(result["segments"], duration_sec),
+            "commands": extraction_commands + result["commands"]}

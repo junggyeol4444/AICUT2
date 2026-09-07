@@ -12,6 +12,10 @@ class MediaProbeError(RuntimeError):
     pass
 
 
+class DiskCapacityError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class MediaInfo:
     path: str
@@ -63,3 +67,22 @@ def probe_media(path: str | Path, runner: Callable = subprocess.run) -> MediaInf
         )
     except (KeyError, StopIteration, TypeError, ValueError, json.JSONDecodeError) as error:
         raise MediaProbeError(f"ffprobe 결과가 올바르지 않습니다: {error}") from error
+
+
+def check_disk_capacity(path: str | Path, required_bytes: int, reserve_bytes: int = 0) -> dict:
+    if required_bytes < 0 or reserve_bytes < 0:
+        raise ValueError("필요 용량과 예약 용량은 음수일 수 없습니다.")
+    target = Path(path).expanduser().resolve()
+    existing = target
+    while not existing.exists() and existing != existing.parent:
+        existing = existing.parent
+    usage = shutil.disk_usage(existing)
+    available = usage.free - reserve_bytes
+    if available < required_bytes:
+        raise DiskCapacityError(
+            f"디스크 여유 공간이 부족합니다: 필요 {required_bytes} bytes, 사용 가능 {max(0, available)} bytes"
+        )
+    return {
+        "path": str(target), "required_bytes": required_bytes, "reserve_bytes": reserve_bytes,
+        "free_bytes": usage.free, "available_bytes": available,
+    }

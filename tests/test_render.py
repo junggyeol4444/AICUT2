@@ -42,6 +42,66 @@ class RenderPlanTest(unittest.TestCase):
         self.assertNotIn("shell=True", command)
         self.assertIn("measured_I=-20.1", command[command.index("-filter_complex") + 1])
 
+    def test_ass_subtitles_are_burned_after_non_linear_concat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            subtitle = f"{directory}/episode.ass"
+            with open(subtitle, "w", encoding="utf-8") as target:
+                target.write("[Script Info]\n")
+            plan = RenderPlan(self.plan.input_path, self.plan.output_path, self.plan.cuts,
+                              subtitle_path=subtitle)
+            graph, video, _audio = build_filter_graph(plan)
+        self.assertIn("concat=n=2:v=1:a=1[vconcat][aout]", graph)
+        self.assertIn("[vconcat]subtitles=filename=", graph)
+        self.assertEqual(video, "[vout]")
+
+    def test_multitrack_audio_is_trimmed_mixed_and_normalized_as_one_timeline(self):
+        plan = RenderPlan(
+            self.plan.input_path, self.plan.output_path, self.plan.cuts,
+            audio_mix=({"track_index": 0, "volume": 1.0, "role": "MIC"},
+                       {"track_index": 2, "volume": 0.35, "role": "GAME"}),
+        )
+        graph, _video, audio = build_filter_graph(plan)
+        self.assertIn("[0:a:0]atrim=start=300.000:end=310.000", graph)
+        self.assertIn("[0:a:2]atrim=start=300.000:end=310.000", graph)
+        self.assertIn("volume=0.350", graph)
+        self.assertIn("amix=inputs=2:duration=longest:normalize=0", graph)
+        self.assertEqual(audio, "[aout]")
+
+    def test_multitrack_audio_rejects_duplicate_or_negative_tracks(self):
+        with self.assertRaises(RenderError):
+            build_filter_graph(RenderPlan("in", "out", self.plan.cuts, audio_mix=(
+                {"track_index": 0}, {"track_index": 0},
+            )))
+        with self.assertRaises(RenderError):
+            build_filter_graph(RenderPlan("in", "out", self.plan.cuts, audio_mix=(
+                {"track_index": 1, "volume": -1},
+            )))
+
+    def test_calibrated_sidechain_ducks_background_under_microphone(self):
+        plan = RenderPlan(
+            self.plan.input_path, self.plan.output_path, self.plan.cuts,
+            audio_mix=({"track_index": 0, "volume": 1, "role": "MIC"},
+                       {"track_index": 1, "volume": .5, "role": "GAME"}),
+            ducking={"foreground_track_index": 0, "threshold": .08, "ratio": 6,
+                     "attack_ms": 20, "release_ms": 350},
+        )
+        graph, _video, _audio = build_filter_graph(plan)
+        self.assertIn("asplit=2[fgsc0][fgmix0]", graph)
+        self.assertIn("sidechaincompress=threshold=0.0800:ratio=6.000:attack=20.000:release=350.000", graph)
+        self.assertIn("[fgmix0][duck0]amix=inputs=2", graph)
+
+    def test_ducking_requires_external_calibration_and_foreground_track(self):
+        mix = ({"track_index": 0}, {"track_index": 1})
+        with self.assertRaises(RenderError):
+            build_filter_graph(RenderPlan("in", "out", self.plan.cuts, audio_mix=mix,
+                                          ducking={"foreground_track_index": 0}))
+        with self.assertRaises(RenderError):
+            build_filter_graph(RenderPlan(
+                "in", "out", self.plan.cuts, audio_mix=mix,
+                ducking={"foreground_track_index": 4, "threshold": .1, "ratio": 2,
+                         "attack_ms": 10, "release_ms": 100},
+            ))
+
     def test_two_pass_loudness_measurement_is_configurable(self):
         target = LoudnessTarget(integrated_lufs=-16, true_peak_db=-1.5, loudness_range=9)
         command = build_measurement_command(self.plan, target)
