@@ -6,7 +6,35 @@
 
 **사용자:** 이제 정말 100%고, 영상을 편집기에 넣기만 하면 알아서 편집되나요?
 
-**AICUT:** 코드로 계획한 로컬 분석·기획·렌더·업로드 흐름은 구현됐지만, 모든 상용 편집기에 설치되는 범용 플러그인이 완성됐다는 뜻은 아닙니다. 편집기마다 비공개 프로젝트 형식과 확장 API가 다르기 때문에 AICUT은 우선 공개 교환 형식으로 결과를 내보냅니다. 실제 모델 실행 파일, GPU 환경, 코덱과 편집기 버전을 연결한 실영상 검증은 반드시 별도로 해야 합니다.
+**AICUT:** 아닙니다. 현재 저장소에는 편집기 안에서 실행하는 Premiere Pro 패널, DaVinci Resolve 스크립트, Blender VSE 애드온과 공통 embedded bridge가 있습니다. 하지만 모든 상용 편집기의 범용 네이티브 플러그인이 완성됐다는 뜻은 아닙니다. 공개 timeline API가 없는 CapCut·Vrew·Filmora에 가짜 플러그인이나 비공개 프로젝트 파일 변조기를 만들지 않았습니다. 실제 모델 실행 파일, GPU, 코덱, 서명 정책과 설치된 편집기 버전을 연결한 실영상 검증도 별도로 필요합니다.
+
+## 편집기 안에서 실행되는 어댑터
+
+`editor_plugins/hosts.json`이 지원 방식을 단일 목록으로 관리합니다.
+
+| 편집기 | 현재 방식 | 별도 AICUT 서버 |
+|---|---|---|
+| Adobe Premiere Pro | CEP 패널에서 Project 패널의 선택 클립을 받아 bridge 실행 | 불필요 |
+| DaVinci Resolve | Workspace > Scripts에서 Python 스크립트 실행 | 불필요 |
+| Blender Video Sequence Editor | 설치형 Python 애드온 operator | 불필요 |
+| Final Cut Pro | FCPXML 교환 | 불필요 |
+| Avid Media Composer, VEGAS Pro, Lightworks | EDL/CSV 교환 | 불필요 |
+| Kdenlive, Shotcut, OpenShot | EDL/CSV 또는 렌더 결과 교환 | 불필요 |
+| CapCut, Vrew, Filmora | 렌더 MP4 + SRT/ASS + CSV | 불필요 |
+
+여기서 “불필요”는 HTTP 서버나 AICUT GUI를 따로 켜지 않는다는 뜻입니다. 분석 자체에는 Python 런타임, AICUT 모델 실행기와 FFmpeg가 필요합니다. Premiere 패널은 편집기 내부 버튼이 bundled Python bridge를 자식 프로세스로 실행하고, Resolve와 Blender는 편집기 Python host가 bridge를 직접 import합니다.
+
+### 설치·실행
+
+먼저 모든 host에 `AICUT_ROOT`를 이 저장소의 절대 경로로 설정합니다. 필요하면 `AICUT_PYTHON`, `AICUT_EDITOR_WORKSPACE`, `AICUT_EDITOR_OPTIONS`, `AICUT_EDITOR_MANIFEST` 환경 변수로 Python, workspace, 모델 옵션 JSON, 이미 생성된 분석 manifest를 지정합니다. 편집기를 시작하기 전에 설정해야 host process가 환경 변수를 상속합니다.
+
+**Premiere Pro:** `editor_plugins/premiere`를 CEP extension 경로에 설치하고 패널을 엽니다. Project 패널에서 파일 기반 영상 클립 하나를 선택하고 **선택 영상 분석·편집**을 누릅니다.
+
+**DaVinci Resolve:** `editor_plugins/davinci_resolve/aicut_resolve.py`를 Resolve의 `Scripts/Edit` 위치에 복사합니다. Media Pool에서 파일 기반 클립을 선택한 뒤 Workspace > Scripts에서 실행합니다.
+
+**Blender VSE:** Preferences > Add-ons > Install에서 `editor_plugins/blender/aicut_blender.py`를 설치하고 활성화합니다. Video Sequencer에서 Movie strip을 선택한 뒤 AICUT operator를 실행합니다.
+
+각 어댑터는 선택한 원본 경로를 `backend.plugin_bridge.InEditorBridge`에 전달합니다. bridge는 자체 SQLite workspace에서 pipeline을 동기 실행하고, 생성된 에피소드마다 FCPXML·EDL·CSV를 내보냅니다. 즉 별도 프로그램 창을 함께 켜는 구조가 아닙니다.
 
 ## 지원하는 교환 파일
 
@@ -28,7 +56,7 @@ curl -X POST http://127.0.0.1:8787/api/episodes/EPISODE_ID/editor-export \
 | `aicut-timeline.csv` | CapCut·Vrew를 포함해 자동 timeline 교환이 제한된 도구에서 검토·수동 반영할 수 있는 UTF-8 BOM 컷 시트 |
 | 렌더된 MP4와 ASS/SRT | 프로젝트 교환 형식이 맞지 않는 편집기에서 완성본과 자막을 가져오는 호환 경로 |
 
-Adobe Premiere Pro나 DaVinci Resolve에서는 먼저 FCPXML을 시험하고, 해당 버전에서 XML 해석이 맞지 않으면 EDL을 사용합니다. CapCut과 Vrew는 버전·플랫폼마다 프로젝트 timeline import 지원이 달라 독점 프로젝트 파일을 직접 생성하지 않습니다. 이 경우 AICUT 렌더 MP4, 자막 파일, CSV 컷 시트를 사용합니다. **원본을 이동하면 XML/EDL의 미디어를 다시 연결해야 합니다.**
+Premiere·Resolve·Blender 어댑터에서도 분석 결과를 원본 프로젝트에 무조건 덮어쓰지 않고 검수 가능한 새 export로 만듭니다. Final Cut Pro 등에서는 FCPXML을 먼저 시험하고, 해당 버전에서 XML 해석이 맞지 않으면 EDL을 사용합니다. CapCut과 Vrew는 버전·플랫폼마다 공개된 timeline plugin/import 계약이 달라 독점 프로젝트 파일을 직접 생성하지 않습니다. 이 경우 AICUT 렌더 MP4, 자막 파일, CSV 컷 시트를 사용합니다. **원본을 이동하면 XML/EDL의 미디어를 다시 연결해야 합니다.**
 
 ## “영상을 넣으면 분석하고 편집”하는 실제 순서
 

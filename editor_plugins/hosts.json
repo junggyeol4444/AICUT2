@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "hosts": [
+    {"id": "davinci_resolve", "mode": "embedded_python", "adapter": "davinci_resolve/aicut_resolve.py"},
+    {"id": "blender_vse", "mode": "embedded_python", "adapter": "blender/aicut_blender.py"},
+    {"id": "adobe_premiere_pro", "mode": "cep_panel", "adapter": "premiere/CSXS/manifest.xml"},
+    {"id": "final_cut_pro", "mode": "interchange", "formats": ["fcpxml"]},
+    {"id": "avid_media_composer", "mode": "interchange", "formats": ["edl", "csv"]},
+    {"id": "vegas_pro", "mode": "interchange", "formats": ["edl", "csv"]},
+    {"id": "kdenlive", "mode": "interchange", "formats": ["edl", "csv"]},
+    {"id": "shotcut", "mode": "interchange", "formats": ["edl", "csv"]},
+    {"id": "openshot", "mode": "interchange", "formats": ["edl", "csv"]},
+    {"id": "lightworks", "mode": "interchange", "formats": ["edl"]},
+    {"id": "capcut", "mode": "render_and_caption", "formats": ["mp4", "srt", "csv"], "reason": "no_supported_public_timeline_plugin_contract"},
+    {"id": "vrew", "mode": "render_and_caption", "formats": ["mp4", "srt", "csv"], "reason": "no_supported_public_timeline_plugin_contract"},
+    {"id": "filmora", "mode": "render_and_caption", "formats": ["mp4", "srt", "csv"], "reason": "no_supported_public_timeline_plugin_contract"}
+  ]
+}

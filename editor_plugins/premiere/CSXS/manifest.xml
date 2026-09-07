@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest Version="7.0" ExtensionBundleId="ai.aicut.premiere" ExtensionBundleVersion="1.0.0"
+  ExtensionBundleName="AICUT In-Editor">
+  <ExtensionList><Extension Id="ai.aicut.premiere.panel" Version="1.0.0" /></ExtensionList>
+  <ExecutionEnvironment>
+    <HostList><Host Name="PPRO" Version="[14.0,99.9]" /></HostList>
+    <LocaleList><Locale Code="All" /></LocaleList>
+    <RequiredRuntimeList><RequiredRuntime Name="CSXS" Version="11.0" /></RequiredRuntimeList>
+  </ExecutionEnvironment>
+  <DispatchInfoList><Extension Id="ai.aicut.premiere.panel"><DispatchInfo>
+    <Resources><MainPath>../index.html</MainPath><ScriptPath>../jsx/host.jsx</ScriptPath><CEFCommandLine>
+      <Parameter>--enable-nodejs</Parameter><Parameter>--mixed-context</Parameter>
+    </CEFCommandLine></Resources>
+    <Lifecycle><AutoVisible>true</AutoVisible></Lifecycle>
+    <UI><Type>Panel</Type><Menu>AICUT</Menu><Geometry><Size><Width>360</Width><Height>220</Height></Size></Geometry></UI>
+  </DispatchInfo></Extension></DispatchInfoList>
+</ExtensionManifest>

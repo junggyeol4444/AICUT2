@@ -116,6 +116,26 @@ class PipelineManager:
             self._jobs[project_id] = self.executor.submit(self._run, project_id, configuration, resume, cancel)
             return True
 
+    def run_sync(
+        self, project_id: str, manifest_path: str | None = None, *,
+        options: dict[str, Any] | None = None, resume: bool = True,
+    ) -> dict:
+        """Run from an editor-host scripting thread without starting the HTTP server."""
+        configuration = dict(options or {})
+        if manifest_path:
+            configuration["manifest_path"] = manifest_path
+        with self._lock:
+            running = self._jobs.get(project_id)
+            if running and not running.done():
+                raise RuntimeError("프로젝트가 이미 실행 중입니다.")
+            cancel = threading.Event()
+            self._cancel[project_id] = cancel
+        self._run(project_id, configuration, resume, cancel)
+        state = self.state(project_id)
+        state["done"] = True
+        state["failed"] = self.database.get_project(project_id)["status"] == "FAILED"
+        return state
+
     def cancel(self, project_id: str) -> bool:
         with self._lock:
             event = self._cancel.get(project_id)

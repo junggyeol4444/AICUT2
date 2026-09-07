@@ -70,4 +70,4 @@ npm run build
 
 ## 편집기 연동
 
-분석·기획된 에피소드는 `POST /api/episodes/{episode_id}/editor-export`로 FCPXML, CMX3600 EDL 및 UTF-8 BOM CSV 번들을 생성할 수 있습니다. Premiere Pro·DaVinci Resolve 계열에서는 XML/EDL을 사용하고, 독점 프로젝트 timeline 교환이 제한된 CapCut·Vrew 등의 도구에서는 렌더 MP4·자막·CSV 컷 시트를 사용합니다. 편집기별 실제 적용 순서, 영상 분석 방식과 안전한 성과 학습 절차를 대화 형식으로 정리한 별도 문서는 [`docs/EDITOR_WORKFLOW.ko.md`](docs/EDITOR_WORKFLOW.ko.md)를 참고하십시오.
+`editor_plugins/`에는 별도 AICUT 서버를 켜지 않고 편집기 안에서 선택 영상을 bridge로 전달하는 Premiere Pro CEP 패널, DaVinci Resolve 스크립트, Blender VSE 애드온이 있습니다. 지원 방식은 `editor_plugins/hosts.json`에 명시하며, 공개 timeline plugin 계약이 없는 편집기는 네이티브 지원을 사칭하지 않고 FCPXML, CMX3600 EDL, UTF-8 BOM CSV, 렌더 MP4와 자막 교환 경로를 사용합니다. 설치 순서, 편집기별 제한, 영상 분석 방식과 안전한 성과 학습 절차를 대화 형식으로 정리한 별도 문서는 [`docs/EDITOR_WORKFLOW.ko.md`](docs/EDITOR_WORKFLOW.ko.md)를 참고하십시오.
