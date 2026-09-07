@@ -114,3 +114,50 @@ class AudioParsingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MultitrackAudioTests(unittest.TestCase):
+    """5.2: mic / call / game / BGM arrive as separate streams."""
+
+    def setUp(self):
+        self.segment = Segment(cut_index=0, sequence_order=0, source_start_sec=10.0,
+                               source_end_sec=12.0, out_start_sec=0.0)
+        self.settings = RenderSettings.from_profile(CalibrationProfile.load())
+
+    def test_one_track_keeps_the_simple_mapping(self):
+        cmd = build_segment_command("/src.mkv", self.segment, "/out.mp4", self.settings)
+        self.assertIn("-af", cmd)
+        self.assertNotIn("-filter_complex", cmd)
+        self.assertIn("0:a:0?", cmd)
+
+    def test_every_source_track_reaches_the_mix(self):
+        """Mapping 0:a:0 alone drops the rest of the broadcast, permanently."""
+        cmd = build_segment_command("/src.mkv", self.segment, "/out.mp4", self.settings,
+                                    audio_streams=4)
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        for index in range(4):
+            self.assertIn(f"[0:a:{index}]", graph, f"track {index} is not in the mix")
+        self.assertIn("amix=inputs=4", graph)
+        self.assertEqual(cmd[-5:], ["-map", "[v]", "-map", "[a]", "/out.mp4"])
+
+    def test_the_mix_does_not_divide_the_level_by_the_track_count(self):
+        """amix normalises by default; a four-track broadcast would come out quiet."""
+        cmd = build_segment_command("/src.mkv", self.segment, "/out.mp4", self.settings,
+                                    audio_streams=4)
+        self.assertIn("normalize=0", cmd[cmd.index("-filter_complex") + 1])
+
+    def test_video_filters_survive_the_move_into_the_complex_graph(self):
+        cmd = build_segment_command("/src.mkv", self.segment, "/out.mp4", self.settings,
+                                    audio_streams=2)
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        self.assertIn("[0:v:0]", graph)
+        self.assertIn("setsar=1", graph)
+        self.assertIn("[v]", graph)
+        self.assertNotIn("-vf", cmd, "-vf and -filter_complex cannot both be given")
+
+    def test_the_audio_chain_still_applies_after_the_mix(self):
+        cmd = build_segment_command("/src.mkv", self.segment, "/out.mp4", self.settings,
+                                    audio_streams=3)
+        graph = cmd[cmd.index("-filter_complex") + 1]
+        self.assertIn("aresample=", graph)
+        self.assertIn("afade", graph)

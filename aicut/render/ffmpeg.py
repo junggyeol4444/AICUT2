@@ -182,11 +182,24 @@ def build_segment_command(
     visual_effect: dict[str, Any] | None = None,
     audio_effect: dict[str, Any] | None = None,
     sendcmd_path: str | None = None,
+    audio_streams: int = 1,
 ) -> list[str]:
     """ffmpeg args that cut one segment out of the source and normalise its shape.
 
     Seeking is done with ``-ss`` before ``-i`` (fast) plus ``-accurate_seek`` so
     the frame the plan asked for is the frame that lands in the file.
+
+    `audio_streams` is how many audio streams the source carries. 5.2 assumes a
+    multi-track recording — mic, call, game, BGM on separate streams — and
+    mapping only ``0:a:0`` would put whichever stream happens to be first into
+    the finished video and discard the rest, permanently, before the concat.
+    Depending on the recorder's stream order that silently drops the host's
+    voice or all of the game and call audio. So every stream is mixed.
+
+    `normalize=0` on the mix is deliberate: amix otherwise divides by the input
+    count, which would quiet a four-track broadcast to a quarter. Absolute level
+    is not this command's job — the 2-pass EBU R128 pass of 10.4-3 sets it on
+    the joined timeline.
     """
     effect = visual_effect or {}
     filters: list[str] = []
@@ -210,19 +223,49 @@ def build_segment_command(
         audio_filters.insert(0, f"volume={gain}dB")
     audio_filters.append(f"aresample={settings.sample_rate}")
 
-    return [
+    head = [
         "ffmpeg", "-hide_banner", "-nostats", "-y",
         "-accurate_seek", "-ss", f"{segment.source_start_sec:.3f}",
         "-t", f"{segment.duration:.3f}",
         "-i", source,
-        "-vf", ",".join(filters),
-        "-af", ",".join(audio_filters),
+    ]
+    tail = [
         "-c:v", settings.video_codec, "-preset", settings.preset, "-crf", str(settings.crf),
         "-pix_fmt", settings.pix_fmt,
         "-c:a", settings.audio_codec, "-b:a", settings.audio_bitrate, "-ar", str(settings.sample_rate),
-        "-map", "0:v:0", "-map", "0:a:0?",
-        out_path,
     ]
+
+    if audio_streams > 1:
+        # -vf and -filter_complex cannot both be given, so the video chain moves
+        # into the complex graph unchanged when there is mixing to do.
+        sources = "".join(f"[0:a:{index}]" for index in range(audio_streams))
+        graph = ";".join([
+            f"[0:v:0]{','.join(filters)}[v]",
+            f"{sources}amix=inputs={audio_streams}:normalize=0,{','.join(audio_filters)}[a]",
+        ])
+        return head + ["-filter_complex", graph] + tail + ["-map", "[v]", "-map", "[a]", out_path]
+
+    return head + [
+        "-vf", ",".join(filters),
+        "-af", ",".join(audio_filters),
+    ] + tail + ["-map", "0:v:0", "-map", "0:a:0?", out_path]
+
+
+def _count_audio_streams(source: str) -> int:
+    """How many audio streams the source carries, for the mix above.
+
+    Probed rather than configured: 17.1 externalises judgement thresholds, and
+    this is not one — it is a fact about the file. A probe that fails falls back
+    to one stream, which is the old behaviour and cannot make the render worse
+    than it already was.
+    """
+    from aicut.media.probe import probe
+
+    try:
+        return max(1, len(probe(source).audio_tracks))
+    except Exception as exc:                       # ffprobe missing or unhappy
+        log.warning("could not count audio streams in %s (%s); mixing skipped", source, exc)
+        return 1
 
 
 def build_concat_command(list_path: str, out_path: str) -> list[str]:
@@ -324,6 +367,7 @@ class Renderer:
                 "subtitles", needed_for="burning subtitles (10.3)", install_hint=LIBASS_HINT
             )
         settings = RenderSettings.from_profile(self.profile, target_type=plan.target_type)
+        audio_streams = _count_audio_streams(plan.source_path)
         timeline = Timeline.from_cuts(plan.cuts)
         if not timeline.segments:
             raise RenderError(f"episode {plan.episode_id} has no renderable segment")
@@ -348,6 +392,7 @@ class Renderer:
                 visual_effect=effect,
                 audio_effect=cut.audio_effect if cut else {},
                 sendcmd_path=sendcmd,
+                audio_streams=audio_streams,
             ))
             segment_paths.append(seg_path)
 

@@ -70,6 +70,39 @@ class PublishingTests(unittest.TestCase):
         result = publishing.upload_episode(self.ctx, episode, self.client)
         self.assertIn(result["video_id"], self.client.thumbnails)
 
+    def test_a_profile_cannot_upload_public_and_skip_the_gate(self):
+        """11.3: public before review would make publish_approved's refusal moot."""
+        from aicut.errors import ConfigError
+
+        for value in ("public", "PUBLIC", " public ", "", None, "everyone"):
+            with self.subTest(privacy=value):
+                self.ctx.profile = self.ctx.profile.with_overrides(
+                    {"upload": {"privacy_on_upload": value, "require_human_review": True}})
+                with self.assertRaises(ConfigError):
+                    publishing.upload_episode(self.ctx, self._episode(), self.client)
+                self.assertEqual(self.client.privacy, {}, "a video was uploaded anyway")
+
+    def test_unlisted_is_allowed_because_11_3_names_it(self):
+        self.ctx.profile = self.ctx.profile.with_overrides(
+            {"upload": {"privacy_on_upload": "unlisted", "require_human_review": True}})
+        result = publishing.upload_episode(self.ctx, self._episode(), self.client)
+        self.assertEqual(self.client.privacy[result["video_id"]], "unlisted")
+
+    def test_a_thumbnail_failure_does_not_lose_the_uploaded_video(self):
+        """Otherwise the retry uploads a duplicate and spends 1,600 units again."""
+        def boom(video_id, image_path):
+            raise RuntimeError("thumbnails.set needs 50 units; 10 left today")
+
+        self.client.set_thumbnail = boom
+        episode = self._episode()
+        result = publishing.upload_episode(self.ctx, episode, self.client)
+
+        stored = self.ctx.store.get_episode(episode.episode_id)
+        self.assertEqual(stored.metadata["youtube"]["video_id"], result["video_id"])
+        self.assertIsNone(stored.thumbnail_path)
+        degraded = self.ctx.report.get("degraded", [])
+        self.assertEqual([d["reason"] for d in degraded], ["thumbnail_not_set"])
+
     def test_an_unrendered_episode_cannot_be_uploaded(self):
         with self.assertRaises(ValueError):
             publishing.upload_episode(self.ctx, self._episode(rendered=False), self.client)
