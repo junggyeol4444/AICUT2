@@ -1,9 +1,23 @@
-node_modules/
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
 dist/
-.DS_Store
+.venv/
+venv/
+.coverage
+
+# node (legacy/ 웹 프로토타입)
+node_modules/
 npm-debug.log*
+.DS_Store
+
+# runtime output: source media, renders, thumbnails, plans, database
+workspace/
+*.mp4
+*.mkv
+*.ass
 *.db
 *.db-shm
 *.db-wal
-__pycache__/
-*.pyc

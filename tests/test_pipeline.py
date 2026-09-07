@@ -1,522 +1,372 @@
-import json
+"""End-to-end pipeline tests, run offline against the synthetic broadcast."""
+
 import tempfile
-import threading
 import unittest
-from concurrent.futures import Future
 from pathlib import Path
-from types import SimpleNamespace
 
-from backend.database import Database
-from backend.pipeline import PipelineManager
+from aicut.config import CalibrationProfile
+from aicut.db.store import Store
+from aicut.llm import get_producer
+from aicut.llm.mock import MockProducer
+from aicut.models import Decision, PacingMode
+from aicut.pipeline.context import RunContext, SignalBundle
+from aicut.pipeline.runner import Pipeline
+from aicut.pipeline.states import State, can_transition
+from aicut.render.editplan import EditPlan
+from aicut.render.timeline import Timeline
+from tests import fixtures
 
 
-class PipelineTest(unittest.TestCase):
-    def test_pipeline_persists_steps_and_reuses_checkpoints(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/media/live.mkv"})
-            calls = []
+class PipelineHarness(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.workspace = Path(self._tmp.name)
+        self.store = Store(self.workspace / "aicut.db")
+        self.profile = CalibrationProfile.load()
+        self.pipeline = Pipeline(
+            self.store, self.profile, get_producer("mock"), workspace=self.workspace
+        )
 
-            def probe(_path):
-                calls.append("probe")
-                return SimpleNamespace(to_dict=lambda: {
-                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 0,
-                })
+    def tearDown(self):
+        self.store.close()
+        self._tmp.cleanup()
 
-            manager = PipelineManager(database, probe=probe)
-            manager._run(project["project_id"], {"coarse_window_sec": 30}, True, threading.Event())
-            self.assertEqual(
-                [step["step"] for step in database.pipeline_steps(project["project_id"])],
-                ["PROBE", "SCAN_PLAN"],
-            )
-            self.assertEqual(database.get_project(project["project_id"])["status"], "UNDERSTANDING")
-            manager._run(project["project_id"], {"coarse_window_sec": 30}, True, threading.Event())
-            self.assertEqual(calls, ["probe"])
-            manager.shutdown()
+    def seed(self, *, producer=None, utterances=None, length_hint=None) -> RunContext:
+        """A project whose measurement stage is already done (no ffmpeg needed)."""
+        project = self.pipeline.submit("/fixture/stream.mkv", length_hint_sec=length_hint)
+        self.store.replace_utterances(
+            project.project_id, fixtures.utterances() if utterances is None else utterances
+        )
+        ctx = RunContext(
+            project=project,
+            store=self.store,
+            profile=self.profile,
+            producer=producer or self.pipeline.producer,
+            workspace=self.workspace,
+            media=fixtures.media(),
+            signals=SignalBundle(
+                tension=fixtures.tension(),
+                motion=fixtures.motion(),
+                silences=fixtures.silences(),
+                speaker_reliability=1.0,
+            ),
+        )
+        ctx.signals.save(ctx.signal_cache_path)
+        return ctx
 
-    def test_shutdown_cancels_active_project_events_and_child_processes(self):
-        with tempfile.TemporaryDirectory() as directory:
-            manager = PipelineManager(Database(Path(directory) / "pipeline.db"))
-            event = threading.Event()
-            future = Future()
-            cancelled = []
-            manager._jobs["project-one"] = future
-            manager._cancel["project-one"] = event
-            manager.processes = SimpleNamespace(cancel=lambda project_id: cancelled.append(project_id))
-            self.assertEqual(manager.cancel_all(), 1)
-            manager.shutdown(cancel_running=False)
-        self.assertTrue(event.is_set())
-        self.assertEqual(cancelled, ["project-one"])
 
-    def test_new_manager_recovers_orphaned_running_step_for_explicit_resume(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/media/live.mkv"})
-            database.update_status(project["project_id"], "ANALYZING", 20, "running")
-            database.save_pipeline_step(project["project_id"], "VISION_ANALYSIS", "RUNNING", 20)
-            manager = PipelineManager(database)
-            step = database.pipeline_steps(project["project_id"])[0]
-            recovered_project = database.get_project(project["project_id"])
-            logs = database.logs(project["project_id"])
-            manager.shutdown()
-        self.assertEqual(manager.recovered_steps, [{
-            "project_id": project["project_id"], "step": "VISION_ANALYSIS",
-        }])
-        self.assertEqual(step["status"], "CANCELLED")
-        self.assertIn("이전 프로세스", step["error_message"])
-        self.assertEqual(recovered_project["status"], "QUEUED")
-        self.assertIn("복구", logs[0]["message"])
+class StateMachineTests(unittest.TestCase):
+    def test_review_is_the_only_route_to_published(self):
+        """11.3: the gate is structural, not a convention."""
+        for state in State:
+            if state is State.REVIEW_PENDING or state is State.RETRY_QUEUED:
+                continue
+            self.assertFalse(can_transition(state, State.PUBLISHED), f"{state} reached PUBLISHED directly")
 
-    def test_failed_step_is_durable_and_project_can_retry(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/missing.mkv"})
-            manager = PipelineManager(database, probe=lambda _path: (_ for _ in ()).throw(RuntimeError("probe failed")))
-            manager._run(project["project_id"], {}, True, threading.Event())
-            self.assertEqual(database.get_project(project["project_id"])["status"], "FAILED")
-            self.assertEqual(database.pipeline_steps(project["project_id"])[0]["status"], "FAILED")
-            manager.shutdown()
+    def test_no_content_is_terminal_and_not_a_failure(self):
+        self.assertFalse(can_transition(State.NO_CONTENT, State.FAILED))
+        self.assertTrue(can_transition(State.DISCOVERING, State.NO_CONTENT))
+        self.assertTrue(can_transition(State.EVALUATING, State.NO_CONTENT))
 
-    def test_step_retry_policy_recovers_and_records_each_attempt(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/media/live.mkv"})
-            calls = []
+    def test_a_failure_can_resume_at_the_render_stage(self):
+        """16장: a failed render must not cost the edit plan."""
+        self.assertTrue(can_transition(State.FAILED, State.RENDERING))
 
-            def probe(_path):
-                calls.append("probe")
-                if len(calls) == 1:
-                    raise RuntimeError("temporary probe failure")
-                return SimpleNamespace(to_dict=lambda: {
-                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 0,
-                })
 
-            manager = PipelineManager(database, probe=probe)
-            manager._run(project["project_id"], {
-                "retry_policy": {"PROBE": {"max_attempts": 2, "backoff_sec": 0}},
-            }, True, threading.Event())
-            probe_step = database.pipeline_steps(project["project_id"])[0]
-            self.assertEqual(calls, ["probe", "probe"])
-            self.assertEqual(probe_step["status"], "COMPLETE")
-            self.assertEqual(probe_step["attempt_count"], 2)
-            self.assertEqual(probe_step["error_message"], "temporary probe failure")
-            manager.shutdown()
+class RunTests(PipelineHarness):
+    def test_run_to_planning_produces_readable_edit_plans(self):
+        ctx = self.seed()
+        result = self.pipeline.run(ctx.project, context=ctx, render=False)
 
-    def test_invalid_retry_policy_fails_before_analysis(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/media/live.mkv"})
-            manager = PipelineManager(database, probe=lambda _path: self.fail("probe must not run"))
-            manager._run(project["project_id"], {
-                "retry_policy": {"PROBE": {"max_attempts": 0}},
-            }, True, threading.Event())
-            self.assertEqual(database.get_project(project["project_id"])["status"], "FAILED")
-            self.assertEqual(database.pipeline_steps(project["project_id"]), [])
-            manager.shutdown()
+        self.assertIs(result.final_state, State.PLANNING)
+        self.assertTrue(result.episodes)
+        plans = list((self.workspace / ctx.project.project_id / "plans").glob("*.json"))
+        self.assertEqual(len(plans), len(result.episodes))
 
-    def test_changed_options_invalidate_old_checkpoints(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/media/live.mkv"})
-            calls = []
-            manager = PipelineManager(database, probe=lambda _path: (
-                calls.append("probe") or SimpleNamespace(to_dict=lambda: {
-                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 0,
-                })
-            ))
-            manager._run(project["project_id"], {"coarse_window_sec": 30}, True, threading.Event())
-            first_hash = database.pipeline_steps(project["project_id"])[0]["input_hash"]
-            manager._run(project["project_id"], {"coarse_window_sec": 20}, True, threading.Event())
-            step = database.pipeline_steps(project["project_id"])[0]
-            self.assertEqual(calls, ["probe", "probe"])
-            self.assertNotEqual(first_hash, step["input_hash"])
-            self.assertEqual(step["attempt_count"], 2)
-            manager.shutdown()
+        plan = EditPlan.load(plans[0])
+        # submit() resolves the source, so the recorded path is absolute and
+        # platform-shaped - D:\fixture\stream.mkv on Windows.
+        self.assertTrue(Path(plan.source_path).is_absolute())
+        self.assertEqual(Path(plan.source_path).name, "stream.mkv")
+        self.assertTrue(plan.cuts)
+        self.assertEqual(
+            [c.sequence_order for c in plan.cuts], list(range(len(plan.cuts))),
+            "cut order must be dense and explicit",
+        )
 
-    def test_activating_a_learned_strategy_invalidates_planning_inputs(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/media/live.mkv", "channel_ref": "channel"})
-            calls = []
-            manager = PipelineManager(database, probe=lambda _path: (
-                calls.append("probe") or SimpleNamespace(to_dict=lambda: {
-                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 0,
-                })
-            ))
-            manager._run(project["project_id"], {}, True, threading.Event())
-            first_hash = database.pipeline_steps(project["project_id"])[0]["input_hash"]
-            strategy = database.save_strategy_version("channel", {"proposals": [{"decision": "PROMOTE"}]})
-            database.activate_strategy_version(strategy["strategy_version_id"])
-            manager._run(project["project_id"], {}, True, threading.Event())
-            second_hash = database.pipeline_steps(project["project_id"])[0]["input_hash"]
-            self.assertNotEqual(first_hash, second_hash)
-            self.assertEqual(calls, ["probe", "probe"])
-            manager.shutdown()
+    def test_the_whole_broadcast_is_covered_by_the_first_pass(self):
+        """5.1: no second of the source may be skipped."""
+        ctx = self.seed()
+        self.pipeline.run(ctx.project, context=ctx, render=False)
+        windows = self.store.windows(ctx.project.project_id)
+        self.assertTrue(windows)
+        self.assertAlmostEqual(windows[0].start_sec, 0.0)
+        self.assertAlmostEqual(windows[-1].end_sec, fixtures.DURATION)
+        for earlier, later in zip(windows, windows[1:]):
+            self.assertAlmostEqual(earlier.end_sec, later.start_sec, msg="a gap opened between windows")
 
-    def test_corrupt_checkpoint_output_is_recomputed(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/media/live.mkv"})
-            calls = []
-            manager = PipelineManager(database, probe=lambda _path: (
-                calls.append("probe") or SimpleNamespace(to_dict=lambda: {
-                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 0,
-                })
-            ))
-            manager._run(project["project_id"], {}, True, threading.Event())
-            with database.connect() as connection:
-                connection.execute(
-                    "UPDATE pipeline_steps SET output_json='not-json' WHERE project_id=? AND step='PROBE'",
-                    (project["project_id"],),
-                )
-            self.assertTrue(database.pipeline_steps(project["project_id"])[0]["corrupt_output"])
-            manager._run(project["project_id"], {}, True, threading.Event())
-            self.assertEqual(calls, ["probe", "probe"])
-            self.assertFalse(database.pipeline_steps(project["project_id"])[0]["corrupt_output"])
-            manager.shutdown()
+    def test_events_link_moments_that_sit_far_apart(self):
+        """5.4: the boss story is mentioned at 00:30 and paid off at 30:00."""
+        ctx = self.seed()
+        self.pipeline.run(ctx.project, context=ctx, render=False)
+        events = self.store.events(ctx.project.project_id)
+        self.assertTrue(events)
+        spans = [event.span() for event in events]
+        self.assertTrue(
+            any(end - start > 1500 for start, end in spans),
+            f"no event spans a long stretch of the broadcast: {spans}",
+        )
 
-    def test_missing_preprocess_artifact_invalidates_its_checkpoint(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/media/live.mkv"})
-            calls = []
+    def test_the_report_records_refusals_and_provisional_parameters(self):
+        ctx = self.seed()
+        result = self.pipeline.run(ctx.project, context=ctx, render=False)
+        report = result.report
+        self.assertIn("decisions", report)
+        self.assertIn("provisional_parameters_used", report)
+        self.assertTrue(report["provisional_parameters_used"], "unmeasured values must be declared (17.5)")
+        self.assertIn("17.5", report["warning"])
+        self.assertTrue((self.workspace / ctx.project.project_id / "report.json").exists())
 
-            def preprocess(_plan):
-                calls.append("preprocess")
-                return {"artifacts": [{"kind": "FRAMES", "path": str(Path(directory) / "missing.jpg"),
-                                        "command": ["ffmpeg"]}]}
+    def test_an_empty_broadcast_ends_in_no_content_not_failure(self):
+        """1.3 / 16장: producing nothing is a correct answer."""
+        ctx = self.seed(utterances=[])
+        result = self.pipeline.run(ctx.project, context=ctx, render=False)
+        self.assertIs(result.final_state, State.NO_CONTENT)
+        self.assertTrue(result.produced_nothing)
+        self.assertTrue(result.report["no_content_reason"])
+        self.assertEqual(self.store.get_project(ctx.project.project_id).status, "NO_CONTENT")
 
-            manager = PipelineManager(
-                database, preprocess=preprocess,
-                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
-                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 0,
-                }),
-            )
-            options = {"preprocess": True, "frame_interval_sec": 10}
-            manager._run(project["project_id"], options, True, threading.Event())
-            manager._run(project["project_id"], options, True, threading.Event())
-            self.assertEqual(calls, ["preprocess", "preprocess"])
-            manager.shutdown()
+    def test_a_producer_that_rejects_everything_yields_no_episodes(self):
+        class Refuser(MockProducer):
+            name = "refuser"
 
-    def test_disk_check_runs_before_analysis(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/media/live.mkv"})
-            calls = []
-            manager = PipelineManager(
-                database,
-                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
-                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 0,
-                }),
-                check_disk=lambda _path, required, reserve: (
-                    calls.append((required, reserve)) or {"available_bytes": required}
-                ),
-            )
-            manager._run(project["project_id"], {
-                "disk_check": True, "disk_required_bytes": 1000, "disk_reserve_bytes": 200,
-            }, True, threading.Event())
-            self.assertEqual(calls, [(1000, 200)])
-            self.assertEqual([step["step"] for step in database.pipeline_steps(project["project_id"])],
-                             ["PROBE", "DISK_CHECK", "SCAN_PLAN"])
-            manager.shutdown()
+            def _task_evaluate_candidates(self, payload):
+                return [
+                    {"candidate_id": c["candidate_id"], "decision": "reject",
+                     "reason": "not enough happens here to carry a video", "combine_with": []}
+                    for c in payload.get("candidates", [])
+                ]
 
-    def test_channel_calibration_supplies_pipeline_defaults(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            profile = database.save_calibration("channel-1", "profile", {
-                "pipeline_options": {"coarse_window_sec": 4},
-            }, 90)
-            project = database.create_project({
-                "file_path": "/media/live.mkv", "calibration_profile_id": profile["profile_id"],
-            })
-            manager = PipelineManager(database, probe=lambda _path: SimpleNamespace(to_dict=lambda: {
-                "duration_sec": 10, "width": 1920, "height": 1080, "audio_tracks": 0,
-            }))
-            manager._run(project["project_id"], {}, True, threading.Event())
-            coarse = [item for item in database.analysis_input(project["project_id"])["scan_windows"]
-                      if item["pass_kind"] == "COARSE"]
-            self.assertEqual([(item["start_sec"], item["end_sec"]) for item in coarse], [(0, 4), (4, 8), (8, 10)])
-            self.assertEqual(database.get_calibration(profile["profile_id"])["name"], "profile")
-            manager.shutdown()
+        ctx = self.seed(producer=Refuser())
+        result = self.pipeline.run(ctx.project, context=ctx, render=False)
+        self.assertIs(result.final_state, State.NO_CONTENT)
+        self.assertTrue(result.report["rejections"])
+        self.assertIn("not enough happens", result.report["rejections"][0]["reason"])
 
-    def test_long_term_understanding_carries_memory_across_windows(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/media/live.mkv"})
-            received = []
+    def test_pacing_decisions_reach_the_plan_with_their_reasons(self):
+        ctx = self.seed()
+        result = self.pipeline.run(ctx.project, context=ctx, render=False)
+        cuts = [c for e in result.episodes for c in e.timeline]
+        self.assertTrue(cuts)
+        for cut in cuts:
+            self.assertIsInstance(cut.pacing_mode, PacingMode)
+            self.assertTrue(cut.pacing_reason)
+            for start, end in cut.remove_spans:
+                self.assertGreaterEqual(start, cut.source_start_sec)
+                self.assertLessEqual(end, cut.source_end_sec)
 
-            def understand(_executable, window, _timeline, memory, _output):
-                received.append(dict(memory))
-                count = memory.get("count", 0) + 1
-                return {"summary": f"window {count}", "memory": {"count": count},
-                        "precision_ranges": []}
+    def test_subtitles_land_on_the_output_clock(self):
+        ctx = self.seed()
+        result = self.pipeline.run(ctx.project, context=ctx, render=False)
+        episode = next(e for e in result.episodes if e.subtitles)
+        timeline = Timeline.from_cuts(episode.timeline)
+        for line in episode.subtitles:
+            self.assertGreaterEqual(line.start_sec, 0.0)
+            self.assertLessEqual(line.end_sec, timeline.duration + 0.01)
 
-            manager = PipelineManager(
-                database, understand_window=understand,
-                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
-                    "duration_sec": 10, "width": 1920, "height": 1080, "audio_tracks": 0,
-                }),
-            )
-            manager._run(project["project_id"], {
-                "coarse_window_sec": 5, "understanding_executable": ["model"],
-            }, True, threading.Event())
-            self.assertEqual(received, [{}, {"count": 1}])
-            windows = database.analysis_input(project["project_id"])["understanding_windows"]
-            self.assertEqual([item["summary"] for item in windows], ["window 1", "window 2"])
-            self.assertEqual(windows[-1]["memory"]["count"], 2)
-            manager.shutdown()
+    def test_length_hint_is_a_hint_and_deviation_is_explained(self):
+        """2.6: the slider never constrains the edit, but the report says so."""
+        ctx = self.seed(length_hint=45.0)
+        result = self.pipeline.run(ctx.project, context=ctx, render=False)
+        deviations = result.report.get("length_deviations", [])
+        if deviations:
+            self.assertTrue(deviations[0]["reason"])
+        else:
+            for episode in result.episodes:
+                self.assertLess(abs(episode.planned_duration_sec - 45.0) / 45.0, 0.25)
 
-    def test_content_discovery_persists_event_graph_without_forcing_episodes(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/media/live.mkv"})
-            manager = PipelineManager(
-                database,
-                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
-                    "duration_sec": 10, "width": 1920, "height": 1080, "audio_tracks": 0,
-                }),
-                discover=lambda *_args: {"manifest": {
-                    "events": [{"event_id": "event-1", "summary": "event",
-                                "mentions": [{"start_sec": 1, "end_sec": 2, "role": "origin"}]}],
-                    "candidates": [{"candidate_id": "candidate-1", "summary": "candidate",
-                                    "event_ids": ["event-1"], "independence_score": .8,
-                    "decision": "MAKE", "decision_reason": "complete"}], "episodes": [],
-                }},
-                retrieve=lambda *_args: {"scenes": [{
-                    "candidate_id": "candidate-1", "query": "origin", "start_sec": 1, "end_sec": 2,
-                    "score": .9, "scene_role": "origin", "reasons": ["event_mention"],
-                }]},
-            )
-            manager._run(project["project_id"], {
-                "discovery_executable": ["model"], "retrieval_executable": ["retriever"],
-            }, True, threading.Event())
-            analysis = database.analysis_input(project["project_id"])
-            self.assertEqual(analysis["events"][0]["mentions"][0]["role"], "origin")
-            self.assertEqual(analysis["candidates"][0]["event_ids"], ["event-1"])
-            self.assertEqual(analysis["retrieved_scenes"][0]["reasons"], ["event_mention"])
-            self.assertEqual(database.get_project(project["project_id"])["status"], "PLANNING")
-            manager.shutdown()
+    def test_state_log_records_every_transition(self):
+        ctx = self.seed()
+        self.pipeline.run(ctx.project, context=ctx, render=False)
+        states = [row["state"] for row in self.store.state_log(ctx.project.project_id)]
+        self.assertEqual(
+            states[:5],
+            [State.PARSING.value, State.UNDERSTANDING.value, State.DISCOVERING.value,
+             State.EVALUATING.value, State.PLANNING.value],
+        )
 
-    def test_dynamic_planning_versions_non_linear_episode(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/media/live.mkv"})
-            subtitle = Path(directory) / "episode-1.ass"
-            subtitle.write_text("[Script Info]\n")
-            discovery = {"events": [{"event_id": "event-1", "summary": "event", "mentions": []}],
-                         "candidates": [{"candidate_id": "candidate-1", "summary": "candidate",
-                                         "event_ids": ["event-1"], "independence_score": .8,
-                                         "decision": "MAKE", "decision_reason": "complete"}], "episodes": []}
 
-            def render_episode(plan, loudness_target):
-                self.assertEqual(plan.subtitle_path, str(subtitle))
-                self.assertEqual(plan.audio_mix[1]["role"], "GAME")
-                self.assertEqual(plan.ducking["foreground_track_index"], 0)
-                output = Path(plan.output_path)
-                output.parent.mkdir(parents=True, exist_ok=True)
-                output.write_bytes(b"rendered")
-                return {"output_path": str(output), "target": loudness_target.integrated_lufs}
+class ReviewGateTests(PipelineHarness):
+    def test_publishing_refuses_an_unapproved_episode(self):
+        from aicut.pipeline import publishing, review
 
-            def generate_packages(_executable, analysis, _output):
-                self.assertEqual(analysis["episodes"][0]["render_status"], "COMPLETE")
-                return {"packages": [{
-                    "episode_id": "episode-1", "metadata": {
-                        "title_options": ["제목 A", "제목 B", "제목 C"],
-                        "description": "설명", "tags": ["게임"], "chapters": [],
-                    }, "thumbnail_timestamps": [1],
-                }]}
+        ctx = self.seed()
+        result = self.pipeline.run(ctx.project, context=ctx, render=False)
+        episode = result.episodes[0]
+        episode.output_mp4_path = "/fake/out.mp4"
+        episode.metadata = {"youtube": {"video_id": "abc123"}}
+        self.store.save_episode(episode)
 
-            def package_episode(metadata, _video, _timestamps, output):
-                output.mkdir(parents=True, exist_ok=True)
-                json_path, text_path = output / "metadata.json", output / "metadata.txt"
-                thumbnail = output / "thumbnail-01.jpg"
-                json_path.write_text(json.dumps(metadata))
-                text_path.write_text("metadata")
-                thumbnail.write_bytes(b"image")
-                return {"json_path": str(json_path), "text_path": str(text_path),
-                        "thumbnails": [str(thumbnail)], "metadata": metadata}
+        with self.assertRaises(PermissionError):
+            publishing.publish_approved(ctx, episode, client=None)
 
-            manager = PipelineManager(
-                database,
-                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
-                    "duration_sec": 100, "width": 1920, "height": 1080, "audio_tracks": 2,
-                }),
-                discover=lambda *_args: {"manifest": discovery},
-                plan=lambda *_args: {"episodes": [{
-                    "episode_id": "episode-1", "candidate_ids": ["candidate-1"], "target_type": "LONG",
-                    "timeline": [{"source_start_sec": 50, "source_end_sec": 55, "scene_role": "result",
-                                  "pacing_mode": "KEEP"},
-                                 {"source_start_sec": 10, "source_end_sec": 20, "scene_role": "context",
-                                  "pacing_mode": "TRIM"}],
-                }], "manifest": {**discovery, "episodes": [{
-                    "episode_id": "episode-1", "candidate_ids": ["candidate-1"], "target_type": "LONG",
-                    "timeline": [{"source_start_sec": 50, "source_end_sec": 55, "scene_role": "result",
-                                  "pacing_mode": "KEEP"},
-                                 {"source_start_sec": 10, "source_end_sec": 20, "scene_role": "context",
-                                  "pacing_mode": "TRIM"}],
-                }]}},
-                pace=lambda *_args: {"decisions": [
-                    {"episode_id": "episode-1", "sequence_order": 1, "pacing_mode": "KEEP",
-                     "reason": "preserve result reaction"},
-                    {"episode_id": "episode-1", "sequence_order": 2, "pacing_mode": "CUT",
-                     "reason": "remove repeated context"},
-                ]},
-                render_episode=render_episode,
-                generate_packages=generate_packages,
-                package_episode=package_episode,
-            )
-            manager._run(project["project_id"], {
-                "discovery_executable": ["discovery"], "planner_executable": ["planner"],
-                "pacing_executable": ["pacing"], "render": True,
-                "render_output_directory": str(Path(directory) / "renders"),
-                "subtitle_paths": {"episode-1": str(subtitle)},
-                "render_audio_mix": [{"track_index": 0, "volume": 1, "role": "MIC"},
-                                     {"track_index": 1, "volume": 0.4, "role": "GAME"}],
-                "render_ducking": {"foreground_track_index": 0, "threshold": 0.08, "ratio": 6,
-                                   "attack_ms": 20, "release_ms": 350},
-                "packaging_executable": ["packager"],
-                "package_output_directory": str(Path(directory) / "packages"),
-            }, True, threading.Event())
-            self.assertEqual([item["source_start_sec"] for item in database.get_timeline("episode-1")], [50, 10])
-            self.assertEqual([item["pacing_mode"] for item in database.get_timeline("episode-1")], ["KEEP", "CUT"])
-            self.assertEqual(database.get_timeline("episode-1")[1]["pacing_reason"], "remove repeated context")
-            versions = database.analysis_input(project["project_id"])["planning_versions"]
-            self.assertEqual(versions[0]["version_number"], 1)
-            self.assertEqual(database.get_episode("episode-1")["render_status"], "COMPLETE")
-            self.assertEqual(database.get_episode("episode-1")["metadata"]["title_options"][0], "제목 A")
-            self.assertTrue(Path(database.get_episode("episode-1")["thumbnail_path"]).is_file())
-            self.assertEqual(database.get_project(project["project_id"])["status"], "REVIEW_PENDING")
-            manager.shutdown()
+        review.approve(ctx, episode.episode_id, reviewer="tester", note="fine")
+        approved = self.store.get_episode(episode.episode_id)
+        self.assertEqual(approved.review_status, "approved")
+        self.assertFalse(approved.metadata["review"]["auto"])
 
-    def test_chunked_analysis_resumes_from_the_failed_chunk(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/media/live.mkv"})
-            calls, fail_once = [], {4.0}
+    def test_human_verdicts_on_candidates_are_kept_for_learning(self):
+        from aicut.pipeline import review
 
-            def analyze_audio(_paths, _duration, *, window_sec, ranges):
-                start = ranges[0]["start_sec"]
-                calls.append(start)
-                if start in fail_once:
-                    fail_once.remove(start)
-                    raise RuntimeError("temporary chunk failure")
-                return {"observations": [{
-                    "kind": "SIGNAL_WINDOW", "track_index": 0, "start_sec": start,
-                    "end_sec": ranges[0]["end_sec"], "confidence": None,
-                    "payload": {"rms_dbfs": -10, "window_sec": window_sec},
-                }]}
+        ctx = self.seed()
+        self.pipeline.run(ctx.project, context=ctx, render=False)
+        candidates = self.store.candidates(ctx.project.project_id)
+        produced = [c for c in candidates if c.decision is Decision.PRODUCE]
+        self.assertTrue(produced)
 
-            manager = PipelineManager(
-                database,
-                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
-                    "duration_sec": 10, "width": 1920, "height": 1080, "audio_tracks": 1,
-                }),
-                analyze_audio=analyze_audio,
-            )
-            manager._default_audio = True
-            options = {"audio_analysis": True, "audio_paths": ["track.wav"], "analysis_chunk_sec": 4}
-            manager._run(project["project_id"], options, True, threading.Event())
-            self.assertEqual(database.get_project(project["project_id"])["status"], "FAILED")
-            manager._run(project["project_id"], options, True, threading.Event())
-            self.assertEqual(calls, [0.0, 4.0, 4.0, 8.0])
-            observations = database.analysis_input(project["project_id"])["observations"]
-            self.assertEqual([(item["start_sec"], item["end_sec"]) for item in observations],
-                             [(0, 4), (4, 8), (8, 10)])
-            manager.shutdown()
-
-    def test_pipeline_can_run_external_producer_contract(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/media/live.mkv"})
-            manifest = json.loads(
-                (Path(__file__).parent / "fixtures" / "analysis-manifest.json").read_text(encoding="utf-8")
-            )
-            observed = {}
-
-            def produce(_command, analysis_input, _output, _duration):
-                observed.update(analysis_input)
-                return {"manifest": manifest, "command": ["producer"]}
-
-            manager = PipelineManager(
-                database,
-                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
-                    "duration_sec": 5000, "width": 1920, "height": 1080, "audio_tracks": 0,
-                }),
-                produce=produce,
-            )
-            manager._run(project["project_id"], {"producer_executable": ["producer"]}, True, threading.Event())
-            self.assertEqual(observed["project"]["project_id"], project["project_id"])
-            self.assertEqual(database.get_project(project["project_id"])["status"], "PLANNING")
-            self.assertEqual(database.pipeline_steps(project["project_id"])[-1]["step"], "AI_PRODUCER")
-            manager.shutdown()
-
-    def test_pipeline_aligns_audio_and_vision_before_producer(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/media/live.mkv"})
-            observed = {}
-            manager = PipelineManager(
-                database,
-                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
-                    "duration_sec": 10, "width": 1920, "height": 1080, "audio_tracks": 1,
-                }),
-                analyze_audio=lambda *_args, **_kwargs: {"observations": [{
-                    "kind": "SIGNAL_WINDOW", "track_index": 0, "start_sec": 0, "end_sec": 1,
-                    "confidence": None, "payload": {"rms_dbfs": -12},
-                }]},
-                analyze_vision=lambda *_args, **_kwargs: {"observations": [{
-                    "kind": "FRAME_SIGNAL", "track_index": None, "start_sec": 0, "end_sec": 5,
-                    "confidence": None, "payload": {"signalstats.YAVG": 80},
-                }]},
-                produce=lambda _command, analysis, *_args: observed.update(analysis) or {
-                    "manifest": {"schema_version": 1, "events": [], "candidates": [], "episodes": []}
-                },
-            )
-            manager._run(project["project_id"], {
-                "audio_analysis": True, "vision_analysis": True, "audio_paths": ["ignored.wav"],
-                "producer_executable": ["producer"],
-            }, True, threading.Event())
-            self.assertEqual([item["modality"] for item in observed["observations"]], ["AUDIO", "VISION"])
-            self.assertEqual([item["modality"] for item in observed["timeline"]], ["AUDIO", "VISION"])
-            self.assertEqual([step["step"] for step in database.pipeline_steps(project["project_id"])],
-                             ["PROBE", "SCAN_PLAN", "AUDIO_ANALYSIS", "VISION_ANALYSIS", "AI_PRODUCER"])
-            manager.shutdown()
-
-    def test_pipeline_executes_selected_precision_ranges(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "pipeline.db")
-            project = database.create_project({"file_path": "/media/live.mkv"})
-            selected = []
-            manager = PipelineManager(
-                database,
-                probe=lambda _path: SimpleNamespace(to_dict=lambda: {
-                    "duration_sec": 10, "width": 1920, "height": 1080, "audio_tracks": 0,
-                }),
-                analyze_vision=lambda *_args, **_kwargs: {"observations": [{
-                    "kind": "FRAME_SIGNAL", "track_index": None, "start_sec": 4, "end_sec": 5,
-                    "confidence": None, "payload": {"scd.score": 0.9},
-                }]},
-                analyze_precision=lambda _source, _audio, _duration, ranges, **_kwargs: (
-                    selected.extend(ranges) or {"observations": [{
-                        "modality": "VISION", "kind": "PRECISION_FRAME_SIGNAL", "track_index": None,
-                        "start_sec": 3, "end_sec": 6, "confidence": None,
-                        "payload": {"selection_reason": "vision_scene_change"},
-                    }]}
-                ),
-            )
-            manager._run(project["project_id"], {
-                "vision_analysis": True, "precision_analysis": True,
-                "precision_audio_window_sec": 0.2, "precision_vision_interval_sec": 0.4,
-                "precision_policy": {"context_before_sec": 1, "context_after_sec": 1,
-                                     "vision_scene_score_above": 0.8},
-            }, True, threading.Event())
-            self.assertEqual(selected, [{"start_sec": 3, "end_sec": 6, "reason": "vision_scene_change"}])
-            self.assertIn("PRECISION_ANALYSIS", [step["step"] for step in database.pipeline_steps(project["project_id"])])
-            self.assertIn("PRECISION_FRAME_SIGNAL", {
-                item["kind"] for item in database.analysis_input(project["project_id"])["observations"]
-            })
-            manager.shutdown()
+        review.record_candidate_verdict(ctx, produced[0].candidate_id, "disagree", "I'd never cut this")
+        rate = review.agreement_rate(ctx)
+        self.assertEqual(rate["reviewed"], 1)
+        self.assertEqual(rate["agreement"], 0.0)
+        self.assertEqual(rate["false_positive_rate"], 1.0)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ImplausiblePlanTests(unittest.TestCase):
+    """An episode cannot run longer than the broadcast it was cut from.
+
+    The length check that existed compared against the operator's hint, so a
+    run given no hint had nothing checking it at all - which is how a six-hour
+    source produced a 3,830,063 second episode and reached the render stage
+    without a word about it.
+    """
+
+    def test_a_plan_longer_than_its_source_is_reported(self):
+        from aicut.config import CalibrationProfile
+        from aicut.db.store import Store
+        from aicut.llm import get_producer
+        from aicut.models import Cut, Episode, Project
+        from aicut.pipeline import planning
+        from aicut.pipeline.context import RunContext
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            store = Store(Path(tmp) / "db.sqlite")
+            try:
+                project = store.create_project(Project(file_path="broadcast.mkv", duration_sec=3600.0))
+                ctx = RunContext(
+                    project=project, store=store, profile=CalibrationProfile.load(),
+                    producer=get_producer("mock"), workspace=Path(tmp) / "ws",
+                )
+                episode = Episode(project_id=project.project_id, timeline=[Cut(0, 0.0, 3000.0)])
+                episode.planned_duration_sec = 90000.0        # 25 hours from a 1 hour source
+
+                planning._note_implausible_plan(ctx, episode)
+
+                reported = ctx.report.get("implausible_plans", [])
+                self.assertEqual(len(reported), 1, "an impossible plan went unreported")
+                self.assertEqual(reported[0]["source_sec"], 3600.0)
+                self.assertIn("cannot outrun its own broadcast", episode.notes)
+            finally:
+                store.close()
+
+    def test_a_plan_that_fits_its_source_is_not_flagged(self):
+        from aicut.config import CalibrationProfile
+        from aicut.db.store import Store
+        from aicut.llm import get_producer
+        from aicut.models import Cut, Episode, Project
+        from aicut.pipeline import planning
+        from aicut.pipeline.context import RunContext
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            store = Store(Path(tmp) / "db.sqlite")
+            try:
+                project = store.create_project(Project(file_path="b.mkv", duration_sec=3600.0))
+                ctx = RunContext(
+                    project=project, store=store, profile=CalibrationProfile.load(),
+                    producer=get_producer("mock"), workspace=Path(tmp) / "ws",
+                )
+                episode = Episode(project_id=project.project_id, timeline=[Cut(0, 0.0, 600.0)])
+                episode.planned_duration_sec = 600.0
+                planning._note_implausible_plan(ctx, episode)
+                self.assertNotIn("implausible_plans", ctx.report)
+            finally:
+                store.close()
+
+
+class SubtitleConfidenceTests(unittest.TestCase):
+    """A recogniser handed music does not return nothing - it returns words.
+
+    Measured on a real film: a passage with no dialogue produced "whom moon
+    when he first thing and that", burned into the video. Both production
+    backends report per-word confidence and nothing read it, so every guess
+    went on screen.
+    """
+
+    def _lines(self, words, *, floor=0.35, ratio=0.5):
+        from aicut.models import Cut, Episode, Utterance
+        from aicut.pipeline import planning
+        from aicut.render.timeline import Timeline
+
+        class _Ctx:
+            profile = CalibrationProfile.load().with_overrides(
+                {"subtitle.min_word_confidence": floor,
+                 "subtitle.min_kept_word_ratio": ratio}, measured=[])
+
+            def __init__(self):
+                self.report = {}
+
+        ctx = _Ctx()
+        episode = Episode(project_id="p", timeline=[Cut(0, 0.0, 10.0)])
+        utterance = Utterance(
+            start_sec=0.5, end_sec=4.0, text=" ".join(w["word"] for w in words),
+            speaker="HOST", words=words,
+        )
+        lines = planning._subtitles(
+            episode, Timeline.from_cuts(episode.timeline), [utterance], 1.0, ctx=ctx,
+        )
+        return lines, ctx.report
+
+    def _word(self, text, start, score):
+        return {"word": text, "start": start, "end": start + 0.3, "score": score}
+
+    def test_a_line_the_recogniser_doubted_is_not_burned_in(self):
+        lines, report = self._lines([
+            self._word("whom", 1.0, 0.04), self._word("moon", 1.4, 0.02),
+            self._word("when", 1.8, 0.05), self._word("he", 2.2, 0.09),
+        ])
+        self.assertEqual(lines, [], "invented words went on screen")
+        self.assertTrue(report.get("subtitles_dropped"), "the drop was not reported")
+
+    def test_a_line_the_recogniser_stood_behind_is_kept(self):
+        lines, _ = self._lines([
+            self._word("he", 1.0, 0.95), self._word("wins", 1.4, 0.91),
+            self._word("the", 1.8, 0.88), self._word("tournament", 2.2, 0.93),
+        ])
+        self.assertEqual(len(lines), 1)
+        self.assertIn("tournament", lines[0].text)
+
+    def test_a_mostly_confident_line_keeps_only_its_confident_words(self):
+        lines, _ = self._lines([
+            self._word("he", 1.0, 0.95), self._word("wins", 1.4, 0.91),
+            self._word("xyzzy", 1.8, 0.03), self._word("tournament", 2.2, 0.93),
+        ])
+        self.assertEqual(len(lines), 1)
+        self.assertNotIn("xyzzy", lines[0].text)
+        self.assertIn("wins", lines[0].text)
+
+    def test_a_backend_with_no_scores_loses_nothing(self):
+        """PocketSphinx reports no confidence. Not knowing a word is wrong is
+        not the same as knowing it is - so nothing is dropped, and the run says
+        the captions could not be checked."""
+        lines, report = self._lines([
+            {"word": "hey", "start": 1.0, "end": 1.3},
+            {"word": "look", "start": 1.4, "end": 1.7},
+        ])
+        self.assertEqual(len(lines), 1)
+        self.assertIn("hey", lines[0].text)
+        self.assertNotIn("subtitles_dropped", report)
+        self.assertIn("backend reports no per-word confidence",
+                      report.get("subtitle_confidence_note", ""))

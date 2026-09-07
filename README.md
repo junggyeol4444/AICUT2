@@ -1,73 +1,403 @@
-# AICUT Studio
+# aicut
 
-긴 생방송을 사건 단위로 이해하고 여러 YouTube 콘텐츠의 발견, 편집 기획, 렌더링 검수 및 퍼블리싱까지 연결하는 **AI 자율형 생방송 콘텐츠 제작 시스템의 인터랙티브 제품 프로토타입**입니다.
+> **이 브랜치(`claude/v2`)는 두 구현체를 합친 것이다.**
+>
+> | 무엇 | 어디서 왔나 | 지금 위치 |
+> |---|---|---|
+> | 엔진 — 파이프라인·판단·렌더·캘리브레이션·CLI·데스크톱 | Claude 구현 (`junggyeol4444/aicut`) | 루트 (`aicut/`) |
+> | 운영 계층 — API 키·토큰 암호화·DB 스냅샷·스케줄러 | Codex 구현 (`AICUT2` main) | `aicut/ui/auth.py`, `aicut/intelligence/token_store.py`, `aicut/db/backup.py`, `aicut/scheduler.py` |
+> | Codex 구현 원본 (웹 UI 포함) | AICUT2 main | `legacy/` — 지우지 않고 보존 |
+> | 기획안 원문 2종 | 사용자 제공 | `docs/spec-v1.ko.md`, `docs/spec-original.ko.md` |
+>
+> 두 구현체를 조항별로 대조한 결과는 `docs/merge.ko.md`에 있다.
+> 어느 쪽이 무엇을 지켰고 무엇을 빠뜨렸는지, 근거와 함께 적었다.
+>
+> `main`은 건드리지 않았다. Codex 구현은 거기 그대로 있다.
 
-## 구현된 흐름
+생방송 VOD 하나를 넣으면, 시스템이 방송 전체를 이해하고
+그 안에 **독립적인 콘텐츠가 몇 개 존재하는지 스스로 판단해서**
+그 개수만큼 완성 영상을 만든다.
 
-- 워크스페이스와 프로젝트 라이브러리
-- 새 방송 파일 등록 및 채널·캘리브레이션 프로파일 선택
-- `PARSING → UNDERSTANDING → DISCOVERING → EVALUATING → PLANNING → RENDERING → REVIEW_PENDING` 상태 표시
-- 사건 기반 콘텐츠 후보 목록, 필터, 상세 판단 근거 및 사람 승인
-- 원본 시점과 완성본 순서를 분리한 비선형 컷 타임라인
-- 컷별 `KEEP / TRIM / CUT` 호흡, 화자, 역할, 자막 및 화면 효과 표시
-- 제목 후보 3종, 설명·챕터·태그, 렌더링 사양과 필수 사람 검수 게이트
-- YouTube 레퍼런스 제작 지식, 채널 캘리브레이션 지표 및 실시간 처리 로그
-- `NO_CONTENT`를 포함한 정상 프로젝트 종료 상태
+`[통합 기획안 v1]`의 구현체다. 문서의 장 번호를 코드 주석·리포트·에러 메시지에
+그대로 인용해 두었으므로, 어떤 코드가 어떤 결정을 근거로 존재하는지 추적할 수 있다.
 
-프로토타입 UI와 함께 Python 표준 라이브러리 기반 로컬 API 및 SQLite 영속화 계층을 제공합니다. 프로젝트, 사건, 후보, 에피소드, 비선형 컷 타임라인, 캘리브레이션과 작업 로그 스키마가 실제로 생성되고 API를 통해 상태가 저장됩니다. WhisperX/비전 모델/FFmpeg/YouTube API 실행기는 대용량 모델, 미디어 원본 및 사용자 자격 증명을 연결하는 다음 런타임 단계입니다.
-
-로컬 작업 큐는 `ffprobe → 전처리 → 1차/2차 스캔 계획 → 오디오/비전 특징 → WhisperX → 분석 결과 반영`을 하나의 체크포인트 기반 작업으로 연결합니다. 오디오 PCM 특징과 FFmpeg 비전 특징은 원본 시간 범위를 검증해 SQLite에 저장됩니다. STT·오디오·비전은 `timeline` 배열 하나로 원본 시작·종료 시각에 따라 안정적으로 정렬되어 Producer에 전달됩니다. 각 단계 결과, 입력 해시, 체크포인트 버전, 시도 횟수와 실패 원인은 SQLite에 보존됩니다. 원본 파일의 경로·크기·수정 시각·표본 해시 또는 실행 옵션이 변경되면 오래된 체크포인트를 무효화하고, 입력이 같을 때만 완료 단계를 재사용해 취소 후 재개합니다. 체크포인트 JSON이 손상되었거나 전처리 체크포인트가 가리키는 중간 파일이 사라진 경우에도 해당 단계를 자동으로 무효화해 다시 생성합니다. 전처리와 STT는 실행 옵션을 제공했을 때만 수행하므로 외부 모델이 아직 설치되지 않은 환경에서도 안전하게 사용할 수 있습니다. `audio_executable`은 트랙별 `--audio <index:path>`와 원본 시간 범위를 받아 웃음·비명·환호·효과음·임베딩 등 외부 오디오 사건 모델을 실행하며, 트랙 참조·신뢰도·시간 범위를 검증합니다. `vision_executable`은 `--input`, `--output`, `--start-sec`, `--end-sec`, `--interval-sec` 계약으로 얼굴·OCR·게임 UI 등 외부 비전 모델을 구간별 실행하며, 반환 관찰의 신뢰도와 원본 시간 범위를 저장 전에 검증합니다. `understanding_executable`은 1차 스캔 창의 통합 timeline과 직전 누적 memory를 받아 창 요약·갱신 메모리·불확실한 정밀 구간을 생성하며, 각 창을 체크포인트로 저장해 수 시간 방송의 문맥을 순차 누적합니다. `discovery_executable`은 누적 이해 결과와 전체 timeline에서 사건·흩어진 mention·콘텐츠 후보·MAKE/COMBINE/HOLD/REJECT 근거를 생성하되 편집 에피소드는 만들지 못하며, 결과는 별도 검증 후 사건 그래프로 저장됩니다. `retrieval_executable`은 발견된 후보별 의미 질의로 원본 장면을 검색하고 후보 참조·원본 범위·검색 점수·장면 역할·선택 이유를 검증해 기획 Producer 입력에 저장합니다. `planner_executable`은 후보와 검색 장면으로 콘텐츠별 구조·비선형 컷 순서·장면 역할·KEEP/TRIM/CUT을 생성하며, 사건·후보 참조와 원본 범위를 검증한 기획안을 버전으로 보존합니다. `pacing_executable`은 기획 컷과 같은 시간대의 음성·오디오·비전 문맥을 보고 KEEP/TRIM/CUT과 판단 근거를 생성하며, 존재하는 컷만 원자적으로 갱신합니다. `render: true`는 페이싱 적용 뒤 에피소드별 2-pass EBU R128 렌더를 체크포인트로 실행하고 출력 파일이 실제 존재할 때만 캐시를 재사용합니다. `subtitle_paths`로 에피소드별 ASS 파일을 전달하면 비선형 컷 concat 이후 완성본 시간축에 자막을 번인하며, ASS 생성기는 하드코딩된 스타일 대신 채널 스타일 프로파일을 요구합니다. `render_audio_mix`는 트랙 번호·역할·트랙별 볼륨을 받아 각 컷을 동일 원본 구간으로 trim한 뒤 믹싱하며, 최종 결합 타임라인 전체에 2-pass loudness normalization을 적용합니다. `render_ducking`은 전경 트랙과 측정된 threshold·ratio·attack·release를 받아 마이크 발화 중 게임/BGM 배경을 sidechain 압축하며, 측정되지 않은 기본 임계값은 사용하지 않습니다. `packaging_executable`은 렌더된 각 에피소드의 제목 후보 3종·설명·태그·챕터와 썸네일 후보 시각을 생성하며, 에피소드 참조와 완성본 시간 범위를 검증한 뒤 JSON/TXT 및 후보 프레임을 저장합니다. 렌더와 패키징이 끝나면 프로젝트를 `REVIEW_PENDING`으로 전환합니다. 멀티모달 분석기는 `tests/fixtures/analysis-manifest.json` 형식의 교환 매니페스트를 출력하면 되며, 분석기가 연결되지 않은 경우에는 앞 단계 완료 후 `UNDERSTANDING`에서 명시적으로 대기합니다.
-
-`POST /api/projects/{project_id}/run`은 `resume`, `manifest_path`와 `options`를 받습니다. `options`에는 `preprocess`, `output_directory`, `disk_check`, `disk_required_bytes`, `disk_reserve_bytes`, `retry_policy`, `analysis_chunk_sec`, `stt_chunk_sec`, `frame_interval_sec`, `coarse_window_sec`, `precision_ranges`, `precision_policy`, `precision_analysis`, `precision_audio_window_sec`, `precision_vision_interval_sec`, `audio_analysis`, `audio_window_sec`, `audio_executable`, `vision_analysis`, `vision_interval_sec`, `vision_executable`, `understanding_executable`, `discovery_executable`, `retrieval_executable`, `planner_executable`, `pacing_executable`, `render`, `render_output_directory`, `subtitle_paths`, `render_audio_mix`, `render_ducking`, `packaging_executable`, `package_output_directory`, `stt_executable`, `audio_paths`, `language`, `producer_executable`을 지정할 수 있습니다. `disk_check`를 사용하면 장시간 작업을 시작하기 전에 출력 볼륨의 실제 여유 공간에서 예약 공간을 제외해 검사하고, 부족하면 `DISK_CHECK` 단계에서 즉시 중단합니다. `retry_policy`는 단계별 `max_attempts`와 `backoff_sec`를 지정하며, 각 시도 횟수와 마지막 오류를 체크포인트에 보존하고 대기 중 취소에도 즉시 반응합니다. `analysis_chunk_sec`을 지정하면 긴 원본의 오디오·비전 분석을 원본 시간 범위별 체크포인트로 분할하고, 실패나 앱 재실행 후 완료된 구간은 건너뛴 채 실패한 구간부터 이어서 처리합니다. `stt_chunk_sec`은 트랙별 WAV에서 해당 범위만 FFmpeg로 추출해 WhisperX를 독립 실행하고, 로컬 단어 시각을 원본 절대 시각으로 복원하므로 긴 STT도 구간별 재개할 수 있습니다. 프로젝트에 캘리브레이션 프로파일이 연결되어 있으면 `params.pipeline_options`를 실행 기본값으로 적용하고 API 옵션으로 필요한 값만 덮어쓰며, 프로파일 측정 버전도 입력 해시에 포함합니다. `precision_policy`는 채널 캘리브레이션에서 측정한 문맥 범위와 STT 신뢰도·오디오 변화·화면 전환 기준을 받아 정밀 구간 선택, 문맥 확장, 중첩 병합 및 선택 이유 기록을 수행합니다. `precision_analysis`를 활성화하면 선택된 범위만 더 촘촘한 오디오 창과 비전 샘플 간격으로 실제 재분석하고, `PRECISION_` 관찰로 1차 결과와 함께 저장합니다. 정밀 분석 밀도 값은 하드코딩하지 않으며 채널 캘리브레이션에서 반드시 전달해야 합니다. Producer 실행기는 `--input <분석 패키지 JSON> --output <결과 JSON>` 계약을 따르며, 결과의 ID 참조·시간 범위·점수·판단값·호흡 모드를 검증한 뒤에만 DB에 원자적으로 반영합니다. `GET /api/projects/{project_id}/job`으로 단계별 체크포인트와 현재 외부 프로세스 PID를 확인할 수 있습니다. `POST /api/projects/{project_id}/cancel`은 취소 플래그만 설정하지 않고 실행 중인 FFmpeg·WhisperX·Producer 자식 프로세스를 즉시 terminate하고, 종료되지 않으면 kill한 뒤 단계를 `CANCELLED`로 보존합니다. `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REDIRECT_URI`를 설정하면 `/api/youtube/oauth/start`와 `/api/youtube/oauth/callback`이 CSRF state를 검증하는 Google OAuth 동의·callback 흐름을 제공하고, 만료 60초 전 refresh token으로 access token을 갱신합니다. `YOUTUBE_TOKEN_STORE`와 `YOUTUBE_TOKEN_KEY`를 함께 설정하면 access/refresh token을 scrypt 파생 키와 encrypt-then-MAC 방식으로 인증 암호화하고 소유자 전용 권한으로 원자 저장하여 앱 재시작 후 복원합니다. 저장소를 설정하지 않으면 토큰은 현재 프로세스 메모리에만 유지되어 디스크에 평문 저장되지 않습니다. `YOUTUBE_ACCESS_TOKEN`을 설정하면 승인된 PRIVATE/UNLISTED 업로드 작업은 YouTube Data API resumable session을 생성하고 256KiB 배수 청크로 전송하며 진행 바이트를 추적합니다. 실제 `quotaExceeded`/`dailyLimitExceeded` 응답은 PT 자정 재시도 큐로 연결됩니다. 네트워크 단절과 HTTP 408/429/5xx는 업로드별 attempt count와 deterministic jitter가 적용된 bounded exponential backoff로 `RETRY_QUEUED`에 보존되며, resumable session checkpoint에서 이어집니다. 저장된 session으로 전송할 때 YouTube가 404/410을 반환하면 만료된 session URL과 offset만 폐기하고 backoff 후 새 resumable session을 생성하므로 작업 전체가 영구 실패하지 않습니다. 토큰이 없으면 기존처럼 명시적인 설정 오류로 중단합니다. `POST /api/uploads/{upload_id}/cancel`은 진행 중인 resumable 업로드를 다음 청크 전 안전하게 중단하고 작업을 `RETRY_QUEUED`로 되돌려 다시 실행할 수 있게 합니다. `POST /api/uploads/run-due`는 일반 대기 작업과 `retry_at`이 지난 재시도 작업만 제출하므로 quota 대기 시각을 건너뛰지 않으며, 프로세스 재시작 뒤에도 SQLite 큐에서 실행을 이어갑니다. YouTube session URL과 서버가 확인한 마지막 바이트 위치도 청크마다 SQLite에 체크포인트하므로 취소·quota 오류·프로세스 재시작 뒤 새 세션을 만들지 않고 남은 바이트부터 전송합니다. 서버 시작 시 이전 프로세스가 `UPLOADING`에 남긴 작업은 session checkpoint를 보존한 채 자동으로 `RETRY_QUEUED`로 복구해 영구 정체를 방지합니다. API 서버의 내장 scheduler는 `AICUT_SCHEDULER_INTERVAL_SEC` 주기로 업로드 재시도와 Analytics 수집 큐를 자동 실행하고, 한 작업의 실패가 다른 큐를 막지 않도록 격리합니다. 서버 종료 시 scheduler를 먼저 정지한 뒤 활성 업로드의 cancel event와 모든 실행 중 pipeline project의 cancel event를 설정하고 외부 process group을 종료한 다음 executor를 join하여 새 작업 유입과 고아 프로세스를 방지합니다. 비정상 종료 후 새 runtime이 시작되면 DB에 고아 `RUNNING`으로 남은 pipeline step을 `CANCELLED`로 확정하고 프로젝트를 `QUEUED`로 되돌리며 복구 로그를 남깁니다. 원래 실행 옵션을 임의로 추정해 자동 실행하지 않고 기존 run API의 명시적 resume 요청을 기다립니다. `GET /api/runtime/scheduler`에서 최근 실행 시각과 큐별 결과를 확인할 수 있습니다. 각 scheduler tick 결과는 SQLite에 영속화되어 재시작 후에도 `GET /api/runtime/scheduler/runs?limit=50`으로 최근 실행·실패 이력을 확인할 수 있으며, 이력 저장 실패는 실제 큐 작업을 중단시키지 않습니다. 원격 접근이 필요한 배포에서는 `AICUT_API_KEY`를 설정하면 health check와 CSRF state로 보호되는 OAuth callback을 제외한 모든 `/api/*` 요청에 `Authorization: Bearer <key>`를 요구합니다. API key는 query string에서 받지 않으며 CORS preflight는 Authorization 헤더를 명시적으로 허용합니다. 모든 POST JSON은 `AICUT_MAX_REQUEST_BYTES`(기본 1MiB) 한도 안에서 정확한 Content-Length와 `application/json` Content-Type을 요구하며, 과대·잘림·비정상 JSON을 작업 실행 전에 400 오류로 거부합니다. `POST /api/runtime/backup`은 SQLite online backup API로 커밋된 상태의 원자적 스냅샷을 `AICUT_BACKUP_DIR`에 생성하며, `AICUT_BACKUP_RETENTION`(기본 7)보다 오래된 AICUT 소유 백업만 정리합니다. 내장 scheduler는 서버 시작 후 `AICUT_BACKUP_INTERVAL_SEC`(기본 86400초)가 지나면 같은 정책으로 자동 백업하며, 업로드·Analytics의 짧은 polling 주기와 독립된 monotonic interval을 사용합니다. 백업은 공개 전에 `PRAGMA quick_check`로 검증되고 SHA-256 checksum을 반환하며, `GET /api/runtime/backups`로 현재 보관된 백업의 이름·크기·수정 시각을 조회할 수 있습니다. 인증된 `GET /api/ready`는 DB quick check, 출력 볼륨의 `AICUT_MIN_FREE_BYTES`, scheduler 실행 여부와 `AICUT_REQUIRED_TOOLS` 실행 파일을 함께 검사하고 준비되지 않은 경우 503과 항목별 원인을 반환합니다. `/api/health`는 프로세스 liveness만 확인합니다. 완료된 업로드는 `/api/uploads/{upload_id}/thumbnail`로 패키징된 JPEG/PNG 썸네일을 실제 적용하고, `/api/uploads/{upload_id}/publication`으로 공개·일부공개 전환 또는 timezone-aware 미래 시각의 비공개 예약 공개를 설정합니다. 공개 상태와 예약 시각, 썸네일 적용 시각은 SQLite에 기록됩니다. `/api/episodes/{episode_id}/analytics/collect`는 본인 채널 OAuth로 YouTube Analytics API의 조회수·좋아요·댓글·공유·평균 시청 지속 시간·평균 시청 비율과 elapsed-video-time 유지율을 수집하고 에피소드 성과 스냅샷으로 저장합니다. 업로드 완료 시 24시간·7일·30일 수집 작업을 SQLite에 자동 예약하며, `/api/analytics/run-due`는 기한이 지난 작업만 실행해 재시작 후에도 스냅샷 일정을 이어갑니다. 각 작업의 상태·시도 횟수·마지막 오류를 보존합니다. 성과 스냅샷은 당시 최신 기획 버전 ID를 함께 기록하며, 채널 프로파일이 제공된 수동 성과 입력은 유지율 변화 지점을 완성본 컷·장면 역할·원본 범위에 상관관계로만 귀속합니다. 최소 조회수·유지율 표본 수가 부족하면 학습하지 않고 `INSUFFICIENT_SAMPLE`로 남깁니다. `/api/strategies/analyze`는 여러 성과 스냅샷의 컷 역할·페이싱별 변화를 집계하고 채널별 최소 영상 수·관찰 수·신뢰구간·최소 효과 기준으로 PROMOTE/HOLD/ROLLBACK 초안을 버전 저장합니다. 상관관계 결과는 자동 적용하지 않으며 `/api/strategies/{id}/activate`의 명시적 승인만 활성화하고 이전 활성 버전은 rollback합니다. 명시적으로 활성화된 채널 전략만 `analysis_input.production_strategy`로 다음 discovery/planning AI에 전달되며, 활성 전략 버전이 바뀌면 입력 해시가 변경되어 오래된 기획 체크포인트를 재사용하지 않습니다.
-
-렌더러는 DB의 완성본 컷 순서를 읽어 원본 시각과 무관한 FFmpeg concat 그래프를 생성합니다. `CUT` 컷은 제외하고, 각 컷에 짧은 `afade`를 적용한 뒤 H.264/AAC MP4로 출력합니다. 오디오는 1차 EBU R128 측정 결과를 2차 렌더에 주입하는 `loudnorm` 2-pass 방식으로 전체 타임라인을 정규화합니다. 목표 LUFS, true peak와 loudness range는 외부에서 변경할 수 있습니다. 렌더 API는 기본적으로 측정 계획만 반환하는 dry-run이며 `execute: true`를 명시해야 실제 FFmpeg를 실행합니다.
-
-## 실행
-
-```bash
-npm install
-npm start
+```
+생방송 1개 → 장편 4개 + Shorts 5개
+생방송 1개 → 장편 1개
+생방송 1개 → 0개          ← 이것도 정상 결과다 (NO_CONTENT)
 ```
 
-브라우저에서 `http://localhost:4173`을 여세요.
+---
 
-다른 터미널에서 로컬 API를 실행하면 UI가 자동으로 데모 데이터 모드에서 SQLite 런타임 모드로 전환됩니다.
+## 이 시스템이 하드코딩하지 않는 것 (2장)
+
+| 하드코딩하지 않는 것 | 어디서 결정되는가 |
+|---|---|
+| 영상 구조 (Hook→Climax 같은 고정 틀) | `producer.plan_structure()` — 콘텐츠마다 다름 |
+| 콘텐츠 개수 | `discovery` + `evaluating` — 0개 허용 |
+| 콘텐츠 종류 | 화면 상황 라벨은 내부 신호일 뿐 출력 카테고리가 아님 |
+| 시간순 편집 | `TB_EDIT_TIMELINE` — 컷 단위 타임라인, 원본 순서와 무관 |
+| 영상 길이 | 슬라이더는 힌트. 어긋나면 리포트에 사유 기록 (2.6) |
+| 판정 임계값 | 전부 캘리브레이션 프로파일. 코드에 숫자 없음 (17.1) |
+
+**측정하지 않은 값은 확정값으로 쓰지 않는다 (17.5).**
+기본 프로파일의 미측정 파라미터는 `provisional`로 표시되고,
+그 값을 읽은 실행은 리포트에 “이 결과는 아직 추측값에 기대고 있다”고 남긴다.
+`--strict`를 켜면 미측정 파라미터를 읽는 순간 실행이 거부된다.
+
+---
+
+## 플랫폼
+
+CI가 Windows·macOS에서 실제로 돌린다. **처음 돌렸을 때 양쪽 다 실패했다.** 나온 버그:
+
+| 플랫폼 | 증상 | 원인 |
+|---|---|---|
+| macOS | 자막이 있는 렌더가 전부 실패 | `subtitles='경로'`의 위치 인자를 ffmpeg 7.2가 거부 (`No option name near`). 6.x·7.1은 받아줬다 |
+| Windows | sendcmd 줌 렌더 실패 | 명령 파일 경로가 이스케이프 없이 필터로 들어가 `C:`의 콜론에서 끊김 |
+| Windows | 워크스페이스 삭제 불가 | UI가 요청 스레드마다 SQLite 연결을 만들고 **닫지 않았다**. 리눅스에선 그냥 누수, Windows에선 파일 잠금 |
+| macOS | 그 다음 실행에서 자막 렌더가 또 전부 실패 | Homebrew가 formula를 쪼갰다. 지금 `brew install ffmpeg`가 주는 빌드에는 **libass가 없다** — `subtitles` 필터 자체가 존재하지 않는다 |
+
+넷 다 고쳤다. 마지막 것은 코드 버그가 아니라 사용자 환경이라, 고치는 방식이
+다르다: 빌드에 뭐가 있는지 **묻고**(`ffmpeg -filters`), 자르기 전에 확인하고,
+없으면 에피소드를 버리는 대신 자막 없이 렌더하고 `.ass`를 옆에 남긴 뒤 그
+이탈을 report에 적는다 (2.6). `aicut doctor`가 필터 가용성을 미리 찍는다.
+`subtitles` 필터를 지운 가짜 ffmpeg로 스위트 전체를 돌려서 확인했다.
+
+Windows에서 구조적으로 다른 나머지 지점:
+
+| 지점 | 처리 |
+|---|---|
+| ffmpeg 필터 안의 `C:\경로` | `C\:/경로`로 이스케이프 (자막·폰트 경로 둘 다) |
+| 콘솔 코드페이지 | stdout/stderr를 UTF-8로 재구성. cp1252·cp437에서 한글 파일명 출력이 `UnicodeEncodeError`로 죽던 것 |
+| `resource` 모듈 부재 | 메모리 측정만 건너뛰고 나머지는 실행 |
+| `Scripts\` vs `bin/` | 설치 검증이 양쪽에서 돈다 |
+| concat 목록 경로 | 항상 슬래시 (`as_posix()`) |
+
+`tests/test_platform.py`가 이 가정들을 고정하고, CI의 `windows-latest`·`macos-latest`
+잡이 실제로 실행한다. 리눅스 테스트만으로는 위 네 개 중 **하나도** 잡히지 않았다.
+현재 6잡 전부 통과한다 (`docs/measurements.md`의 플랫폼 표).
+
+## 설치
 
 ```bash
-npm run api
+pip install .                    # 코어는 표준 라이브러리 + ffmpeg CLI만 필요
+pip install '.[stt,vision,llm]'  # 단계별 선택 설치
+aicut doctor                     # 20.2 사전 준비 항목 점검
 ```
 
-프로덕션 번들을 API 서버에서 함께 제공하려면 다음 순서로 실행합니다.
+STT 백엔드 둘:
 
 ```bash
-npm run build
-npm run serve
+aicut transcribe stream.mkv                          # faster-whisper, CPU에서 돈다
+aicut transcribe stream.mkv --backend whisperx --device cuda --stt-model large-v3
 ```
 
-브라우저에서 `http://127.0.0.1:8787`을 여세요. 데이터베이스 경로는 `AICUT_DB=/path/to/aicut.db`로 변경할 수 있습니다.
+STT는 GPU를 원하는 유일한 단계다. 분리해 뒀으니 장비 있는 기계에서 트랜스크립트만
+뽑아 옮겨도 된다. 17.2의 원본↔완성본 쌍 트랜스크립트도 이걸로 만든다.
 
-## 테스트 및 빌드
+세 번째 백엔드로 PocketSphinx가 있다(`pip install pocketsphinx`). 정확도는
+나쁘지만 음향 모델을 패키지에 싣고 와서 네트워크도 GPU도 필요 없다 — **실제
+인식기 출력으로 파이프라인이 도는지 검증하는 용도**다 (`tests/test_stt_live.py`,
+24.9초 오디오를 5.3초에 인식, 침묵 3개가 발화 경계 3개로).
+
+`ffmpeg` / `ffprobe`는 PATH에 있어야 한다.
+화자 분리(pyannote)는 HuggingFace 게이트 모델 승인이 선행되어야 한다 (20.2).
+
+---
+
+## 기본 사용
 
 ```bash
-npm test
-npm run build
+# 1. 방송 하나 투입 → 편집 계획까지 (MVP 5. 렌더링 없음)
+aicut run stream.mkv --no-render --producer anthropic
+
+# 2. 사람이 편집 계획을 읽는다 — MVP 5의 합격 기준 그 자체
+aicut plan workspace/<project>/plans/<episode>.json
+
+# 3. AI가 무엇을 콘텐츠로 봤고 무엇을 버렸는지, 그 사유를 검토 (15.4)
+aicut candidates <project-id>
+aicut candidates <project-id> --candidate <id> --verdict disagree --note "이건 안 나감"
+
+# 4. 렌더링까지 (MVP 6)
+aicut run stream.mkv --producer anthropic
+
+# 5. 사람 검수 게이트 — 이걸 통과하지 않으면 공개되지 않는다 (11.3)
+aicut review <episode-id> approve --reviewer me
+
+# 중간에 실패했으면 — 이해한 것은 그대로 두고 이어서 (16장)
+aicut resume <project-id>
+
+# 6. 쿼터 상태와 다음 PT 자정 리셋 시각 (11.4)
+aicut quota
+
+# 화면으로 조작 (15장) — 1~5번을 브라우저에서
+aicut ui                 # http://127.0.0.1:8765
 ```
 
-## 주요 파일
+### 학습 루프 (12.3)
 
-- `src/main.js` — 전체 화면, 모달, 상태 전이 및 상호작용
-- `src/data.js` — 프로젝트·사건·후보·타임라인·학습 지식 데이터 계약
-- `src/styles.css` — 데스크톱 스튜디오 UI 디자인 시스템
-- `src/api.js` — 로컬 런타임 API 클라이언트와 오프라인 폴백
-- `backend/schema.sql` — 제약 조건과 인덱스를 포함한 SQLite 스키마
-- `backend/database.py` — 프로젝트·후보·타임라인·검수 저장소
-- `backend/server.py` — JSON API 및 프로덕션 정적 파일 서버
-- `backend/media.py` — ffprobe 미디어 검사와 정규화
-- `backend/pipeline.py` — 중복 실행 방지 로컬 작업 큐와 실패 상태 처리
-- `backend/render.py` — 비선형 컷, 고정 crop 줌, 컷별 afade 및 concat 렌더 계획
-- `tests/data.test.js` — 파이프라인과 핵심 데이터 불변 조건 검사
-- `tests/test_database.py` — SQLite 트랜잭션, 제약 조건 및 비선형 타임라인 검사
+```bash
+# A. 레퍼런스 — 공개 지표와 메타데이터만 수집, 패턴만 저장 (4.2, 4.6)
+aicut learn reference --query "게임 스트리머 편집 영상" --producer anthropic
 
-## 편집기 연동
+# B. 원본↔완성본 — 이 시스템의 핵심 차별점. 네트워크 불필요.
+#    같은 작업이 17.2 캘리브레이션 데이터셋이 된다
+aicut learn pairs --source-transcript src.json --output-transcript out.json
 
-`editor_plugins/`에는 별도 AICUT 서버를 켜지 않고 편집기 안에서 선택 영상을 bridge로 전달하는 Premiere Pro CEP 패널, DaVinci Resolve 스크립트, Blender VSE 애드온이 있습니다. 지원 방식은 `editor_plugins/hosts.json`에 명시하며, 공개 timeline plugin 계약이 없는 편집기는 네이티브 지원을 사칭하지 않고 FCPXML, CMX3600 EDL, UTF-8 BOM CSV, 렌더 MP4와 자막 교환 경로를 사용합니다. 설치 순서, 편집기별 제한, 영상 분석 방식과 안전한 성과 학습 절차를 대화 형식으로 정리한 별도 문서는 [`docs/EDITOR_WORKFLOW.ko.md`](docs/EDITOR_WORKFLOW.ko.md)를 참고하십시오.
+# C. 성과 — 자기 채널 한정
+aicut learn performance --project <id> --days 28
+```
+
+### 업로드 (11.3, 11.4)
+
+```bash
+aicut upload <episode-id>              # 비공개로 올린다
+aicut review <episode-id> approve --reviewer me
+aicut upload <episode-id> --publish    # 승인된 것만 공개된다
+aicut upload --retry                   # 쿼터 초과로 밀린 큐 처리
+```
+
+`--producer mock`(기본값)은 모델 호출 없이 파이프라인 전체를 돌리는 오프라인
+스텁이다. 판단을 하지 않으며, 모든 판정에 `mock` 딱지가 붙는다.
+
+### 편집기로 넘기기 (22.5)
+
+렌더링 대신 컷을 편집기 타임라인으로 받는다. 마무리는 사람이 한다.
+
+```bash
+# 어느 편집기든 — 교환 파일
+aicut export workspace/<project>/plans/<episode>.json --format fcpxml --format srt
+
+# DaVinci Resolve / Premiere Pro — 전용 스크립트
+#   plugin/resolve  또는  plugin/premiere 의 파일 2개를 편집기 스크립트 폴더에 복사
+```
+
+설치·주의사항·검증 상태는 [`plugin/README.md`](plugin/README.md).
+두 스크립트 모두 **판단 부분은 테스트되어 있고, 편집기 API 호출 자체는
+이 환경에 Resolve도 Premiere도 없어 실행된 적이 없다.** 그 사실은 파일에도 적혀 있다.
+교환 파일 경로는 실제 영상으로 검증됐다.
+
+---
+
+## 파이프라인 (14장)
+
+```
+QUEUED → PARSING → UNDERSTANDING → DISCOVERING → EVALUATING
+       → PLANNING → RENDERING → PACKAGED → REVIEW_PENDING → PUBLISHED
+분기: NO_CONTENT (정상 종료) / FAILED / RETRY_QUEUED
+```
+
+`REVIEW_PENDING`을 거치지 않고 `PUBLISHED`에 도달하는 경로는 상태 기계 자체에
+존재하지 않는다. 테스트로도 고정해 두었다.
+
+| 단계 | 하는 일 | 문서 |
+|---|---|---|
+| PARSING | 음성/무음/라우드니스/화면 변화 측정, 캐시 | 5.2, 20장 |
+| UNDERSTANDING | **1차 전 구간 통과 + 2차 정밀 통과**, 사건 그래프 | 5.1, 5.4 |
+| DISCOVERING | 방송 안에 어떤 콘텐츠가 있는가 (0개 허용) | 6장 |
+| EVALUATING | 제작 / 결합 / 보류 / 제작안함 + 사유 | 6.3 |
+| PLANNING | 구조 결정 → 장면 검색 → 호흡 설계 → 편집 계획 JSON | 7~9장 |
+| RENDERING | 편집 계획만 읽고 실행. 판단 없음 | 10장 |
+| PACKAGED | 썸네일 후보 추출, 제목/설명/태그/챕터 | 11장 |
+| REVIEW_PENDING | 사람 검수 게이트 (필수) | 11.3 |
+
+1차 통과가 실행 비용의 대부분이다 — 6시간 방송이면 창마다 추론 1회. 실측하니
+**181회**였다. 뒷단계에서 실패했다고 그 값을 다시 치르면 16장의 단계 분리가
+의미가 없다. `aicut resume <project>`는 저장된 창 요약과 사건 그래프를 재사용하고
+그 뒤만 다시 판단한다 — 프로파일을 다시 재거나 사람 판단이 바뀌면 결과가 달라져야
+하므로. 30분 소스 실측: 56초 걸리던 재실행이 **0.37초**. **6시간 소스 실측:
+254초가 2.4초** (창 181개·사건 3개·발화 4,976개를 그대로 재사용).
+
+조작 화면은 `aicut ui` (15.1의 4단계 플로우: 입력 / 진행 / 후보 검토 / 결과).
+localhost 전용이고 인증이 없다 — 포트를 외부에 열지 말 것.
+
+1차 통과는 **화면 전환 감지로 대체하지 않는다.** 게임 화면이 30분간 그대로여도
+그 안에서 일이 벌어지므로, 전 구간을 빠짐없이 통과한다 (5.1).
+각 창은 앞선 창들의 기억을 들고 읽히기 때문에 03:41의 발언이 00:32의 사건을
+가리킨다는 것을 알아본다 (5.4).
+
+---
+
+## 데이터 모델의 핵심 (13.1)
+
+에피소드는 **원본의 시간 구간이 아니다.** `start_sec`/`end_sec` 컬럼이 없다.
+
+```
+TB_EPISODE (start_sec / end_sec 없음)
+  └ TB_EDIT_TIMELINE
+      sequence_order    ← 완성본에서의 순서
+      source_start_sec  ← 원본에서의 위치 (순서와 무관)
+      pacing_mode       ← KEEP / TRIM / CUT
+```
+
+에피소드를 연속 구간으로 저장하는 순간 2.4(비선형 재구성)와
+5.4(멀리 떨어진 장면 연결)가 표현 불가능해지기 때문이다.
+
+---
+
+## 스마트 페이싱 (9장)
+
+같은 길이의 정적이 정반대의 의미를 가질 수 있다. 길이만으로는 구분되지 않으므로
+맥락을 읽는다 — 직전 텐션, 화자 전환 대기 여부, 화면 속 인물의 정지 여부,
+그 컷이 편집 계획에서 부여받은 역할.
+
+```
+KEEP  황당해서 말을 잇지 못하는 구간, 반박 직전의 숨, 화자 전환 대기
+TRIM  애매한 구간 — 숨은 남기고 압축
+CUT   파밍·이동·자리비움 — 통째로 제거
+```
+
+가중치와 임계값은 전부 프로파일에 있다. 판정은 규칙 계층이 점수를 내고,
+추론 계층이 뒤집을 수 있으며(`decided_by`에 기록),
+**사람이 만든 완성본과 대조해 채점하지 않은 페이싱은 신뢰하지 않는다** (9.4 → 17.3).
+
+---
+
+## 기획안 v1이 지적한 기술적 오류 3건 (10.4)
+
+1. **얼굴 추적 줌** — `crop=...:x=face_center_x` 는 동작하지 않는다.
+   `face_center_x`는 ffmpeg 내장 변수가 아니고, crop은 프레임마다 좌표를
+   자유롭게 바꾸지 못한다. → `segment_crop`(구간별 고정 crop + concat)과
+   `sendcmd`(시간축 좌표 변화) 두 전략을 구현하고, 선택은 프로파일 파라미터로 뒀다.
+   MVP 6에서 실측 후 확정한다.
+2. **컷 연결부** — 수백 개 컷마다 `acrossfade`를 쓰면 필터 그래프가 폭발한다.
+   → 컷 단위 수 ms `afade` in/out + `concat`.
+3. **라우드니스** — EBU R128 정규화는 유지하되 2-pass(측정 후 적용).
+   1-pass는 구간별 레벨이 흔들린다.
+
+---
+
+## 3종 학습 루프 (12.3)
+
+| 루프 | 입력 | 코드 |
+|---|---|---|
+| A. 레퍼런스 | 유튜브 영상의 **공개 지표**와 메타데이터 | `intelligence/reference.py` |
+| B. 원본↔완성본 | 내 방송 원본 + 사람이 만든 완성본 | `intelligence/source_output.py` |
+| C. 성과 | 내 채널의 유지율·이탈 구간 | `pipeline/performance.py` |
+
+- 유지율·평균 시청 지속 시간·CTR은 **자기 채널에서만** 조회 가능하다.
+  타 채널은 조회수/좋아요/댓글 수가 한계다 (4.2). API 표면이 이 구분을 강제한다.
+- 레퍼런스 원본 미디어는 저장하지 않는다. 스키마에 그럴 컬럼이 없다 (4.6).
+- **B가 이 시스템의 핵심 차별점이다.** B가 없으면 규칙 엔진에 머문다.
+  같은 작업이 17.2 캘리브레이션 데이터셋을 겸한다.
+
+---
+
+## 캘리브레이션 (17장)
+
+```bash
+aicut profile                                   # 지금 무엇이 추측값인지 확인
+aicut calibrate --init --channel mychannel      # 17.4 1단계: 내 방송의 실제 레벨 분포에서 시작값 측정
+
+# 17.2 데이터셋 — 이 프로젝트의 병목
+aicut dataset init ds.json --source stream.mkv --transcript stream.json
+aicut dataset add-content ds.json --start 01:12:30 --end 01:19:05 --note "보스전"
+aicut dataset derive-silences ds.json --output-transcript 완성본.json
+
+aicut calibrate --dataset ds.json --channel mychannel    # 하네스 직접 안 써도 된다
+aicut profile --list                                     # 무엇을 언제 측정했나
+```
+
+전체 절차는 `docs/calibration.md`.
+
+스윕이 측정한 파라미터는 `measured`로 승격되고 더 이상 경고를 띄우지 않는다.
+측정하지 않은 형제 파라미터는 계속 추측값으로 남는다.
+프로파일은 채널 단위다 — 마이크·게임·합방 여부가 바뀌면 다시 측정한다.
+
+---
+
+## 구현되지 않은 것
+
+정직하게 적는다.
+
+- **UI 인증** — `aicut ui`는 localhost 전용이고 인증이 없다. 요청 본문 크기는
+  4MB로 제한하지만, 포트를 외부에 열면 누구나 조작할 수 있다. 열지 말 것.
+- **PyQt6 / Electron 래퍼 (20.1)** — 15장의 네 화면은 `aicut ui`로 구현되어 있으나,
+  전달 방식이 기획안이 적은 데스크톱 래퍼가 아니라 로컬 HTTP 서버 + 정적 페이지다.
+  헤드리스에서 실제로 돌고 테스트되기 때문에 이 방식을 택했다.
+  PyQt6 `QWebEngineView`나 Electron 셸이 같은 서버를 감싸면 UI 로직 변경 없이
+  22.1의 "단일 실행 가능한 데스크톱 프로그램"이 된다.
+- **얼굴 인식 정밀도** — OpenCV 4.x면 Haar cascade, `AICUT_FACE_MODEL`에 YuNet
+  `.onnx`를 주면 DNN (`aicut run --frames`).
+  "얼굴이 화면을 얼마나 채우는가" 수준의 거친 질문에만 답한다.
+  OpenCV가 없으면 토크/게임 구분은 `UNKNOWN`으로 남는다 — 추측하지 않는다.
+  표정 변화는 얼굴 박스의 이동·크기 변화로 대신한다(11.1). 랜드마크 모델 아님.
+- **웃음/비명 분류기** — 학습된 분류기가 아니다. "이 방송 자체의 발화 레벨 대비
+  크고, 그 아래 받아쓰인 단어가 거의 없다"는 두 신호로 판정한다 (`analysis/vocalburst.py`).
+  웃음·비명·환호는 크고 단어가 없고, 흥분한 발화는 크고 단어가 많다는 구분이다.
+  거칠다 — 길게 지르는 문장은 놓치고 큰 기침은 잡는다. 숨기지 않고 적어 둔다.
+  진짜 분류기는 `VocalBurstDetector` 뒤에 그대로 갈아 끼운다.
+- **실측 대기** — MVP 8(쿼터 증량 승인)과 20.2의 **GPU** STT 시간은 실제 계정·하드웨어가
+  필요하다. 나머지 실측은 `docs/measurements.md`에 끝냈다: 처리 시간(R3),
+  **6시간 원본 실측**(외삽 아님 — 신호 추출 6.6분, 편집 계획까지 4.2분, 최대 RSS 74MB),
+  렌더 비용, 10.4 줌 전략 비교, 입력 검증, 실제 인식기 STT, ffmpeg 빌드 차이,
+  플랫폼별 실행 결과. 자기 장비 숫자는 `aicut benchmark <원본>`으로 잰다.
+
+  6시간 원본을 실제로 통과시킨 것이 짧은 픽스처로는 나올 수 없는 버그를 잡았다:
+  장면 길이 상한이 없어 6시간 발화가 장면 **하나**가 되고, 편집 계획이 원본
+  3,830,063초(44일)에 자막 828,949줄로 나왔다. 규모는 직접 통과시켜야 보인다.
+
+---
+
+## 개발
+
+```bash
+python -m unittest discover -s . -p "test_*.py"    # 333 tests, 커버리지 90%
+```
+
+ffmpeg가 없으면 미디어를 만지는 51개가 스스로 건너뛰고 나머지는 그대로 돈다.
+CI가 ffmpeg를 **숨긴 채** 한 번 더 돌려서 그 주장을 검증한다 — GitHub 러너에는
+ffmpeg가 기본으로 깔려 있어서, 숨기지 않으면 이 잡은 아무것도 증명하지 못한다. 합성 방송 픽스처(`tests/fixtures.py`)로 파이프라인
+전체를 오프라인 실행한다: 한 시간 떨어진 두 시점을 잇는 사건, 잘라야 할
+자리비움, 지켜야 할 정적이 들어 있다.
+
+나머지 29개(`test_render_live.py`, `test_pipeline_live.py`)는 **실제로 ffmpeg를
+돌린다.** ffmpeg가 없으면 건너뛴다. 다른 테스트는 렌더러가 *만드는 명령*을
+검사하지만, 이쪽은 그 명령이 실제 파일에 무슨 짓을 하는지 검사한다:
+
+- `remove_spans`가 정말 파일에서 빠졌는가 (길이로 확인)
+- 계획 순서대로 렌더되는가 — 완성본 첫 프레임이 원본 뒷부분과 일치하는지 PSNR로 대조
+- 자막이 정말 태워졌는가 (자막 구간과 비자막 구간의 PSNR 차이)
+- 2-pass 라우드니스가 목표치에 닿는가
+- 줌이 픽셀을 실제로 옮기는가 (파싱만 되는 게 아니라)
+- sendcmd 팬이 시간에 따라 화면을 옮기는가
+- `방송_2026-08-19 [하이라이트].mkv` 같은 경로에서 자막이 태워지는가 —
+  ASS 경로는 ffmpeg 필터 문자열로 들어가고 거기선 `:`와 따옴표가 문법이다
+- 그리고 파이프라인 전체: 실제 다중트랙 파일을 넣어 컨테이너 판독, 무음 검출,
+  버스트 검출, 렌더, 썸네일, 메타데이터까지 스스로 하게 두고 결과를 검사한다
+
+YouTube API와 추론 프로바이더는 가짜 클라이언트로 검증한다 — 네트워크 없이
+쿼터 소진, PT 자정 재시도, 업로드 요청 본문(제목 100자·태그 30개 컷),
+재시도 백오프, 응답 파싱까지 실제로 실행된다.
+
+라이브·가짜 클라이언트 층이 잡은 것:
+
+1. concat 목록의 상대경로가 목록 파일 위치 기준으로 다시 풀려 경로가 중복됨.
+   인자 배열만 보면 멀쩡해 보이는 종류.
+2. sendcmd로 crop `w`/`h`를 바꾸면 필터 그래프가 **교착**된다 (ffmpeg 7.1 실측:
+   벽시계 60초, CPU 0.5초, 출력 0바이트). 그래서 sendcmd 전략은 고정 크롭 크기로
+   **팬만 한다**. 배율이 변하는 줌은 `segment_crop`이 담당한다.
+   scale 키프레임이 섞여 들어오면 조용히 무시하지 않고 경고하며 평탄화한다.
+3. `INSERT OR REPLACE`가 SQLite에서 기존 행을 삭제 후 삽입하므로
+   `ON DELETE CASCADE`가 자식 행을 같이 지운다 — 에피소드를 저장할 때마다
+   성과 데이터(루프 C)와 대기 중인 업로드가 조용히 사라지고 있었다. upsert로 교체.
+4. 쿼터 재시도가 실패할 때마다 큐에 **중복 행**을 쌓았다. 에피소드당 한 행으로 고정.
+5. 배열 응답 앞에 문장이 붙으면 JSON 추출이 안쪽 객체만 뽑아 배열이 잘렸다.
+6. 프로파일이 **아무도 안 읽는 파라미터 4개**를 광고하고 있었다. 17.1이
+   "판정 기준은 프로파일에" 라고 한 이상, 읽히지 않는 손잡이는 거짓말이다.
+7. **설치하면 아예 안 돌아갔다.** 캘리브레이션 프로파일·자막 스타일·UI 페이지가
+   패키지 밖에 있어서 `pip install`이 안 실어감. 저장소 안에서만 동작하는 프로그램이었다.
+   `aicut/resources/`로 옮기고, 설치본을 실제로 만들어 저장소 밖에서 실행하는
+   테스트를 뒀다.
+8. 편집 계획의 `source_path`가 상대경로로 저장됐다. 다른 디렉터리에서
+   `aicut render <plan>` 하면 원본을 못 찾는다 — 16장의 "렌더만 재실행"이 깨진다.
+   1번과 같은 부류: 상대경로가 다른 문맥에서 다시 풀린다.
+9. `TB_CALIBRATION_PROFILE`(13장)에 **아무것도 안 쓰이고 있었다.** 캘리브레이션
+   결과가 파일로만 남고 DB엔 기록 안 됨. 이제 `aicut calibrate`가 기록하고
+   `aicut profile --list`로 조회한다.
+
+`tests/test_consistency.py`가 이 부류를 구조적으로 막는다: 안 읽히는 프로파일 키,
+프롬프트 없는 판단 태스크, 목 핸들러 없는 태스크, 아무것도 안 쓰는 테이블,
+도달 불가능한 상태, 호출자 없는 공개 함수, 부모 행에 대한 `INSERT OR REPLACE` —
+전부 테스트가 실패시킨다. 전부 실제로 이 저장소에 있었던 것들이다.
