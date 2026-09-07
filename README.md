@@ -6,7 +6,7 @@
 > |---|---|---|
 > | 엔진 — 파이프라인·판단·렌더·캘리브레이션·CLI·데스크톱 | Claude 구현 (`junggyeol4444/aicut`) | 루트 (`aicut/`) |
 > | 운영 계층 — API 키·토큰 암호화·DB 스냅샷·스케줄러 | Codex 구현 (`AICUT2` main) | `aicut/ui/auth.py`, `aicut/intelligence/token_store.py`, `aicut/db/backup.py`, `aicut/scheduler.py` |
-> | Codex 구현 원본 (웹 UI 포함) | AICUT2 main | `legacy/` — 지우지 않고 보존 |
+> | Codex 구현 원본 (웹 UI 포함) | AICUT2 main | `legacy/` — 동결 보존 (`legacy/README.md`) |
 > | 기획안 원문 2종 | 사용자 제공 | `docs/spec-v1.ko.md`, `docs/spec-original.ko.md` |
 >
 > 두 구현체를 조항별로 대조한 결과는 `docs/merge.ko.md`에 있다.
