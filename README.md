@@ -67,3 +67,7 @@ npm run build
 - `backend/render.py` — 비선형 컷, 고정 crop 줌, 컷별 afade 및 concat 렌더 계획
 - `tests/data.test.js` — 파이프라인과 핵심 데이터 불변 조건 검사
 - `tests/test_database.py` — SQLite 트랜잭션, 제약 조건 및 비선형 타임라인 검사
+
+## 편집기 연동
+
+분석·기획된 에피소드는 `POST /api/episodes/{episode_id}/editor-export`로 FCPXML, CMX3600 EDL 및 UTF-8 BOM CSV 번들을 생성할 수 있습니다. Premiere Pro·DaVinci Resolve 계열에서는 XML/EDL을 사용하고, 독점 프로젝트 timeline 교환이 제한된 CapCut·Vrew 등의 도구에서는 렌더 MP4·자막·CSV 컷 시트를 사용합니다. 편집기별 실제 적용 순서, 영상 분석 방식과 안전한 성과 학습 절차를 대화 형식으로 정리한 별도 문서는 [`docs/EDITOR_WORKFLOW.ko.md`](docs/EDITOR_WORKFLOW.ko.md)를 참고하십시오.

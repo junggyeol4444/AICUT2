@@ -33,6 +33,7 @@ from .auth import ApiKeyGuard
 from .http_utils import read_json_object
 from .backup import DatabaseBackupManager
 from .health import runtime_readiness
+from .editor_export import export_editor_bundle
 from dataclasses import asdict
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -346,6 +347,16 @@ class ApiHandler(BaseHTTPRequestHandler):
                     self.json({"episode_id": episode_id, **paths, "thumbnails": thumbnails})
                 else:
                     self.json({"episode_id": episode_id, "dry_run": True, "thumbnail_commands": commands})
+            elif path.startswith("/api/episodes/") and path.endswith("/editor-export"):
+                episode_id = path.split("/")[3]
+                episode = DB.get_episode(episode_id)
+                output_directory = payload.get("output_directory") or str(ROOT / "exports" / episode_id)
+                result = export_editor_bundle(
+                    episode["file_path"], DB.get_timeline(episode_id), output_directory,
+                    title=payload.get("title") or episode.get("title") or episode_id,
+                    fps=int(payload.get("fps", 30)),
+                )
+                self.json({"episode_id": episode_id, **result}, HTTPStatus.CREATED)
             elif path.startswith("/api/episodes/") and path.endswith("/publish"):
                 episode_id = path.split("/")[3]
                 self.json(DB.queue_upload(episode_id, payload.get("privacy_status", "PRIVATE")), HTTPStatus.CREATED)
