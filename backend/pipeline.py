@@ -98,6 +98,7 @@ class PipelineManager:
         self._lock = threading.Lock()
         self._hash_context = threading.local()
         self._retry_context = threading.local()
+        self.recovered_steps = self.database.recover_interrupted_pipeline_steps()
 
     def submit(
         self, project_id: str, manifest_path: str | None = None, *,

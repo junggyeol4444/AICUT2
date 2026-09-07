@@ -218,6 +218,33 @@ class Database:
         value["output"] = json.loads(value.pop("output_json"))
         return value
 
+    def recover_interrupted_pipeline_steps(self) -> list[dict[str, str]]:
+        """Cancel orphaned RUNNING steps and make their projects explicitly resumable."""
+        timestamp = now()
+        message = "이전 프로세스에서 중단된 pipeline 단계를 복구했습니다."
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT project_id,step FROM pipeline_steps
+                WHERE status='RUNNING' ORDER BY project_id,updated_at"""
+            ).fetchall()
+            recovered = [dict(row) for row in rows]
+            project_ids = sorted({row["project_id"] for row in rows})
+            if recovered:
+                connection.execute(
+                    """UPDATE pipeline_steps SET status='CANCELLED',error_message=?,
+                    completed_at=?,updated_at=? WHERE status='RUNNING'""",
+                    (message, timestamp, timestamp),
+                )
+                placeholders = ",".join("?" for _ in project_ids)
+                connection.execute(
+                    f"""UPDATE projects SET status='QUEUED',error_message=NULL,updated_at=?
+                    WHERE project_id IN ({placeholders})""",
+                    (timestamp, *project_ids),
+                )
+                for project_id in project_ids:
+                    self._log(connection, project_id, "QUEUED", message)
+        return recovered
+
     def pipeline_steps(self, project_id: str) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(

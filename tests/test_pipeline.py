@@ -48,6 +48,25 @@ class PipelineTest(unittest.TestCase):
         self.assertTrue(event.is_set())
         self.assertEqual(cancelled, ["project-one"])
 
+    def test_new_manager_recovers_orphaned_running_step_for_explicit_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv"})
+            database.update_status(project["project_id"], "ANALYZING", 20, "running")
+            database.save_pipeline_step(project["project_id"], "VISION_ANALYSIS", "RUNNING", 20)
+            manager = PipelineManager(database)
+            step = database.pipeline_steps(project["project_id"])[0]
+            recovered_project = database.get_project(project["project_id"])
+            logs = database.logs(project["project_id"])
+            manager.shutdown()
+        self.assertEqual(manager.recovered_steps, [{
+            "project_id": project["project_id"], "step": "VISION_ANALYSIS",
+        }])
+        self.assertEqual(step["status"], "CANCELLED")
+        self.assertIn("이전 프로세스", step["error_message"])
+        self.assertEqual(recovered_project["status"], "QUEUED")
+        self.assertIn("복구", logs[0]["message"])
+
     def test_failed_step_is_durable_and_project_can_retry(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "pipeline.db")
