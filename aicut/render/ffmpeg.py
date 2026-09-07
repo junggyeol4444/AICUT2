@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -87,6 +88,41 @@ class RenderSettings:
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
+
+    def with_plan(self, stored: dict[str, Any] | None) -> "RenderSettings":
+        """Apply the settings the plan was written with. They win.
+
+        10.1 says the renderer executes the plan and decides nothing, and 8.2
+        says a person must be able to read and amend that plan. Rebuilding
+        codec, resolution, frame rate, zoom strategy and loudness from whatever
+        profile happens to be current breaks both: re-rendering a saved plan
+        after a re-calibration produced a different file from the one that was
+        reviewed, and hand-edits to the plan's `render` block did nothing at all.
+
+        Keys the plan does not state keep the profile's value, so a plan written
+        by an older version still renders. Unknown keys are ignored rather than
+        raising: a plan is an interchange file and may outlive this field list.
+        """
+        if not stored:
+            return self
+        known = {field.name for field in dataclasses.fields(self)}
+        updates: dict[str, Any] = {}
+        for key, value in stored.items():
+            if key not in known or value is None:
+                continue
+            current = getattr(self, key)
+            if isinstance(current, bool):
+                # bool("false") is True, so a hand-edited string needs saying.
+                updates[key] = value if isinstance(value, bool) else str(value).strip().lower() in ("1", "true", "yes", "on")
+                continue
+            if current is None or isinstance(value, type(current)):
+                updates[key] = value
+                continue
+            try:
+                updates[key] = type(current)(value)
+            except (TypeError, ValueError):
+                log.warning("plan render setting %s=%r is not usable; keeping %r", key, value, current)
+        return dataclasses.replace(self, **updates)
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +402,9 @@ class Renderer:
             require_filter(
                 "subtitles", needed_for="burning subtitles (10.3)", install_hint=LIBASS_HINT
             )
-        settings = RenderSettings.from_profile(self.profile, target_type=plan.target_type)
+        settings = RenderSettings.from_profile(
+            self.profile, target_type=plan.target_type,
+        ).with_plan(plan.render_settings)
         audio_streams = _count_audio_streams(plan.source_path)
         timeline = Timeline.from_cuts(plan.cuts)
         if not timeline.segments:

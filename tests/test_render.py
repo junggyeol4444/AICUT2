@@ -161,3 +161,47 @@ class MultitrackAudioTests(unittest.TestCase):
         graph = cmd[cmd.index("-filter_complex") + 1]
         self.assertIn("aresample=", graph)
         self.assertIn("afade", graph)
+
+
+class PlanRenderSettingsTests(unittest.TestCase):
+    """10.1 + 8.2: the renderer executes the plan, including how it renders."""
+
+    def setUp(self):
+        self.profile_settings = RenderSettings.from_profile(CalibrationProfile.load())
+
+    def test_no_stored_settings_leaves_the_profile_alone(self):
+        self.assertEqual(self.profile_settings.with_plan({}), self.profile_settings)
+        self.assertEqual(self.profile_settings.with_plan(None), self.profile_settings)
+
+    def test_the_plan_wins_over_the_current_profile(self):
+        """Re-rendering after a re-calibration must not change the reviewed file."""
+        applied = self.profile_settings.with_plan({"crf": 12, "height": 720, "video_codec": "libx265"})
+        self.assertEqual(applied.crf, 12)
+        self.assertEqual(applied.height, 720)
+        self.assertEqual(applied.video_codec, "libx265")
+
+    def test_keys_the_plan_omits_keep_the_measured_value(self):
+        applied = self.profile_settings.with_plan({"crf": 12})
+        self.assertEqual(applied.preset, self.profile_settings.preset)
+        self.assertEqual(applied.loudness_i, self.profile_settings.loudness_i)
+
+    def test_a_hand_edited_string_is_coerced_to_the_field_type(self):
+        """8.2 says a person may amend the plan; they will not type JSON types."""
+        applied = self.profile_settings.with_plan({"crf": "12", "height": "720"})
+        self.assertEqual(applied.crf, 12)
+        self.assertEqual(applied.height, 720)
+
+    def test_a_string_false_does_not_read_as_true(self):
+        applied = self.profile_settings.with_plan({"two_pass_loudness": "false"})
+        self.assertFalse(applied.two_pass_loudness)
+
+    def test_unknown_and_unusable_keys_are_ignored_not_fatal(self):
+        applied = self.profile_settings.with_plan(
+            {"from_a_future_version": "x", "crf": "not a number"})
+        self.assertEqual(applied.crf, self.profile_settings.crf)
+
+    def test_a_round_trip_through_as_dict_is_identity(self):
+        self.assertEqual(
+            self.profile_settings.with_plan(self.profile_settings.as_dict()),
+            self.profile_settings,
+        )

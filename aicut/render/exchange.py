@@ -88,9 +88,11 @@ def plan_fps(
 ) -> float:
     """The rate to write timecode at: what was asked for, then the plan, then the source.
 
-    A plan written by the pipeline carries no `render_settings`, so before the
-    source was consulted every real export demanded a `--fps` the operator had
-    to go and look up - while the file the cuts point at states its own rate,
+    A pipeline plan does carry `render_settings`, but `fps` in it is optional -
+    the profile leaves it unset unless a target type asks for one - so before
+    the source was consulted a real export could still demand a `--fps` the
+    operator had to go and look up, while the file the cuts point at states its
+    own rate,
     and that is the rate an editor's sequence wants when it is built from that
     file. It is still only a fallback: an explicit --fps wins, and a source
     that cannot be read leaves the refusal in place rather than a guess.

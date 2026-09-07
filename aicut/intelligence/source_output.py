@@ -92,30 +92,37 @@ def align_by_transcript(
     def norm(text: str) -> list[str]:
         return [w.lower().strip(".,!?\"'") for w in text.split() if w.strip(".,!?\"'")]
 
-    output_tokens = [(u, norm(u.text)) for u in output_utterances]
-    used: dict[int, int] = {}
+    output_tokens = [(u, set(norm(u.text))) for u in output_utterances]
     spans: list[AlignedSpan] = []
 
     for source in source_utterances:
         tokens = set(norm(source.text))
-        best_index, best_score = None, 0.0
-        for i, (_, other) in enumerate(output_tokens):
+        # Every output line this source line reaches, not just the best one.
+        # `repeated` is "how many times the editor used this moment" (12.3 B),
+        # so it has to count the output occurrences of one source span. Keeping
+        # a single best match and then counting how many *source* spans landed
+        # on it measured the opposite: a moment genuinely used twice stayed at
+        # 1, while two similar source lines colliding on one output line were
+        # both labelled a repeat that never happened.
+        matches = []
+        for utterance, other in output_tokens:
             if not other or not tokens:
                 continue
-            overlap = len(tokens & set(other)) / max(1, min(len(tokens), len(set(other))))
-            if overlap > best_score:
-                best_index, best_score = i, overlap
+            overlap = len(tokens & other) / max(1, min(len(tokens), len(other)))
+            if overlap >= min_overlap:
+                matches.append((overlap, utterance))
 
-        if best_index is not None and best_score >= min_overlap:
-            match = output_tokens[best_index][0]
-            used[best_index] = used.get(best_index, 0) + 1
+        if matches:
+            # The strongest match represents the span; reordering is measured
+            # from where the editor put it, and that is the place it best fits.
+            best = max(matches, key=lambda m: m[0])[1]
             spans.append(AlignedSpan(
                 source_start_sec=source.start_sec,
                 source_end_sec=source.end_sec,
-                output_start_sec=match.start_sec,
-                output_end_sec=match.end_sec,
+                output_start_sec=best.start_sec,
+                output_end_sec=best.end_sec,
                 kept=True,
-                repeated=used[best_index],
+                repeated=len(matches),
                 text=source.text,
             ))
         else:

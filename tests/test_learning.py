@@ -118,3 +118,57 @@ class CalibrationMetricTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RepetitionCountingTests(unittest.TestCase):
+    """12.3 B learns repetition decisions from this field, so it has to mean it."""
+
+    def test_a_moment_used_twice_is_counted_twice(self):
+        source = [Utterance(600, 604, "i finally beat the boss")]
+        output = [
+            Utterance(0, 4, "i finally beat the boss"),      # cold open
+            Utterance(300, 304, "i finally beat the boss"),  # again, in place
+        ]
+        spans = align_by_transcript(source, output).spans
+        self.assertEqual(len(spans), 1)
+        self.assertTrue(spans[0].kept)
+        self.assertEqual(spans[0].repeated, 2)
+
+    def test_two_similar_source_lines_are_not_a_repeat(self):
+        """They merely collide on one output line; nothing was repeated."""
+        source = [
+            Utterance(60, 64, "this boss keeps killing me"),
+            Utterance(120, 124, "this boss keeps killing me"),
+        ]
+        output = [Utterance(0, 4, "this boss keeps killing me")]
+        spans = align_by_transcript(source, output).spans
+        self.assertEqual([s.repeated for s in spans], [1, 1])
+
+    def test_a_single_use_stays_one(self):
+        source = [Utterance(0, 4, "hello everyone welcome to the stream")]
+        output = [Utterance(0, 4, "hello everyone welcome to the stream")]
+        self.assertEqual(align_by_transcript(source, output).spans[0].repeated, 1)
+
+    def test_a_dropped_line_is_still_dropped(self):
+        source = [Utterance(0, 4, "farming for twenty minutes now")]
+        output = [Utterance(0, 4, "completely different words here")]
+        span = align_by_transcript(source, output).spans[0]
+        self.assertFalse(span.kept)
+        self.assertEqual(span.repeated, 1)
+
+    def test_the_strongest_match_represents_the_span(self):
+        """Reordering is measured from where the editor actually put it.
+
+        Overlap is containment (the smaller set is the denominator), so a
+        subset of the source scores 1.0 while a partial paraphrase scores less.
+        The weaker match is placed first here on purpose: the representative
+        must be chosen by score, not by position.
+        """
+        source = [Utterance(600, 604, "i finally beat the boss")]
+        output = [
+            Utterance(0, 4, "i finally beat boss zzz"),   # 4/5 = 0.8
+            Utterance(300, 304, "i finally beat the"),    # 4/4 = 1.0
+        ]
+        span = align_by_transcript(source, output).spans[0]
+        self.assertEqual(span.repeated, 2)
+        self.assertEqual(span.output_start_sec, 300)
