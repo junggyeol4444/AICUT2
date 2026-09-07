@@ -61,14 +61,25 @@ class Job:
 
 
 class JobLogHandler(logging.Handler):
-    """Pipes the pipeline's own logging into the job's log (15.3 realtime log)."""
+    """Pipes the pipeline's own logging into the job's log (15.3 realtime log).
 
-    def __init__(self, job: Job):
+    Bound to the worker thread that runs the job. Every handler is attached to
+    the same `aicut` logger, so without that binding two overlapping jobs each
+    receive the other's records: both monitors show interleaved logs, and a
+    state transition logged by one project overwrites the state displayed for
+    the other. The pipeline runs on one thread per job, so the thread is the
+    identity that separates them.
+    """
+
+    def __init__(self, job: Job, thread_id: int | None = None):
         super().__init__(level=logging.INFO)
         self.job = job
+        self.thread_id = thread_id if thread_id is not None else threading.get_ident()
 
     def emit(self, record: logging.LogRecord) -> None:
         if not record.name.startswith("aicut"):
+            return
+        if record.thread != self.thread_id:
             return
         self.job.append(record.levelname.lower(), record.getMessage())
         # State transitions are logged by the runner; mirror them onto the job so

@@ -246,6 +246,20 @@ class Pipeline:
 #: and then dropped is worse than one that was never recorded: the code that
 #: wrote it looks correct, and its test passes against the context object while
 #: the operator never sees a word.
+#: The stages `Pipeline.run` actually checks `stop_after` against. The CLI
+#: offered every State, so `--stop-after RENDERING` ran through packaging and
+#: review anyway, and terminal values like FAILED or PUBLISHED could never be
+#: honoured at all — the flag was accepted and then quietly meant nothing.
+#: `tests/test_consistency.py` pins this against the checks in `run`.
+STOP_AFTER_STAGES = (
+    State.PARSING,
+    State.UNDERSTANDING,
+    State.DISCOVERING,
+    State.EVALUATING,
+    State.PLANNING,
+)
+
+
 REPORT_INTERNAL_KEYS = frozenset({
     "boundary_hints", "candidates_found", "discovery_note", "edit_plans",
     "episodes_packaged", "episodes_planned", "episodes_rendered", "events",

@@ -322,13 +322,22 @@ class UiServer:
                     "no transcript supplied; STT must have been run separately or the project"
                     " will fall back to whatever utterances are already stored",
                 )
-            return pipeline.run(
-                project,
-                transcriber=transcriber,
-                stop_after=State(stop_after) if stop_after else None,
-                sample_frames=frames,
-                render=render,
-            )
+            try:
+                return pipeline.run(
+                    project,
+                    transcriber=transcriber,
+                    stop_after=State(stop_after) if stop_after else None,
+                    sample_frames=frames,
+                    render=render,
+                )
+            finally:
+                # The request threads release theirs after every call; this one
+                # never did, and `_stores` keeps the object alive after the
+                # worker exits, so a desktop session left running accumulated
+                # one SQLite connection and file descriptor per project. On
+                # Windows those handles also keep the database file locked -
+                # the same shape that once made the workspace undeletable.
+                self.release_thread_store()
 
         job = self.jobs.start(str(uuid.uuid4()), project.project_id, source, work)
         return {"job_id": job.job_id, "project_id": project.project_id}

@@ -389,3 +389,38 @@ class OptionalDependencyTests(unittest.TestCase):
                     f"{module_name}.{func_name} catches ImportError but does not raise "
                     "an AicutError, so the runner cannot tell it from a crash",
                 )
+
+
+class StopAfterStagesTests(unittest.TestCase):
+    """The flag must offer exactly what the runner honours, and no more."""
+
+    def test_every_advertised_stage_is_checked_by_the_runner(self):
+        import inspect
+
+        from aicut.pipeline import runner
+
+        source = inspect.getsource(runner.Pipeline.run)
+        for state in runner.STOP_AFTER_STAGES:
+            with self.subTest(stage=state.value):
+                self.assertIn(
+                    f"stop_after is State.{state.name}", source,
+                    f"--stop-after {state.value} is offered but the runner never checks it",
+                )
+
+    def test_no_stage_the_runner_checks_is_missing_from_the_flag(self):
+        import inspect
+        import re
+
+        from aicut.pipeline import runner
+        from aicut.pipeline.states import State
+
+        source = inspect.getsource(runner.Pipeline.run)
+        checked = {State[name] for name in re.findall(r"stop_after is State\.(\w+)", source)}
+        self.assertEqual(checked, set(runner.STOP_AFTER_STAGES))
+
+    def test_terminal_states_are_not_offered(self):
+        from aicut.pipeline.runner import STOP_AFTER_STAGES
+        from aicut.pipeline.states import State
+
+        for state in (State.FAILED, State.PUBLISHED, State.NO_CONTENT, State.QUEUED):
+            self.assertNotIn(state, STOP_AFTER_STAGES)

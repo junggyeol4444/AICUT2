@@ -184,3 +184,54 @@ class UiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JobIsolationTests(unittest.TestCase):
+    """15.3: two overlapping jobs must not read as one interleaved log."""
+
+    def test_a_handler_ignores_records_from_another_job_thread(self):
+        import logging
+
+        from aicut.ui.jobs import Job, JobLogHandler
+
+        mine = Job(job_id="a", project_id="p1", source="/a.mkv")
+        theirs = Job(job_id="b", project_id="p2", source="/b.mkv")
+        handler = JobLogHandler(mine, thread_id=threading.get_ident())
+
+        own = logging.LogRecord("aicut.pipeline", logging.INFO, "", 0, "mine", (), None)
+        handler.emit(own)
+
+        other = logging.LogRecord("aicut.pipeline", logging.INFO, "", 0, "theirs", (), None)
+        other.thread = threading.get_ident() + 1
+        handler.emit(other)
+
+        messages = [entry["message"] for entry in mine.log]
+        self.assertEqual(messages, ["mine"])
+        self.assertEqual(theirs.log, [])
+
+    def test_another_job_cannot_overwrite_this_job_state(self):
+        import logging
+
+        from aicut.ui.jobs import Job, JobLogHandler
+
+        job = Job(job_id="a", project_id="p1", source="/a.mkv")
+        handler = JobLogHandler(job, thread_id=threading.get_ident())
+        before = job.state
+
+        stray = logging.LogRecord(
+            "aicut.pipeline.runner", logging.INFO, "", 0, "project p2 -> RENDERING", (), None)
+        stray.thread = threading.get_ident() + 1
+        handler.emit(stray)
+        self.assertEqual(job.state, before, "another project's transition moved this job")
+
+    def test_a_record_from_this_thread_still_moves_the_state(self):
+        import logging
+
+        from aicut.ui.jobs import Job, JobLogHandler
+
+        job = Job(job_id="a", project_id="p1", source="/a.mkv")
+        handler = JobLogHandler(job, thread_id=threading.get_ident())
+        record = logging.LogRecord(
+            "aicut.pipeline.runner", logging.INFO, "", 0, "project p1 -> PLANNING", (), None)
+        handler.emit(record)
+        self.assertEqual(job.state, "PLANNING")

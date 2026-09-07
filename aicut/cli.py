@@ -24,6 +24,7 @@ from aicut.media.ffmpeg_util import have_ffmpeg
 from aicut.media.stt import TranscriptFileTranscriber
 from aicut.pipeline.context import RunContext
 from aicut.pipeline.runner import Pipeline
+from aicut.pipeline.runner import STOP_AFTER_STAGES
 from aicut.pipeline.states import State
 from aicut.pipeline import review as review_mod
 from aicut.render.editplan import EditPlan, describe
@@ -1028,7 +1029,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--no-stt", action="store_true", help="skip STT entirely (uses stored utterances)")
     run.add_argument("--length-hint", type=float, default=None, help="target length hint in seconds (2.6: a hint)")
     run.add_argument("--channel", default=None)
-    run.add_argument("--stop-after", choices=[s.value for s in State], default=None)
+    run.add_argument(
+        "--stop-after", default=None,
+        choices=[s.value for s in STOP_AFTER_STAGES],
+        help="stop once this stage is done (only the stages the runner checks)",
+    )
     run.add_argument("--no-render", action="store_true", help="stop after the edit plan (MVP 5)")
     run.add_argument("--frames", action="store_true", help="sample frames for the visual half of each pass")
     run.add_argument("--backend", choices=["faster-whisper", "whisperx", "pocketsphinx"], default="whisperx")
