@@ -166,6 +166,21 @@ def cmd_resume(args) -> int:
     else:
         print("  nothing understood yet; this will read the broadcast from the start")
 
+    if not args.transcript and not pipeline.store.utterances(args.project):
+        # Without this the empty utterance list reads as "this broadcast has no
+        # speech", parsing continues, and a transcription failure that is fully
+        # recoverable comes back as NO_CONTENT - a normal result under 2.2, so
+        # nothing about the output says the transcript was the thing missing.
+        print(
+            f"{args.project} has no stored utterances, and resume does not start STT.\n"
+            "  aicut transcribe <source> -o t.json   then  aicut resume --transcript t.json\n"
+            "  aicut run <source> ...                to read the broadcast again from STT\n"
+            "Resuming now would read it as a broadcast with no speech and most likely\n"
+            "report NO_CONTENT (2.2), which would not be true.",
+            file=sys.stderr,
+        )
+        return 1
+
     result = pipeline.resume(
         args.project,
         transcriber=TranscriptFileTranscriber(args.transcript) if args.transcript else None,
@@ -710,6 +725,10 @@ def _transcriber(args):
         )
     return WhisperXTranscriber(
         model_size=args.stt_model, device=args.device, language=args.language,
+        # Dropping this left every whisperx run on the class default (float16),
+        # so --compute-type int8 was accepted and ignored - which on a CPU run
+        # is the difference between working and an unsupported-precision failure.
+        compute_type=args.compute_type,
         hf_token=args.hf_token, diarize=not args.no_diarize,
     )
 

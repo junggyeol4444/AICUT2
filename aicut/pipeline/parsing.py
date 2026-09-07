@@ -59,9 +59,19 @@ def run(ctx: RunContext, transcriber: Transcriber | None = None, *, use_cache: b
         )
         ctx.signals = SignalBundle(motion=motion, silences=silences, rms=rms)
 
+    # The same track the silence and RMS above were measured from. Without it a
+    # recogniser decodes the container's default stream, so on a multi-track
+    # source the signals and the transcript can come from different audio (5.2).
+    speech_track = ctx.media.track_by_role("mic") or (
+        ctx.media.audio_tracks[0] if ctx.media.audio_tracks else None
+    )
+    speech_index = speech_track.index if speech_track and ctx.media.is_multitrack else None
+
     utterances = []
     if transcriber is not None:
-        utterances = transcriber.transcribe(ctx.project.file_path, ctx.media)
+        utterances = transcriber.transcribe(
+            ctx.project.file_path, ctx.media, track_index=speech_index,
+        )
         ctx.store.replace_utterances(ctx.project.project_id, utterances)
     else:
         utterances = ctx.store.utterances(ctx.project.project_id)

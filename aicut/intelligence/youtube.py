@@ -166,8 +166,16 @@ class YouTubeClient:
         media = MediaFileUpload(video_path, chunksize=chunk_size, resumable=True)
         request = self._data.videos().insert(part="snippet,status", body=body, media_body=media)
         response = None
-        while response is None:
-            _, response = request.next_chunk()
+        try:
+            while response is None:
+                _, response = request.next_chunk()
+        except Exception as exc:
+            # The ledger only counts what this program spent. A Google project
+            # shared with anything else runs out server-side first, and that
+            # arrives as an HttpError, not our QuotaExceeded — so `upload_episode`
+            # would let it escape and the PT-midnight queue of 11.4 would never
+            # be reached for the one failure it exists to handle.
+            raise self._as_quota_error(exc, "videos.insert") from exc
         self.ledger.spend(COST_VIDEO_INSERT, "videos.insert")
         video_id = response["id"]
         return UploadResult(
@@ -194,6 +202,32 @@ class YouTubeClient:
         self.ledger.spend(COST_VIDEO_INSERT // 32, "videos.update")
 
     # -- helpers -------------------------------------------------------------
+    #: Reasons the Data API gives when the project is out of units. Matched on
+    #: the error body rather than an exception type, because googleapiclient is
+    #: an optional dependency and must not be imported just to classify a failure.
+    QUOTA_REASONS = ("quotaexceeded", "dailylimitexceeded", "ratelimitexceeded",
+                     "userratelimitexceeded")
+
+    def _as_quota_error(self, exc: Exception, what: str) -> Exception:
+        """QuotaExceeded when *exc* is the server saying it has no units left.
+
+        Returns *exc* unchanged for anything else, so the caller re-raises the
+        original rather than mislabelling an unrelated failure as a quota one.
+        """
+        status = getattr(getattr(exc, "resp", None), "status", None)
+        if status not in (403, 429):
+            return exc
+        body = str(exc).lower()
+        if not any(reason in body for reason in self.QUOTA_REASONS):
+            return exc
+        reset = self.ledger.next_reset()
+        return QuotaExceeded(
+            f"YouTube refused {what}: the project's daily quota is spent. The local "
+            f"ledger did not see it, so something else is sharing this API project. "
+            f"Next reset {reset.isoformat()} (PT midnight, 11.4).",
+            reset_at=reset,
+        )
+
     def _require(self, units: int, what: str) -> None:
         if not self.ledger.can_afford(units):
             reset = self.ledger.next_reset()

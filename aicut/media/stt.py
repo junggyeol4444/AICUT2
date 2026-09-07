@@ -15,7 +15,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -26,9 +28,47 @@ from aicut.models import UNKNOWN_SPEAKER, Utterance
 log = logging.getLogger(__name__)
 
 
+@contextmanager
+def speech_source(path: str, track_index: int | None):
+    """Yield a path carrying only the speech track, when one was selected.
+
+    5.2 assumes mic / call / game / BGM arrive as separate streams, and parsing
+    already measures silence and RMS from the chosen speech track. Handing the
+    whole container to a recogniser undoes that: ffmpeg picks the container's
+    default audio stream, so on a recording whose mic is not stream 0 the
+    transcript is decoded from game or BGM audio while the signals came from
+    the mic. Everything downstream reads the transcript, so content discovery
+    is then built on the wrong track.
+
+    `track_index` of None means single-track, or no selection - the path is
+    handed through untouched, which is what every existing caller did.
+    """
+    if track_index is None:
+        yield path
+        return
+
+    from aicut.media.ffmpeg_util import require_ffmpeg, run
+
+    require_ffmpeg()
+    handle, extracted = tempfile.mkstemp(prefix="aicut-speech-", suffix=".wav")
+    os.close(handle)
+    try:
+        run([
+            "ffmpeg", "-hide_banner", "-v", "error", "-y",
+            "-i", path, "-map", f"0:{track_index}",
+            "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
+            extracted,
+        ])
+        yield extracted
+    finally:
+        Path(extracted).unlink(missing_ok=True)
+
+
+
 class Transcriber(ABC):
     @abstractmethod
-    def transcribe(self, path: str, media: MediaInfo) -> list[Utterance]:
+    def transcribe(self, path: str, media: MediaInfo,
+                   *, track_index: int | None = None) -> list[Utterance]:
         ...
 
 
@@ -44,8 +84,9 @@ class TranscriptFileTranscriber(Transcriber):
         self.transcript_path = Path(transcript_path)
         self.track = track
 
-    def transcribe(self, path: str = "", media: MediaInfo | None = None) -> list[Utterance]:
-        """Path and media are ignored: the transcript is the source of truth here."""
+    def transcribe(self, path: str = "", media: MediaInfo | None = None,
+                   *, track_index: int | None = None) -> list[Utterance]:
+        """Path, media and track are ignored: the transcript is the source of truth here."""
         data = json.loads(self.transcript_path.read_text(encoding="utf-8"))
         return utterances_from_whisperx(data, track=self.track)
 
@@ -99,7 +140,8 @@ class WhisperXTranscriber(Transcriber):
         self.hf_token = hf_token
         self.diarize = diarize
 
-    def transcribe(self, path: str, media: MediaInfo) -> list[Utterance]:  # pragma: no cover - needs GPU stack
+    def transcribe(self, path: str, media: MediaInfo,
+                   *, track_index: int | None = None) -> list[Utterance]:  # pragma: no cover - needs GPU stack
         try:
             import whisperx
         except ImportError as exc:
@@ -115,7 +157,8 @@ class WhisperXTranscriber(Transcriber):
                 "  --no-stt                            - skip STT entirely"
             ) from exc
 
-        audio = whisperx.load_audio(path)
+        with speech_source(path, track_index) as speech_path:
+            audio = whisperx.load_audio(speech_path)
         model = whisperx.load_model(self.model_size, self.device, compute_type=self.compute_type, language=self.language)
         result = model.transcribe(audio)
         align_model, meta = whisperx.load_align_model(language_code=result["language"], device=self.device)
@@ -184,18 +227,26 @@ class FasterWhisperTranscriber(Transcriber):
         self._model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)
         return self._model
 
-    def transcribe(self, path: str, media: MediaInfo | None = None) -> list[Utterance]:
+    def transcribe(self, path: str, media: MediaInfo | None = None,
+                   *, track_index: int | None = None) -> list[Utterance]:
         model = self._load()
-        segments, info = model.transcribe(
-            path,
-            language=self.language,
-            beam_size=self.beam_size,
-            vad_filter=self.vad_filter,
-            word_timestamps=True,       # required: pacing measures gaps between words
-        )
         speaker = _speaker_from_tracks(media)
+        with speech_source(path, track_index) as speech_path:
+            segments, info = model.transcribe(
+                speech_path,
+                language=self.language,
+                beam_size=self.beam_size,
+                vad_filter=self.vad_filter,
+                word_timestamps=True,   # required: pacing measures gaps between words
+            )
+            # `segments` is lazy: it must be drained while the extracted track
+            # still exists, or the decode reads a file this block already removed.
+            utterances = [
+                u for u in (_utterance_from_segment(seg, speaker) for seg in segments)
+                if u is not None
+            ]
         log.info("faster-whisper: language=%s", getattr(info, "language", "?"))
-        return [u for u in (_utterance_from_segment(seg, speaker) for seg in segments) if u is not None]
+        return utterances
 
 
 def _speaker_from_tracks(media: MediaInfo | None) -> str:
@@ -259,7 +310,8 @@ class PocketSphinxTranscriber(Transcriber):
     #: is noise: 10s of 16 kHz mono 16-bit is 320 kB.
     CHUNK_SEC = 10
 
-    def transcribe(self, path: str, media: MediaInfo | None = None) -> list[Utterance]:
+    def transcribe(self, path: str, media: MediaInfo | None = None,
+                   *, track_index: int | None = None) -> list[Utterance]:
         decoder = self._load()
         speaker = _speaker_from_tracks(media)
 
@@ -269,7 +321,7 @@ class PocketSphinxTranscriber(Transcriber):
         # desktop (22.1) beside a game capture. The decoder takes it in pieces.
         words: list[dict] = []
         offset_sec = 0.0
-        for block in self._stream_mono_pcm(path):
+        for block in self._stream_mono_pcm(path, track_index):
             decoder.start_utt()
             decoder.process_raw(block, False, True)
             decoder.end_utt()
@@ -293,16 +345,21 @@ class PocketSphinxTranscriber(Transcriber):
 
         return group_words_into_utterances(words, speaker=speaker)
 
-    def _stream_mono_pcm(self, path: str):
-        """Yield 16 kHz mono PCM in blocks, without ever holding all of it."""
+    def _stream_mono_pcm(self, path: str, track_index: int | None = None):
+        """Yield 16 kHz mono PCM in blocks, without ever holding all of it.
+
+        This backend already decodes through its own ffmpeg pipe, so selecting
+        the speech track is one more argument rather than a temporary file.
+        """
         from aicut.media.ffmpeg_util import require_ffmpeg
         import subprocess
 
         require_ffmpeg()
         block_bytes = int(self.CHUNK_SEC * self.sample_rate) * 2
         proc = subprocess.Popen(
-            ["ffmpeg", "-hide_banner", "-v", "error", "-i", path,
-             "-ac", "1", "-ar", str(self.sample_rate), "-f", "s16le", "-"],
+            ["ffmpeg", "-hide_banner", "-v", "error", "-i", path]
+            + (["-map", f"0:{track_index}"] if track_index is not None else [])
+            + ["-ac", "1", "-ar", str(self.sample_rate), "-f", "s16le", "-"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         try:

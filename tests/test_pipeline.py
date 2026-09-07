@@ -370,3 +370,92 @@ class SubtitleConfidenceTests(unittest.TestCase):
         self.assertNotIn("subtitles_dropped", report)
         self.assertIn("backend reports no per-word confidence",
                       report.get("subtitle_confidence_note", ""))
+
+
+class HallucinatedSceneBoundsTests(unittest.TestCase):
+    """8.1: the provider refines the scene it picked. It does not get a free hand."""
+
+    def setUp(self):
+        from aicut.db.store import Store
+        from aicut.models import Project
+
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.store = Store(":memory:")
+        self.project = Project(file_path="/src.mkv", duration_sec=21600.0)
+        self.store.create_project(self.project)
+
+    def tearDown(self):
+        self.store.close()
+        self._tmp.cleanup()
+
+    def _cuts(self, returned: dict) -> tuple[list, dict]:
+        from aicut.config import CalibrationProfile
+        from aicut.pipeline import planning
+        from aicut.pipeline.context import RunContext
+        from aicut.pipeline.retrieval import Scene, SceneIndex
+
+        class StubProducer:
+            name = "stub"
+
+            def select_scene(self, payload):
+                return {"chosen_index": 0, **returned}
+
+        # Tokens must match the beat's query exactly: retrieval is BM25, so a
+        # near-miss returns nothing and select_scene is never reached.
+        scene = Scene(start_sec=1000.0, end_sec=1030.0, text="사건 발생",
+                      tokens=["사건", "발생"])
+        ctx = RunContext(
+            project=self.project, store=self.store,
+            profile=CalibrationProfile.load(), producer=StubProducer(),
+            workspace=Path(self._tmp.name),
+        )
+        structure = {"beats": [{"role": "핵심", "query": "사건"}]}
+        cuts = planning._lay_out_cuts(ctx, structure, SceneIndex([scene]))
+        return cuts, ctx.report
+
+    def test_bounds_outside_the_chosen_scene_are_pulled_back_into_it(self):
+        """0-21600 on a 30-second scene is a six-hour cut nothing vouches for."""
+        cuts, _ = self._cuts({"start_sec": 0.0, "end_sec": 21600.0})
+        self.assertEqual(len(cuts), 1)
+        cut = cuts[0]
+        self.assertGreaterEqual(cut.source_end_sec - cut.source_start_sec, 0.0)
+        self.assertLess(cut.source_end_sec - cut.source_start_sec, 120.0,
+                        "the cut escaped the 30-second scene it was refined from")
+
+    def test_the_correction_is_reported_rather_than_hidden(self):
+        _, report = self._cuts({"start_sec": 0.0, "end_sec": 21600.0})
+        entries = report.get("out_of_scene_bounds", [])
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["scene"], [1000.0, 1030.0])
+        self.assertEqual(entries[0]["returned"], [0.0, 21600.0])
+
+    def test_bounds_inside_the_scene_pass_through_and_say_nothing(self):
+        cuts, report = self._cuts({"start_sec": 1005.0, "end_sec": 1020.0})
+        self.assertEqual(len(cuts), 1)
+        self.assertNotIn("out_of_scene_bounds", report)
+
+
+class FailureReasonInTheReportTests(unittest.TestCase):
+    """22.6: a work report that says FAILED and not why is not a report."""
+
+    def test_the_exception_text_reaches_the_built_report(self):
+        from aicut.config import CalibrationProfile
+        from aicut.db.store import Store
+        from aicut.models import Project
+        from aicut.pipeline.context import RunContext
+        from aicut.pipeline.runner import build_report
+        from aicut.pipeline.states import State
+
+        store = Store(":memory:")
+        try:
+            project = Project(file_path="/src.mkv", duration_sec=10.0)
+            store.create_project(project)
+            ctx = RunContext(
+                project=project, store=store, profile=CalibrationProfile.load(),
+                producer=None, workspace=Path("."),
+            )
+            ctx.note("error", "ffprobe found no audio stream")
+            report = build_report(ctx, State.FAILED, [])
+            self.assertEqual(report["error"], "ffprobe found no audio stream")
+        finally:
+            store.close()

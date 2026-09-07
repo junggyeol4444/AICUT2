@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import unittest.mock
 from unittest import mock
 from pathlib import Path
 from types import SimpleNamespace
@@ -256,3 +257,60 @@ class SilentBlockTests(unittest.TestCase):
         self.assertEqual(len(utterances), 1)
         word = utterances[0].words[0]
         self.assertAlmostEqual(word["start"], PocketSphinxTranscriber.CHUNK_SEC + 0.5, places=2)
+
+
+class SpeechTrackSelectionTests(unittest.TestCase):
+    """5.2: the transcript must come from the same track the signals did."""
+
+    def test_a_single_track_source_is_handed_through_untouched(self):
+        from aicut.media.stt import speech_source
+
+        with speech_source("/src.mkv", None) as path:
+            self.assertEqual(path, "/src.mkv")
+
+    def test_the_protocol_carries_the_track(self):
+        """Every backend must accept it, or parsing silently loses the selection."""
+        import inspect
+
+        from aicut.media.stt import (
+            FasterWhisperTranscriber, PocketSphinxTranscriber,
+            TranscriptFileTranscriber, WhisperXTranscriber,
+        )
+        for cls in (WhisperXTranscriber, FasterWhisperTranscriber,
+                    PocketSphinxTranscriber, TranscriptFileTranscriber):
+            with self.subTest(backend=cls.__name__):
+                parameters = inspect.signature(cls.transcribe).parameters
+                self.assertIn("track_index", parameters, f"{cls.__name__} drops the track")
+
+    def test_pocketsphinx_selects_the_stream_in_its_own_pipe(self):
+        from aicut.media.stt import PocketSphinxTranscriber
+
+        recorded = {}
+
+        def fake_popen(cmd, **kwargs):
+            recorded["cmd"] = cmd
+            raise RuntimeError("stop here; the command is what is under test")
+
+        transcriber = PocketSphinxTranscriber()
+        # The command is what is under test, not whether this machine has ffmpeg.
+        with unittest.mock.patch("aicut.media.ffmpeg_util.require_ffmpeg", lambda: None), \
+             unittest.mock.patch("subprocess.Popen", fake_popen):
+            with self.assertRaises(RuntimeError):
+                list(transcriber._stream_mono_pcm("/src.mkv", 2))
+        self.assertIn("-map", recorded["cmd"])
+        self.assertEqual(recorded["cmd"][recorded["cmd"].index("-map") + 1], "0:2")
+
+    def test_pocketsphinx_without_a_track_maps_nothing(self):
+        from aicut.media.stt import PocketSphinxTranscriber
+
+        recorded = {}
+
+        def fake_popen(cmd, **kwargs):
+            recorded["cmd"] = cmd
+            raise RuntimeError("stop here")
+
+        with unittest.mock.patch("aicut.media.ffmpeg_util.require_ffmpeg", lambda: None), \
+             unittest.mock.patch("subprocess.Popen", fake_popen):
+            with self.assertRaises(RuntimeError):
+                list(PocketSphinxTranscriber()._stream_mono_pcm("/src.mkv", None))
+        self.assertNotIn("-map", recorded["cmd"])

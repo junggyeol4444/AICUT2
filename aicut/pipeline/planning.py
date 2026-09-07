@@ -180,10 +180,34 @@ def _lay_out_cuts(ctx: RunContext, structure: dict, index: SceneIndex) -> list[C
             continue
 
         scene = results[int(picked)].scene
+
+        # The provider picked this scene by index; the bounds it returns are a
+        # refinement *of that scene*, not a fresh search. Clamping them only to
+        # the source duration let a hallucinated span turn a chosen 30-second
+        # scene into an hours-long cut that no retrieval result vouches for —
+        # wrong content, and a render bill to match. Confine to the scene, then
+        # add the profile's padding, then to the source.
+        raw_start = float(chosen.get("start_sec", scene.start_sec))
+        raw_end = float(chosen.get("end_sec", scene.end_sec))
+        start = min(max(raw_start, scene.start_sec), scene.end_sec) - head_pad
+        end = max(min(raw_end, scene.end_sec), scene.start_sec) + tail_pad
+        start = max(0.0, start)
+        end = min(duration, end) if duration else end
+        if end <= start:
+            continue
+        if not (scene.start_sec <= raw_start <= scene.end_sec and scene.start_sec <= raw_end <= scene.end_sec):
+            # Silently correcting it would hide a provider that is inventing
+            # timestamps, which is worth seeing in the report (2.6).
+            ctx.report.setdefault("out_of_scene_bounds", []).append({
+                "scene": [round(scene.start_sec, 2), round(scene.end_sec, 2)],
+                "returned": [round(raw_start, 2), round(raw_end, 2)],
+                "used": [round(start, 2), round(end, 2)],
+                "role": beat.get("role", ""),
+            })
+
         repeat = next(
             (c for c in cuts
-             if abs(c.source_start_sec - max(0.0, float(chosen.get("start_sec", scene.start_sec)) - head_pad)) < 0.01
-             and abs(c.source_end_sec - min(duration, float(chosen.get("end_sec", scene.end_sec)) + tail_pad)) < 0.01),
+             if abs(c.source_start_sec - start) < 0.01 and abs(c.source_end_sec - end) < 0.01),
             None,
         )
         if repeat is not None:
@@ -198,13 +222,6 @@ def _lay_out_cuts(ctx: RunContext, structure: dict, index: SceneIndex) -> list[C
                     "2.4 allows revisiting a moment, but the same shot will appear twice"
                 ),
             })
-        start = float(chosen.get("start_sec", scene.start_sec)) - head_pad
-        end = float(chosen.get("end_sec", scene.end_sec)) + tail_pad
-        start = max(0.0, start)
-        end = min(duration, end) if duration else end
-        if end <= start:
-            continue
-
         cuts.append(Cut(
             sequence_order=len(cuts),
             source_start_sec=start,

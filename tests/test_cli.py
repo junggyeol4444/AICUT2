@@ -3,6 +3,7 @@
 import io
 import json
 import tempfile
+import contextlib
 import unittest
 from unittest import mock
 from contextlib import redirect_stdout
@@ -307,3 +308,58 @@ class DoctorTests(unittest.TestCase):
                            {"ANTHROPIC_API_KEY": "sk-ant-secret-value"})
         self.assertNotIn("sk-ant-secret-value", out)
         self.assertIn("[ok] ANTHROPIC_API_KEY set", out)
+
+
+class ResumeWithoutATranscriptTests(unittest.TestCase):
+    """16장: a recoverable STT failure must not come back as NO_CONTENT (2.2)."""
+
+    def setUp(self):
+        from aicut.db.store import Store
+        from aicut.models import Project
+
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.workspace = Path(self._tmp.name)
+        store = Store(self.workspace / "aicut.db")
+        self.project = Project(file_path="/src.mkv", duration_sec=3600.0)
+        store.create_project(self.project)
+        store.close()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _resume(self, *extra):
+        from aicut.cli import main
+
+        return main(["--workspace", str(self.workspace), "resume", self.project.project_id, *extra])
+
+    def test_resuming_with_nothing_transcribed_stops_and_says_why(self):
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            code = self._resume()
+        self.assertEqual(code, 1)
+        message = errors.getvalue()
+        self.assertIn("no stored utterances", message)
+        self.assertIn("aicut transcribe", message)
+        self.assertIn("NO_CONTENT", message, "the misleading outcome should be named")
+
+    def test_an_unknown_project_still_reports_that_instead(self):
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            from aicut.cli import main
+            code = main(["--workspace", str(self.workspace), "resume", "no-such-project"])
+        self.assertEqual(code, 1)
+        self.assertIn("unknown project", errors.getvalue())
+
+
+class WhisperXOptionsTests(unittest.TestCase):
+    def test_compute_type_reaches_the_transcriber(self):
+        """--compute-type int8 was parsed and then dropped; float16 always won."""
+        import argparse
+
+        from aicut.cli import _transcriber
+
+        args = argparse.Namespace(
+            backend="whisperx", stt_model="large-v3", device="cpu",
+            compute_type="int8", language=None, hf_token=None, no_diarize=True,
+        )
+        self.assertEqual(_transcriber(args).compute_type, "int8")

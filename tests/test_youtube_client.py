@@ -199,3 +199,70 @@ class YouTubeClientTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ServerSideQuotaTests(unittest.TestCase):
+    """11.4: a quota refusal must reach the PT-midnight queue, whoever reports it."""
+
+    class _Resp:
+        def __init__(self, status):
+            self.status = status
+
+    class _HttpError(Exception):
+        """Shaped like googleapiclient.errors.HttpError, without the dependency."""
+
+        def __init__(self, status, body):
+            super().__init__(body)
+            self.resp = ServerSideQuotaTests._Resp(status)
+            self._body = body
+
+        def __str__(self):
+            return self._body
+
+    def setUp(self):
+        from aicut.db.store import Store
+        from aicut.intelligence.quota import QuotaLedger
+        from aicut.intelligence.youtube import YouTubeClient
+
+        self.store = Store(":memory:")
+        self.client = YouTubeClient.__new__(YouTubeClient)
+        self.client.ledger = QuotaLedger(self.store)
+
+    def tearDown(self):
+        self.store.close()
+
+    def test_a_403_quota_refusal_becomes_a_queueable_error(self):
+        from aicut.errors import QuotaExceeded
+
+        error = self._HttpError(403, '{"error":{"errors":[{"reason":"quotaExceeded"}]}}')
+        translated = self.client._as_quota_error(error, "videos.insert")
+        self.assertIsInstance(translated, QuotaExceeded)
+        self.assertIsNotNone(translated.reset_at)
+
+    def test_daily_limit_and_rate_limit_count_too(self):
+        from aicut.errors import QuotaExceeded
+
+        for reason in ("dailyLimitExceeded", "rateLimitExceeded", "userRateLimitExceeded"):
+            with self.subTest(reason=reason):
+                error = self._HttpError(403, '{"error":{"errors":[{"reason":"%s"}]}}' % reason)
+                self.assertIsInstance(
+                    self.client._as_quota_error(error, "videos.insert"), QuotaExceeded)
+
+    def test_429_is_also_a_quota_refusal(self):
+        from aicut.errors import QuotaExceeded
+
+        error = self._HttpError(429, "rateLimitExceeded")
+        self.assertIsInstance(self.client._as_quota_error(error, "x"), QuotaExceeded)
+
+    def test_an_unrelated_403_is_returned_unchanged(self):
+        """Mislabelling a permissions problem as quota would queue it forever."""
+        error = self._HttpError(403, '{"error":{"errors":[{"reason":"forbidden"}]}}')
+        self.assertIs(self.client._as_quota_error(error, "videos.insert"), error)
+
+    def test_a_500_is_returned_unchanged(self):
+        error = self._HttpError(500, "backendError")
+        self.assertIs(self.client._as_quota_error(error, "videos.insert"), error)
+
+    def test_an_exception_with_no_response_is_returned_unchanged(self):
+        error = ValueError("something else entirely")
+        self.assertIs(self.client._as_quota_error(error, "videos.insert"), error)

@@ -55,6 +55,7 @@ class ReplayHarness:
         self.store = Store(self.workspace / "aicut.db")
         self.producer = producer or get_producer("mock")
         self.project = self._find_project(project_id)
+        self._replay_store: Store | None = None
         self.signals = SignalBundle.load(self.workspace / self.project.project_id / "signals.json")
         self.utterances = self.store.utterances(self.project.project_id)
 
@@ -74,6 +75,9 @@ class ReplayHarness:
         )
 
     def close(self) -> None:
+        if self._replay_store is not None:
+            self._replay_store.close()
+            self._replay_store = None
         self.store.close()
 
     # ---- the sweep's question ---------------------------------------------
@@ -103,13 +107,35 @@ class ReplayHarness:
             laughter = detector.as_signal(detector.detect(self.signals.rms, self.utterances, profile))
         return build_tension_curve(self.signals.rms, self.utterances, profile, laughter=laughter)
 
+    @property
+    def replay_store(self) -> Store:
+        """A scratch copy of the workspace database, made once and reused.
+
+        `discovery.run` is a production stage: it calls `replace_candidates`,
+        which empties the project's candidates and writes its own. Pointing a
+        sweep at the real store therefore destroyed the project's candidates —
+        and with them the human verdicts of 15.4, which are the training data
+        of 12.3 B — once per trial, and left the project holding whichever
+        profile happened to be tried last rather than the winner's.
+
+        One copy is enough for the whole sweep: candidates are the stage's
+        output, not its input, so each trial overwrites its own scratch rows
+        while the events and utterances it reads stay as they were.
+        """
+        if self._replay_store is None:
+            scratch = Store(":memory:")
+            self.store.conn.backup(scratch.conn)
+            self._replay_store = scratch
+        return self._replay_store
+
     def _content_spans(self, profile: CalibrationProfile) -> list[list[float]]:
         """Replay discovery and evaluation, and report what would be produced."""
         if not self.dataset.content_spans:
             return []
+        store = self.replay_store
         ctx = RunContext(
             project=self.project,
-            store=self.store,
+            store=store,
             profile=profile,
             producer=self.producer,
             workspace=self.workspace,
@@ -117,7 +143,7 @@ class ReplayHarness:
         )
         ctx.signals.tension = self._tension(profile)
 
-        events = {e.event_id: e for e in self.store.events(self.project.project_id)}
+        events = {e.event_id: e for e in store.events(self.project.project_id)}
         if not events:
             return []
 

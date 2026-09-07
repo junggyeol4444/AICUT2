@@ -247,7 +247,7 @@ class Pipeline:
 #: wrote it looks correct, and its test passes against the context object while
 #: the operator never sees a word.
 REPORT_INTERNAL_KEYS = frozenset({
-    "boundary_hints", "candidates_found", "discovery_note", "edit_plans", "error",
+    "boundary_hints", "candidates_found", "discovery_note", "edit_plans",
     "episodes_packaged", "episodes_planned", "episodes_rendered", "events",
     "first_pass_windows", "media", "second_pass_windows", "situation_mix",
     "speaker_reliability", "started_at", "upload_queue", "utterance_count",
@@ -302,6 +302,15 @@ def build_report(ctx: RunContext, state: State, episodes: list[Episode]) -> dict
         "scan_density": ctx.report.get("scan_density", []),
         "subtitles_dropped": ctx.report.get("subtitles_dropped", []),
         "repeated_spans": ctx.report.get("repeated_spans", []),
+        # A refined span the provider returned outside the scene it had just
+        # chosen by index (8.1). Corrected before use, and said here, because
+        # a provider inventing timestamps is worth seeing.
+        "out_of_scene_bounds": ctx.report.get("out_of_scene_bounds", []),
+        # The reason a FAILED run failed. This was listed as internal - as
+        # though some other field carried it - and nothing did, so report.json
+        # and the UI showed FAILED with no cause, and the calibration harness
+        # printed "could not process <source>: None".
+        "error": ctx.report.get("error"),
         "render_failures": ctx.report.get("render_failures", []),
         "no_content_reason": ctx.report.get("no_content_reason"),
         "resumed_from": ctx.report.get("resumed_from"),

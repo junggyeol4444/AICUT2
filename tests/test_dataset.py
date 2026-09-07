@@ -206,3 +206,46 @@ class ReplayHarnessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SweepIsolationTests(ReplayHarnessTests):
+    """17.4's sweep must not spend the project's own data as scratch space."""
+
+    def test_a_replay_leaves_the_project_candidates_alone(self):
+        """discovery.run empties and rewrites them; that must hit a copy."""
+        from aicut.models import ContentCandidate
+
+        kept = ContentCandidate(
+            project_id=self.project.project_id,
+            core_summary="사람이 판정한 후보",
+            human_verdict="agree",
+        )
+        self.store.replace_candidates(self.project.project_id, [kept])
+
+        harness = self._harness()
+        try:
+            harness.run(self.profile)
+        finally:
+            harness.close()
+
+        surviving = self.store.candidates(self.project.project_id)
+        self.assertEqual([c.core_summary for c in surviving], ["사람이 판정한 후보"])
+        self.assertEqual(surviving[0].human_verdict, "agree",
+                         "the human verdict of 15.4 was overwritten by a sweep trial")
+
+    def test_repeated_trials_do_not_accumulate_in_the_real_store(self):
+        harness = self._harness()
+        try:
+            for _ in range(3):
+                harness.run(self.profile)
+        finally:
+            harness.close()
+        self.assertEqual(self.store.candidates(self.project.project_id), [])
+
+    def test_the_scratch_copy_is_made_once_and_reused(self):
+        harness = self._harness()
+        try:
+            first = harness.replay_store
+            self.assertIs(harness.replay_store, first)
+        finally:
+            harness.close()
