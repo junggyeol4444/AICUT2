@@ -14,6 +14,14 @@ export const api = {
   health: () => request('/health'),
   projects: () => request('/projects'),
   createProject: payload => request('/projects', { method: 'POST', body: JSON.stringify(payload) }),
+  uploadMedia: async file => {
+    const response = await fetch(`${API_ROOT}/media`, {
+      method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-Filename': file.name }, body: file,
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.message || payload.error || `HTTP ${response.status}`);
+    return payload;
+  },
   runProject: (projectId, options = {}) => request(`/projects/${projectId}/run`, {
     method: 'POST', body: JSON.stringify(options),
   }),

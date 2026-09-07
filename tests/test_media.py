@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from backend.media import MediaProbeError, probe_media
+from backend.media import DiskCapacityError, MediaProbeError, check_disk_capacity, probe_media
 
 
 class MediaProbeTest(unittest.TestCase):
@@ -28,3 +28,10 @@ class MediaProbeTest(unittest.TestCase):
     def test_missing_source_is_rejected_before_process_execution(self):
         with self.assertRaises(MediaProbeError):
             probe_media(Path("/definitely/missing/video.mkv"))
+
+    def test_disk_capacity_reserves_space_before_long_jobs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = check_disk_capacity(Path(directory) / "future" / "artifacts", 1, 1)
+            self.assertGreaterEqual(result["available_bytes"], 1)
+            with self.assertRaises(DiskCapacityError):
+                check_disk_capacity(directory, result["free_bytes"] + 1)
