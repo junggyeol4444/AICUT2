@@ -77,9 +77,37 @@ def package_episode(ctx: RunContext, episode: Episode, *, knowledge: dict | None
     path = ctx.project_dir / "metadata" / f"{episode.episode_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(episode.metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+    # 22.4 asks for the package as JSON·TXT. The JSON is for the uploader; the
+    # text is for the person, who has to paste a description into a box and
+    # cannot do that from a file full of escapes.
+    path.with_suffix(".txt").write_text(_as_text(episode), encoding="utf-8")
 
     ctx.store.save_episode(episode)
     return episode
+
+
+def _as_text(episode: Episode) -> str:
+    """The metadata package as something a person can copy out of (22.4)."""
+    meta = episode.metadata
+    lines = ["제목 후보"]
+    lines += [f"  {i}. {t}" for i, t in enumerate(meta.get("titles", []), 1)] or ["  (없음)"]
+    lines += ["", "설명", meta.get("description", "") or "(없음)"]
+    chapters = meta.get("chapters", [])
+    if chapters:
+        lines += ["", "챕터"]
+        for chapter in chapters:
+            at = int(float(chapter.get("at_sec", 0)))
+            stamp = f"{at // 3600:d}:{at // 60 % 60:02d}:{at % 60:02d}" if at >= 3600 \
+                else f"{at // 60:d}:{at % 60:02d}"
+            lines.append(f"  {stamp} {chapter.get('label', '')}")
+    tags = meta.get("tags", [])
+    if tags:
+        lines += ["", "태그", "  " + ", ".join(tags)]
+    upload = meta.get("upload") or {}
+    if upload:
+        lines += ["", "업로드 정보"]
+        lines += [f"  {k}: {v}" for k, v in upload.items()]
+    return "\n".join(lines) + "\n"
 
 
 def _thumbnails(ctx: RunContext, episode: Episode) -> list[thumbnails.ThumbnailCandidate]:

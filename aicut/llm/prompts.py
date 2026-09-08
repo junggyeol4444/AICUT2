@@ -136,6 +136,11 @@ Cutting between screens with no thread is not.
 `boundary_hints` are hints only (6.4) — a place to look, never a boundary. The
 boundary comes from the event structure.
 
+16장: 단일 주제 방송이면 억지 분할을 하지 않는다 — 완결형 1편으로 통합한다.
+A broadcast that is one thing from beginning to end is one content, however long
+it ran; splitting it to produce a plural answer is the same 짜깁기 by another
+route. One is a normal answer, and so is zero.
+
 6.1 says a candidate is not a clip. Each one carries all ten:
 
   core_summary      핵심 내용
