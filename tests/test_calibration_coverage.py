@@ -248,62 +248,60 @@ class UnreachedThresholdTests(unittest.TestCase):
 
 
 class Mvp2DensityGateTests(unittest.TestCase):
-    """19장 MVP 2 실측 항목: 1차 통과 밀도별 사건 검출률과 처리 시간."""
+    """19장 MVP 2 실측 항목: 1차 통과 밀도별 사건 검출률과 처리 시간.
 
-    def _remembered(self):
-        from aicut.calibration.mvp2 import RememberedEvent
+    The clause's other half - 성공 기준: 사람이 기억하는 주요 사건을 누락 없이
+    잡아내는가 - is a standard for the person reading the result, not a task.
+    An earlier version of this module asked the operator to write that list out
+    and scored against it; the clause names no such list, MVP 2's 입력 is
+    already stated as 4~6시간 생방송 1편, and 30장's [사람이 담당] has three
+    entries and this is not one of them. It was removed.
+    """
 
-        return [
-            RememberedEvent(at_sec=100.0, what="싸움이 시작된다"),
-            RememberedEvent(at_sec=900.0, what="화해한다"),
-        ]
+    def test_the_module_asks_the_operator_for_nothing(self):
+        import inspect
 
-    def _event(self, event_id, start, end, summary="…"):
-        class _E:
-            def __init__(self):
-                self.event_id = event_id
-                self.summary = summary
+        from aicut.calibration import mvp2
 
-            def span(self):
-                return (start, end)
+        source = inspect.getsource(mvp2)
+        for invented in ("remembered", "RememberedEvent", "tolerance"):
+            self.assertNotIn(invented, source)
 
-        return _E()
+    def test_each_density_is_timed_and_its_events_counted(self):
+        import tempfile
+        from pathlib import Path
 
-    def test_a_remembered_event_with_no_detected_event_near_it_is_missed(self):
-        from aicut.calibration.mvp2 import coverage
+        from aicut.calibration.mvp2 import measure_densities
+        from aicut.config import CalibrationProfile
+        from aicut.db.store import Store
+        from aicut.llm import get_producer
+        from aicut.models import Event, EventMention, Project
+        from aicut.pipeline.context import RunContext
 
-        result = coverage(
-            [self._event("e1", 60.0, 150.0)], self._remembered(), tolerance_sec=90.0,
-        )
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            store = Store(str(Path(tmp) / "aicut.db"))
+            project = store.create_project(Project(
+                project_id="p1", file_path="/nowhere.mkv", duration_sec=1200.0,
+            ))
+            ctx = RunContext(project=project, store=store, profile=CalibrationProfile.load(),
+                             producer=get_producer("mock"), workspace=Path(tmp))
 
-        self.assertEqual(len(result.found), 1)
-        self.assertEqual(len(result.missed), 1)
-        self.assertEqual(result.missed[0]["what"], "화해한다")
-        self.assertEqual(result.rate, 0.5)
+            def found_two(context):
+                context.store.replace_events(context.project.project_id, [
+                    Event(event_id=f"e{i}", project_id=context.project.project_id,
+                          mentions=[EventMention(event_id=f"e{i}", source_start_sec=0.0,
+                                                 source_end_sec=1.0)])
+                    for i in range(2)
+                ])
 
-    def test_tolerance_is_what_decides_a_near_miss(self):
-        """A person recalling a six-hour broadcast does not give frame numbers."""
-        from aicut.calibration.mvp2 import coverage
+            rows = measure_densities(ctx, [60.0, 120.0], understand=found_two)
+            store.close()
 
-        detected = [self._event("e1", 200.0, 260.0)]
-        remembered = [self._remembered()[0]]          # at 100s
-
-        self.assertEqual(coverage(detected, remembered, tolerance_sec=30.0).rate, 0.0)
-        self.assertEqual(coverage(detected, remembered, tolerance_sec=120.0).rate, 1.0)
-
-    def test_a_perfect_rate_earned_by_one_huge_event_is_visible(self):
-        """One event spanning the broadcast matches everything a person wrote
-        down while having detected nothing. The rate cannot say that."""
-        from aicut.calibration.mvp2 import DensityMeasurement, coverage
-
-        measurement = DensityMeasurement(
-            pass1_window_sec=120.0, events=1, seconds=4.0, realtime_factor=250.0,
-            coverage=coverage([self._event("e1", 0.0, 1000.0)], self._remembered()),
-            duration_sec=1000.0,
-        )
-
-        self.assertEqual(measurement.coverage.rate, 1.0)
-        self.assertEqual(measurement.as_dict()["widest_match_ratio"], 1.0)
+        self.assertEqual([r.pass1_window_sec for r in rows], [60.0, 120.0])
+        self.assertEqual([r.events for r in rows], [2, 2])
+        for row in rows:
+            self.assertGreaterEqual(row.seconds, 0.0)
+            self.assertIsNotNone(row.realtime_factor)
 
     def test_the_measurement_does_not_destroy_the_project_it_measures(self):
         """`understanding.run` is a production stage: it replaces the project's
@@ -342,29 +340,12 @@ class Mvp2DensityGateTests(unittest.TestCase):
             self.assertIs(ctx.store, store)
             store.close()
 
-    def test_a_remembered_file_without_at_sec_says_what_the_file_should_be(self):
-        import json
-        import tempfile
-        from pathlib import Path
-
-        from aicut.calibration.mvp2 import load_remembered
+    def test_no_density_at_all_is_refused(self):
+        from aicut.calibration.mvp2 import measure_densities
         from aicut.errors import AicutError
 
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            path = Path(tmp) / "remembered.json"
-            path.write_text(json.dumps([{"what": "무슨 일"}]), encoding="utf-8")
-            with self.assertRaises(AicutError):
-                load_remembered(path)
-
-            path.write_text(json.dumps([]), encoding="utf-8")
-            with self.assertRaises(AicutError):
-                load_remembered(path)
-
-            path.write_text(
-                json.dumps([{"at_sec": 90, "what": "b"}, {"at_sec": 10, "what": "a"}]),
-                encoding="utf-8",
-            )
-            self.assertEqual([e.what for e in load_remembered(path)], ["a", "b"])
+        with self.assertRaises(AicutError):
+            measure_densities(object(), [], understand=lambda c: None)
 
 
 class NewThresholdsAreProfileValuesTests(unittest.TestCase):

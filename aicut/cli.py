@@ -480,19 +480,6 @@ def _gate_mvp2(args) -> int:
               file=sys.stderr)
         return 1
 
-    remembered: list = []
-    if args.remembered:
-        remembered = mvp2_mod.load_remembered(args.remembered)
-        print(f"{len(remembered)} 주요 사건 remembered by a person"
-              f" (±{args.tolerance:.0f}s)")
-    else:
-        # 19장's success criterion for MVP 2 is whether the events a person
-        # remembers are all caught. Without their list only half the 실측 항목
-        # can be measured, and saying so is better than reporting the half.
-        print("no remembered-events file: 처리 시간 will be measured, 사건 검출률 will not.")
-        print("  19장 MVP 2 - 사람이 기억하는 주요 사건을 누락 없이 잡아내는가")
-        print('  write them as [{"at_sec": 2450, "what": "..."}] and pass --remembered')
-
     ctx = _context(args, project)
     ctx.signals = SignalBundle.load(signals_path)
     densities = [float(d) for d in args.density.split(",") if d.strip()]
@@ -502,28 +489,16 @@ def _gate_mvp2(args) -> int:
     rows = mvp2_mod.measure_densities(
         ctx, densities,
         understand=lambda c: understanding.run(c, sample_frames=args.frames),
-        remembered=remembered,
-        tolerance_sec=args.tolerance,
     )
 
-    print(f"\n  {'pass1_window':>12}  {'events':>6}  {'seconds':>8}  {'xRT':>6}  검출률")
+    print(f"\n  {'pass1_window':>12}  {'events':>6}  {'seconds':>8}  {'xRT':>6}")
     for row in rows:
         data = row.as_dict()
-        rate = data.get("detection_rate")
-        found = f"{rate * 100:.0f}% ({data['found']}/{len(remembered)})" if rate is not None else "-"
         factor = data["realtime_factor"] or 0.0
         print(
             f"  {data['pass1_window_sec']:>11g}s  {data['events']:>6}  {data['seconds']:>8.1f}"
-            f"  {factor:>5.1f}x  {found}"
+            f"  {factor:>5.1f}x"
         )
-        for miss in data.get("missed", []):
-            print(f"      놓친 사건: {miss}")
-        widest = data.get("widest_match_ratio")
-        if widest is not None and widest >= 0.5:
-            # A rate of 100% earned by one event that spans the broadcast is
-            # not detection, and the rate alone cannot say so.
-            print(f"      주의: 가장 넓은 매칭 사건이 방송의 {widest * 100:.0f}%를 덮는다."
-                  " 검출률이 높은 이유가 이것일 수 있다")
 
     out = Path(args.workspace) / project.project_id / "mvp2_density.json"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -1532,13 +1507,6 @@ def cmd_doctor(args) -> int:
     return 0
 
 
-def mvp2_module():
-    """Imported lazily so `aicut --help` does not pay for the calibration package."""
-    from aicut.calibration import mvp2
-
-    return mvp2
-
-
 def _ffmpeg_remedy() -> str:
     """What to type to get an ffmpeg, and only what will work.
 
@@ -1666,11 +1634,6 @@ def build_parser() -> argparse.ArgumentParser:
     gate.add_argument("--note", help="mvp1: kept with the verdict")
     gate.add_argument("--density", default="60,120,240", metavar="SEC,SEC",
                       help="scan.pass1_window_sec values to measure (19장 MVP 2 실측 항목)")
-    gate.add_argument("--remembered", metavar="JSON",
-                      help="the 주요 사건 a person remembers, for the 검출률 half")
-    gate.add_argument("--tolerance", type=float,
-                      default=mvp2_module().DEFAULT_TOLERANCE_SEC, metavar="SEC",
-                      help="how far a detected event may sit from the remembered moment")
     gate.add_argument("--frames", action="store_true",
                       help="sample frames for the pass (5.2 reads 화면 and 소리 together)")
     gate.set_defaults(func=cmd_gate)
