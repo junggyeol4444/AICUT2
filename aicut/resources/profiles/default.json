@@ -90,7 +90,8 @@
       "frozen_after_peak": 0.2,
       "over_keep_max": -0.3,
       "long_and_low": -0.3,
-      "reacting_face_on_still_frame": 0.35
+      "reacting_face_on_still_frame": 0.35,
+      "breath_before_rebuttal": 0.4
     },
     "expression_window_sec": 2.0,
     "expression_reaction_min": 0.25

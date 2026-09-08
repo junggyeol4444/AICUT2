@@ -265,6 +265,9 @@ Judge one silence (9장). 기계적 오디오 갭 킬링을 폐기하고 문맥�
   duration_sec        무음 지속 시간
   preceding_tension   직전 구간의 오디오 텐션 — a high one right before is the
                       fourth 예능적 case above, on its own
+  following_tension   what comes after the silence. Quiet pause then a loud
+                      answer is the second 예능적 case, 반박 직전 숨을 고르는
+                      구간 — the opposite shape from the fourth
   speaker_handover    화자 전환 여부, with duration_sec as the 대기 시간
   motion / face       화면상 인물의 표정·움직임 정지 여부. A still frame and a
                       still face are not the same thing: someone frozen

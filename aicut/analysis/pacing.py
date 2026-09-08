@@ -143,6 +143,10 @@ class PacingJudge:
         signals: dict[str, float | str | bool | None] = {
             "duration_sec": round(ctx.duration, 3),
             "preceding_tension": round(ctx.preceding_tension, 3),
+            # 9.1's 반박 직전 숨을 고르는 구간 is about what comes *after* the
+            # silence. Measured all along and never shown to anything that
+            # judges, here or in the producer that may overrule it.
+            "following_tension": round(ctx.following_tension, 3),
             "speaker_handover": ctx.is_speaker_handover,
             "motion": round(ctx.motion, 4) if ctx.motion is not None else None,
             "expression_change": (
@@ -179,6 +183,14 @@ class PacingJudge:
         ):
             score += float(weight["reacting_face_on_still_frame"])
             reasons.append("still frame but the face is still reacting")
+        # 9.1, 예능적 정적 #2: 반박 직전 숨을 고르는 구간. The pause is quiet and
+        # what follows it is not - the opposite shape from #4, where the loud
+        # part came first. Both halves are required: without the low preroll
+        # this fires on the trough between two shouts, which is not someone
+        # gathering themselves to answer.
+        if ctx.following_tension >= high and ctx.preceding_tension < high:
+            score += float(weight["breath_before_rebuttal"])
+            reasons.append("quiet before a high-tension answer")
         if ctx.duration > keep_max:
             score += float(weight["over_keep_max"])
             reasons.append("longer than this channel's keepable beat")

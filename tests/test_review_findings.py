@@ -460,3 +460,60 @@ class AssessmentColumnMigrationTests(unittest.TestCase):
             finally:
                 reopened.close()
             self.assertIn("human_assessment", columns)
+
+
+class BreathBeforeRebuttalTests(unittest.TestCase):
+    """9.1's second 예능적 정적 — 반박 직전 숨을 고르는 구간 — had no term.
+
+    `following_tension` was measured on every silence, stored on the context,
+    and read by nothing: not the rule layer, not the payload the producer that
+    may overrule it sees. So a quiet pause before an outburst scored the same as
+    dead air, and the one case in 9.1 that is about what comes *after* the
+    silence was the one case nothing looked for.
+    """
+
+    def _judge(self, **kwargs):
+        from aicut.analysis.pacing import PacingJudge, SilenceContext
+        from aicut.config import CalibrationProfile
+
+        context = SilenceContext(start_sec=10.0, end_sec=11.0, **kwargs)
+        return PacingJudge(CalibrationProfile.load()).judge(context)
+
+    def test_a_quiet_pause_before_a_loud_answer_is_a_reason_to_keep(self):
+        from aicut.config import CalibrationProfile
+
+        high = CalibrationProfile.load().get_float("tension.high")
+        quiet = self._judge(preceding_tension=0.1, following_tension=0.1)
+        before_answer = self._judge(preceding_tension=0.1, following_tension=high + 0.1)
+
+        self.assertGreater(before_answer.score, quiet.score)
+        self.assertIn("high-tension answer", before_answer.reason)
+
+    def test_the_trough_between_two_shouts_is_not_a_breath(self):
+        """Both halves are required. Without the low preroll this fires on every
+        gap inside a shouting match, which is not someone gathering themselves."""
+        from aicut.config import CalibrationProfile
+
+        high = CalibrationProfile.load().get_float("tension.high")
+        decision = self._judge(preceding_tension=high + 0.1, following_tension=high + 0.1)
+
+        self.assertNotIn("high-tension answer", decision.reason)
+
+    def test_the_signal_reaches_the_judgement_that_may_overrule_the_rule(self):
+        """18장 lets the reasoning layer overrule; it cannot use what it is not shown."""
+        decision = self._judge(preceding_tension=0.1, following_tension=0.9)
+
+        self.assertEqual(decision.signals["following_tension"], 0.9)
+
+    def test_the_weight_is_a_profile_value_not_a_constant(self):
+        """17.1: a rule saying how much this is worth is exactly what stays out
+        of code."""
+        import inspect
+
+        from aicut.analysis import pacing
+        from aicut.config import CalibrationProfile
+
+        weights = CalibrationProfile.load().get("pacing.keep_signal_weights")
+        self.assertIn("breath_before_rebuttal", weights)
+        source = inspect.getsource(pacing.PacingJudge.judge)
+        self.assertIn('weight["breath_before_rebuttal"]', source)
