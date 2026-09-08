@@ -359,17 +359,84 @@ def _parse_assessment(pairs: list[str]) -> dict[str, str]:
 
 
 def cmd_gate(args) -> int:
-    """19장's gates, measured on a real broadcast rather than assumed.
+    """19장's gates, measured on real material rather than assumed.
 
     19장 says each MVP must pass its success criterion before the next one is
-    worth building, and MVP 2 names a 실측 항목 outright: 1차 통과 밀도별 사건
-    검출률과 처리 시간. Neither number exists unless something measures it.
+    worth building. None of the criteria is a number this code may pick: MVP 1
+    says 비율 확보 without saying which ratio, MVP 2 asks whether a person's
+    remembered events were all caught, MVP 3 asks four questions of a person.
+    So every gate here measures and reports; the verdict stays with the reader.
     """
+    if args.gate == "mvp1":
+        return _gate_mvp1(args)
+    if args.gate == "mvp3":
+        return _gate_mvp3(args)
+    return _gate_mvp2(args)
+
+
+def _gate_mvp1(args) -> int:
+    """MVP 1: 분석 결과가 실제 영상의 제작 의도와 일치하는가 (19장)."""
+    from aicut.intelligence import reference as reference_mod
+
+    store = _store(args)
+    if args.verdict:
+        if not args.reference:
+            print("--verdict needs --reference <ref_id>", file=sys.stderr)
+            return 1
+        try:
+            reference_mod.record_reference_verdict(
+                store, args.reference, args.verdict, args.note or "",
+            )
+        except KeyError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(f"recorded '{args.verdict}' for {args.reference[:8]}")
+        _print(reference_mod.reference_agreement(store))
+        return 0
+
+    references = store.references()
+    if not references:
+        print("no reference analyses stored. `aicut learn reference` runs loop A (4장)")
+        return 1
+    for row in references:
+        mark = (row.get("human_verdict") or "")[:8] or "-"
+        print(f"  {row['ref_id'][:8]}  {mark:<8}  {row['video_id']}")
+        patterns = row.get("extracted_patterns") or {}
+        # 19장 asks whether the analysis matches the video's 제작 의도, so the
+        # analysis has to be on the screen next to the id being judged.
+        for key, value in list(patterns.items())[:6]:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+            print(f"      {key}: {text[:100]}")
+    _print(reference_mod.reference_agreement(store))
+    print("19장 MVP 1: 사람이 봤을 때 분석 결과가 실제 영상의 제작 의도와 일치한다고"
+          " 판단되는 비율 확보. 어느 비율이면 확보인지는 19장이 정하지 않았다.")
+    return 0
+
+
+def _gate_mvp3(args) -> int:
+    """MVP 3: 항목별 평가 (19장, 원본 32장). The numbers, in one place."""
+    store = _store(args)
+    project = store.get_project(args.project) if args.project else None
+    if project is None:
+        print(f"gate mvp3 needs a project: {args.project or '(none given)'}", file=sys.stderr)
+        return 1
+    ctx = _context(args, project)
+    _print(review_mod.agreement_rate(ctx))
+    _print(review_mod.assessment_rates(ctx))
+    print("입력: aicut candidates <project> --candidate <id> --assess 1=yes")
+    return 0
+
+
+def _gate_mvp2(args) -> int:
+    """MVP 2 실측 항목: 1차 통과 밀도별 사건 검출률과 처리 시간 (19장)."""
     from aicut.calibration import mvp2 as mvp2_mod
     from aicut.pipeline import understanding
     from aicut.pipeline.context import SignalBundle
 
     store = _store(args)
+    if not args.project:
+        print("gate mvp2 needs a processed project", file=sys.stderr)
+        return 1
     project = store.get_project(args.project)
     if project is None:
         print(f"unknown project {args.project}", file=sys.stderr)
@@ -1497,8 +1564,14 @@ def build_parser() -> argparse.ArgumentParser:
                             help="print the four items 원본 32장 evaluates and stop")
     candidates.set_defaults(func=cmd_candidates)
 
-    gate = _sub("gate", help="measure a 19장 MVP gate on a processed project")
-    gate.add_argument("project")
+    gate = _sub("gate", help="measure a 19장 MVP gate")
+    gate.add_argument("gate", choices=["mvp1", "mvp2", "mvp3"])
+    gate.add_argument("project", nargs="?", help="mvp2 and mvp3: which project")
+    gate.add_argument("--reference", metavar="REF_ID",
+                      help="mvp1: which stored reference analysis to judge")
+    gate.add_argument("--verdict", choices=["agree", "disagree"],
+                      help="mvp1: does the analysis match why the video was made")
+    gate.add_argument("--note", help="mvp1: kept with the verdict")
     gate.add_argument("--density", default="60,120,240", metavar="SEC,SEC",
                       help="scan.pass1_window_sec values to measure (19장 MVP 2 실측 항목)")
     gate.add_argument("--remembered", metavar="JSON",

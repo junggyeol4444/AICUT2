@@ -91,6 +91,7 @@ class Store:
         ("tb_content_candidate", "event_relations", "TEXT NOT NULL DEFAULT '[]'"),
         ("tb_content_candidate", "suggested_form", "TEXT NOT NULL DEFAULT ''"),
         ("tb_content_candidate", "human_assessment", "TEXT NOT NULL DEFAULT '{}'"),
+        ("tb_yt_reference", "human_verdict", "TEXT"),
     )
 
     def _add_missing_columns(self) -> None:
@@ -506,9 +507,21 @@ class Store:
                 "ref_id": r["ref_id"], "video_id": r["video_id"], "channel_id": r["channel_id"],
                 "public_metrics": _u(r["public_metrics"], {}), "extracted_patterns": _u(r["extracted_patterns"], {}),
                 "analyzed_at": r["analyzed_at"],
+                # 19장 MVP 1 is scored on whether a person, watching the video,
+                # says the analysis matches why it was made.
+                "human_verdict": r["human_verdict"],
             }
             for r in self.conn.execute("SELECT * FROM tb_yt_reference ORDER BY analyzed_at")
         ]
+
+    def set_reference_verdict(self, ref_id: str, verdict: str) -> None:
+        """19장 MVP 1: a person's judgement on one reference analysis."""
+        cursor = self.conn.execute(
+            "UPDATE tb_yt_reference SET human_verdict=? WHERE ref_id=?", (verdict, ref_id)
+        )
+        if cursor.rowcount == 0:
+            raise KeyError(f"unknown reference {ref_id}")
+        self.conn.commit()
 
     def save_source_output_pair(self, source_ref: str, output_ref: str, analysis: dict) -> str:
         pair_id = new_id()

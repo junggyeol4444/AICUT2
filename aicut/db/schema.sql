@@ -178,8 +178,8 @@ CREATE TABLE IF NOT EXISTS tb_yt_reference (           -- loop A
     channel_id         TEXT NOT NULL DEFAULT '',
     public_metrics     TEXT NOT NULL DEFAULT '{}',     -- public metrics only (4.2)
     extracted_patterns TEXT NOT NULL DEFAULT '{}',
-    analyzed_at        TEXT NOT NULL
-    -- no media column: reference media is discarded after analysis (4.6)
+    analyzed_at        TEXT NOT NULL,
+    human_verdict      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tb_source_output_pair (     -- loop B

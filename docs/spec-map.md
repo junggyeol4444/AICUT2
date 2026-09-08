@@ -186,9 +186,9 @@
 
 | 관문 | 기준 | 어디 | 상태 |
 |---|---|---|---|
-| MVP 1 | 분석 결과가 실제 제작 의도와 일치하는 비율 | `intelligence/reference.py` | 사람의 판정 입력 경로 없음 |
-| MVP 2 | 사람이 기억하는 주요 사건을 누락 없이 잡는가 / **실측**: 1차 통과 밀도별 사건 검출률과 처리 시간 | `calibration/mvp2.py`, `aicut gate <project> --density --remembered` | 실측 명령 있음. 실제 방송에서 측정하는 것은 운영자 몫 |
-| MVP 3 | 항목별 평가 4개 (원본 32장) | `pipeline/review.py: ASSESSMENT_ITEMS`, `aicut candidates --assess`, UI 15.4 화면 | 입력·집계 있음. 통과 판정은 사람 |
+| MVP 1 | 분석 결과가 실제 제작 의도와 일치하는 비율 | `intelligence/reference.py: record_reference_verdict / reference_agreement`, `aicut gate mvp1` | 입력·집계 있음. 어느 비율이면 확보인지는 19장이 안 정함 |
+| MVP 2 | 사람이 기억하는 주요 사건을 누락 없이 잡는가 / **실측**: 1차 통과 밀도별 사건 검출률과 처리 시간 | `calibration/mvp2.py`, `aicut gate mvp2 <project> --density --remembered` | 실측 명령 있음. 실제 방송에서 측정하는 것은 운영자 몫 |
+| MVP 3 | 항목별 평가 4개 (원본 32장) | `pipeline/review.py: ASSESSMENT_ITEMS`, `aicut candidates --assess`, `aicut gate mvp3`, UI 15.4 화면 | 입력·집계 있음. 통과 판정은 사람 |
 | MVP 4 | 원본↔완성본 매핑 (= 17.2 데이터셋) | `intelligence/source_output.py`, `aicut learn pairs` | 데이터셋 필요 |
 | MVP 5 | 편집 계획만 읽고 결과물을 예상할 수 있는가 | `render/editplan.py: describe()`, `aicut plan` | 사람이 읽는 것으로 검증 |
 | MVP 6~9 | 10장 / 11장 / 11.4 / 12.2 | `render/`, `pipeline/packaging.py`, `publishing.py`, `performance.py` | 코드 있음, 관문 측정 없음 |

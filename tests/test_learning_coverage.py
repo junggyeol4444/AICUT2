@@ -150,3 +150,87 @@ class KnowledgeFieldTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Mvp1GateTests(unittest.TestCase):
+    """19장 MVP 1: 사람이 봤을 때 분석 결과가 실제 영상의 제작 의도와
+    일치한다고 판단되는 비율. Nothing collected that judgement before."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        from aicut.db.store import Store
+
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.store = Store(str(Path(self._tmp.name) / "aicut.db"))
+
+    def tearDown(self):
+        self.store.close()
+        self._tmp.cleanup()
+
+    def test_an_unjudged_analysis_leaves_the_rate_unmeasured(self):
+        """None is not zero. A gate nobody has judged has not failed."""
+        from aicut.intelligence import reference
+
+        self.store.save_reference("v1", "c1", {}, {"why": "…"})
+        rate = reference.reference_agreement(self.store)
+
+        self.assertEqual((rate["analysed"], rate["judged"]), (1, 0))
+        self.assertIsNone(rate["agreement"])
+
+    def test_the_rate_counts_only_what_a_person_judged(self):
+        from aicut.intelligence import reference
+
+        first = self.store.save_reference("v1", "c1", {}, {"why": "a"})
+        second = self.store.save_reference("v2", "c1", {}, {"why": "b"})
+        self.store.save_reference("v3", "c1", {}, {"why": "c"})
+
+        reference.record_reference_verdict(self.store, first, "agree")
+        reference.record_reference_verdict(self.store, second, "disagree", "제작 의도가 아님")
+
+        rate = reference.reference_agreement(self.store)
+        self.assertEqual((rate["analysed"], rate["judged"], rate["agreed"]), (3, 2, 1))
+        self.assertEqual(rate["agreement"], 0.5)
+
+    def test_the_note_survives_with_the_verdict(self):
+        from aicut.intelligence import reference
+
+        ref_id = self.store.save_reference("v1", "c1", {}, {"why": "a"})
+        reference.record_reference_verdict(self.store, ref_id, "disagree", "썸네일 얘기가 아님")
+
+        stored = self.store.references()[0]["human_verdict"]
+        self.assertTrue(stored.startswith("disagree"))
+        self.assertIn("썸네일 얘기가 아님", stored)
+
+    def test_an_unknown_reference_or_verdict_is_refused(self):
+        from aicut.intelligence import reference
+
+        ref_id = self.store.save_reference("v1", "c1", {}, {})
+        with self.assertRaises(KeyError):
+            reference.record_reference_verdict(self.store, "nope", "agree")
+        with self.assertRaises(ValueError):
+            reference.record_reference_verdict(self.store, ref_id, "maybe")
+
+    def test_an_older_database_gains_the_verdict_column(self):
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+
+        from aicut.db.store import Store
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            path = Path(tmp) / "old.db"
+            Store(str(path)).close()
+            conn = sqlite3.connect(path)
+            conn.execute("ALTER TABLE tb_yt_reference DROP COLUMN human_verdict")
+            conn.commit()
+            conn.close()
+
+            reopened = Store(str(path))
+            try:
+                columns = {r["name"] for r in
+                           reopened.conn.execute("PRAGMA table_info(tb_yt_reference)")}
+            finally:
+                reopened.close()
+            self.assertIn("human_verdict", columns)

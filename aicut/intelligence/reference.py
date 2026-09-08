@@ -253,6 +253,38 @@ def analyze(
     return analyses
 
 
+#: 19장 MVP 1 is scored on whether a person who watched the video says the
+#: analysis matches why it was made. Agree and disagree are the whole answer;
+#: "unsure" is not a third judgement, it is not having made one, so it is left
+#: unrecorded rather than stored as a value that quietly dilutes the rate.
+REFERENCE_VERDICTS = ("agree", "disagree")
+
+
+def record_reference_verdict(store: Store, ref_id: str, verdict: str, note: str = "") -> None:
+    """19장 MVP 1: 사람이 봤을 때 분석이 실제 제작 의도와 일치하는가."""
+    if verdict not in REFERENCE_VERDICTS:
+        raise ValueError(f"verdict must be one of {', '.join(REFERENCE_VERDICTS)}")
+    store.set_reference_verdict(ref_id, verdict if not note else f"{verdict}: {note}")
+
+
+def reference_agreement(store: Store) -> dict[str, Any]:
+    """The MVP 1 gate: the 비율 19장 asks for, and nothing more.
+
+    19장 says "일치한다고 판단되는 비율 확보" without naming the ratio that
+    counts as secured. Deciding one here would be inventing the gate rather
+    than measuring it.
+    """
+    references = store.references()
+    judged = [r for r in references if r.get("human_verdict")]
+    agreed = sum(1 for r in judged if str(r["human_verdict"]).startswith("agree"))
+    return {
+        "analysed": len(references),
+        "judged": len(judged),
+        "agreed": agreed,
+        "agreement": round(agreed / len(judged), 3) if judged else None,
+    }
+
+
 def build_knowledge(store: Store) -> ProductionKnowledge:
     """Consolidate every stored reference analysis into production knowledge (4.5)."""
     return consolidate([r["extracted_patterns"] for r in store.references() if r["extracted_patterns"]])
