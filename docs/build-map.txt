@@ -1,0 +1,180 @@
+AICUT2 / claude/v2 — 만든 것 분류표
+====================================
+기준 문서: docs/spec-v1.ko.md (통합 기획안 v1), docs/spec-original.ko.md (ai편집.txt)
+작성 시점 커밋: 9d32bd6
+테스트: 603개 통과 (skipped 59 — 실제 영상/ffmpeg/API 키가 있어야 도는 것들)
+
+
+0. 분류 기준
+------------
+기획안 3장의 시스템 구조를 그대로 쪼갰다. 9개 덩어리다.
+아래에서 "코드"와 "검증"을 분리해서 적는다. 이유는 19장 때문이다 —
+MVP 성공 기준이 전부 "사람이 봤을 때 맞는가"이고, 그건 코드가 있다고
+통과되는 게 아니다.
+
+  코드   = 그 조항의 동작이 코드로 존재하고 테스트가 돈다
+  검증   = 실제 방송 원본 / 실제 완성본 / 실제 API 키로 돌려서 확인했다
+
+
+1. 학습기 (Learning)  — 기획안 4장, 12장
+=========================================
+이 시스템의 핵심. 12.3이 "B가 없으면 규칙 엔진에 머문다"고 못박은 곳.
+
+  A. YouTube Content Learning (4장)
+     코드  aicut/intelligence/reference.py
+           aicut/intelligence/youtube.py     검색 + 공개 지표 수집 (4.2)
+           aicut/intelligence/knowledge.py   4.5 제작 지식으로 통합
+           aicut/intelligence/quota.py       11.4 PT 자정 쿼터
+     동작  watch()가 영상 파일을 디코딩해 프레임을 뽑고, analyze()가
+           그 프레임을 AI에게 보여준다. 답만 저장하고 프레임은 삭제(4.6).
+     CLI   aicut learn reference --file ID=PATH
+     검증  ✗  실제 YouTube API 키로 돌린 적 없음
+
+  B. Source-to-Output Learning (12.3 B)  ← 핵심 차별점
+     코드  aicut/intelligence/source_output.py
+     동작  원본↔완성본 대사 정렬로 선택/제거 구간을 계산하고,
+           두 영상의 프레임을 원본 먼저·완성본 나중 순으로 AI에게 보여준다.
+           선택/제거/재배치/반복/강조 판정은 AI가 한다.
+     CLI   aicut learn pairs --source-file --output-file
+                             --source-transcript --output-transcript
+     검증  ✗  실제 원본↔완성본 쌍으로 돌린 적 없음
+
+  C. Performance Learning (12.2)
+     코드  aicut/pipeline/performance.py   자기 채널 한정 (4.2 사실관계 주의)
+     검증  ✗
+
+  출처  merge_intervals / complement 는 코덱스 구현
+        (legacy/backend/learning.py:27,38,54)에서 가져왔다.
+
+
+2. 이해기 (Broadcast Understanding) — 기획안 5장
+================================================
+  코드  aicut/pipeline/parsing.py        멀티트랙 오디오 + STT
+        aicut/pipeline/understanding.py  5.1 1차 전 구간 통과 + 2차 정밀
+        aicut/analysis/signals.py        5.3 상황 라벨, 화제 전환
+        aicut/analysis/tension.py        텐션 곡선
+        aicut/analysis/vocalburst.py     웃음/비명 (5.2 오디오 항목)
+        aicut/media/stt.py               WhisperX / faster-whisper / PocketSphinx
+        aicut/media/vision.py            프레임 추출
+        aicut/media/faces.py             인물
+        DB   tb_utterance, tb_situation_span, tb_window_summary,
+             tb_detail_span, tb_event, tb_event_mention (5.4 Long-Term Memory)
+  5.2   1차·2차 둘 다 프레임을 AI에게 넘긴다. 화면과 소리 분리 안 함.
+  검증  ✗  4~6시간 실제 방송으로 돌린 적 없음 (MVP 2 성공 기준 미측정)
+
+
+3. 발견기 (Content Discovery) — 기획안 6장
+==========================================
+  코드  aicut/pipeline/discovery.py     사건 그래프에서 콘텐츠 후보
+        DB  tb_content_candidate
+  2.2   개수 하드코딩 없음. 0개 허용.
+  2.5   화면이 아니라 사건으로 나눈다.
+  검증  ✗  MVP 3이 "이 프로젝트의 첫 관문"인데 아직 안 통과함
+
+
+4. 기획기 (Planning) — 기획안 7, 8, 9장
+=======================================
+  코드  aicut/pipeline/planning.py      7장 구조 결정 + 8.2 편집 계획
+        aicut/pipeline/retrieval.py     8.1 Scene Retrieval
+        aicut/analysis/pacing.py        9장 호흡 판정 (KEEP/TRIM/CUT)
+        aicut/render/editplan.py        편집 계획 JSON
+        DB  tb_episode, tb_edit_timeline, tb_subtitle
+  13.1  에피소드 = 컷의 순서 있는 집합. 연속 구간 아님. 2.4 비선형 재구성 가능.
+  검증  ✗
+
+
+5. 편집기 / 렌더러 — 기획안 10장
+================================
+  코드  aicut/render/ffmpeg.py       10.1 계획만 받아 재단
+        aicut/render/subtitles.py    10.3 ASS
+        aicut/render/timeline.py
+        aicut/render/thumbnails.py
+        aicut/render/exchange.py     EDL / FCPXML / SRT 내보내기
+        aicut/pipeline/rendering.py
+  10.1  렌더러는 아무것도 결정하지 않는다. 판단은 전부 위 4번에서 끝난다.
+  검증  ✗  실제 렌더 출력물을 사람이 본 적 없음
+
+
+6. 패키징 / 업로드 — 기획안 11장
+================================
+  코드  aicut/pipeline/packaging.py   11.2 제목/설명/태그/챕터
+        aicut/pipeline/publishing.py  11.3 비공개 업로드
+        aicut/pipeline/review.py      11.3 사람 검수 게이트
+        aicut/intelligence/quota.py   11.4 PT 자정 쿼터
+        aicut/intelligence/token_store.py  OAuth 토큰 (코덱스에서 이식)
+        DB  tb_upload_queue, tb_quota_usage
+  11.3  Zero-Touch 아님. 사람 승인 없이 공개 안 됨.
+  검증  ✗  실제 업로드 안 해봄
+
+
+7. 캘리브레이션 — 기획안 17장
+=============================
+  코드  aicut/config.py                 17.1 파라미터 외부화
+        aicut/calibration/dataset.py    17.2 데이터셋
+        aicut/calibration/harness.py
+        aicut/calibration/metrics.py    17.3 재현율/정밀도/오탐
+        aicut/calibration/sweep.py      17.4 스윕
+        DB  tb_calibration_profile
+  17.5  측정 안 한 값 15개가 전부 "임시" 표기됨. aicut profile --list로 보임:
+        boundary_hints, discovery, laughter, pacing, retrieval,
+        scan.pass1_frame_interval_sec, scan.pass1_window_sec,
+        scan.pass2_trigger, scan.frames_per_window, silence, situation,
+        subtitle, tension, thumbnail, topic_shift
+  검증  ✗  17.2 데이터셋이 없어서 스윕을 돌린 적이 없다. 그래서 15개가 임시임.
+
+
+8. UI — 기획안 15장
+===================
+  코드  aicut/ui/server.py    15.1~15.5 화면 (등록/진행/후보검토/검수)
+        aicut/ui/auth.py      API 키 (코덱스에서 이식, 정적 경로 우회 결함 고침)
+        aicut/ui/jobs.py      작업 큐
+        aicut/desktop.py      22.1 단일 실행 파일
+  참고  legacy/src/ 에 코덱스가 만든 vite 스튜디오 화면이 있다. 디자인이 낫다.
+        아직 안 옮겼다.
+  검증  ✗
+
+
+9. 인프라 — 기획안 13, 14, 16, 20, 22장
+=======================================
+  코드  aicut/db/store.py + schema.sql   13장 테이블 18개 전부
+        aicut/db/backup.py               (코덱스 이식, SQLite 연결 누수 고침)
+        aicut/pipeline/states.py         14장 상태 전이도
+        aicut/pipeline/runner.py         재개
+        aicut/errors.py                  16장 예외 처리
+        aicut/media/ffmpeg_fetch.py      20.2 ffmpeg 조달
+        aicut/scheduler.py               (코덱스 이식, chmod 경합 고침)
+        .github/workflows/               CI 6잡
+  검증  ✓  이 층만 실제로 돌아가는 게 확인됨 (테스트 603개 + CI)
+
+
+현재 상태 요약
+==============
+코드로 존재하는 비율 :  기획안 23개 장 중 조항 단위로 대부분 코드가 있다.
+검증된 비율         :  9번 인프라만. 1~8번은 실제 영상으로 돌린 적이 없다.
+
+19장이 정한 관문 기준으로 보면:
+  MVP 1 (레퍼런스 분석)   코드 있음 / 성공 기준 미측정
+  MVP 2 (방송 이해)       코드 있음 / 성공 기준 미측정
+  MVP 3 (콘텐츠 발견)     코드 있음 / 성공 기준 미측정  ← "이 프로젝트의 첫 관문"
+  MVP 4 (원본↔완성본)     코드 있음 / 성공 기준 미측정
+  MVP 5~9                 코드 있음 / 성공 기준 미측정
+
+즉 "몇 퍼센트"를 코드 기준으로 말하면 높게 나오고, 19장 관문 기준으로
+말하면 0개 통과다. 이 둘을 섞어서 하나의 숫자로 말하지 않는다.
+
+
+고친 이력 (내가 기획안 어기고 만들었다가 되돌린 것)
+==================================================
+  9d32bd6  18장 위반 제거
+           - aicut/analysis/editing.py 삭제. 모션 점수 임계값으로 컷 위치를
+             코드가 결정했다. 18장은 편집 의도/호흡 판정을 AI 담당으로 적었다.
+           - 프로파일 editing.cut_score_floor 외 2개 삭제. 17.1은 AI 판정
+             기준을 파일로 빼라는 것이지, 숫자를 파일에 두면 코드가 판단해도
+             된다는 뜻이 아니다.
+           - AlignedSpan.emphasis() 삭제. hold_margin=0.05 하드코딩으로
+             "강조"를 코드가 라벨링했다. 12.3 B는 AI가 답할 항목이다.
+           - 12.3 B가 대사만 보던 것을 화면도 같이 보게 고쳤다 (5.2).
+             기획안 1.2가 지목한 세 번째 결함 "시각적 인지 부재"에 해당했다.
+           - docs/merge.ko.md 17.2 행 정정. grep 한 번으로 코덱스 쪽에
+             해당 기능이 없다고 단정했는데 틀렸다.
+             legacy/backend/learning.py:54 analyze_source_output()이 있다.
