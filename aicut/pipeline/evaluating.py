@@ -85,23 +85,44 @@ def group_for_production(candidates: list[ContentCandidate]) -> list[list[Conten
     picks up is left out rather than shipped unresolved.
     """
     by_id = {c.candidate_id: c for c in candidates}
+
+    # A combine link is a statement that two candidates belong in one episode,
+    # and it means that whichever of them is read first. Walking the list and
+    # closing each candidate as it is reached made the result depend on the
+    # order: a PRODUCE candidate visited before the COMBINE candidate that
+    # points at it was emitted alone and the combine candidate was then dropped
+    # as an unresolved single. The store returns candidates by independence
+    # score, which puts PRODUCE first, so 6.3's candidate B - 재미는 있으나 결말
+    # 없음 - was reliably the one thrown away.
+    #
+    # So the links are treated as undirected edges and the connected components
+    # are built first. Reversing the input cannot change what groups exist.
+    neighbours: dict[str, set[str]] = {c.candidate_id: set() for c in candidates}
+    for candidate in candidates:
+        for other_id in candidate.combine_with:
+            if other_id in neighbours:
+                neighbours[candidate.candidate_id].add(other_id)
+                neighbours[other_id].add(candidate.candidate_id)
+
     seen: set[str] = set()
     groups: list[list[ContentCandidate]] = []
-
     for candidate in candidates:
         if candidate.candidate_id in seen:
             continue
-        group = [candidate]
+        component: list[ContentCandidate] = []
+        queue = [candidate.candidate_id]
         seen.add(candidate.candidate_id)
-        queue = list(candidate.combine_with)
         while queue:
-            other_id = queue.pop()
-            other = by_id.get(other_id)
-            if other is None or other.candidate_id in seen:
-                continue
-            seen.add(other.candidate_id)
-            group.append(other)
-            queue.extend(other.combine_with)
-        if any(c.decision is Decision.PRODUCE for c in group) or len(group) > 1:
-            groups.append(group)
+            current = queue.pop()
+            component.append(by_id[current])
+            for other_id in sorted(neighbours[current]):
+                if other_id not in seen:
+                    seen.add(other_id)
+                    queue.append(other_id)
+        # Order inside a group follows the input, so the episode's own ordering
+        # is stable too.
+        order = {c.candidate_id: i for i, c in enumerate(candidates)}
+        component.sort(key=lambda c: order[c.candidate_id])
+        if any(c.decision is Decision.PRODUCE for c in component) or len(component) > 1:
+            groups.append(component)
     return groups

@@ -112,7 +112,18 @@ class Pipeline:
                 return self._finish(ctx, State.PARSING, [], started)
 
             self._advance(ctx, State.UNDERSTANDING)
-            if resume and self._understanding_done(ctx):
+            # A supplied transcriber means parsing has just replaced the stored
+            # utterances, so the window summaries and the event graph describe
+            # speech that is no longer there. Reusing them left discovery
+            # reading the old events while every later stage read the new
+            # utterances - one plan built from two different broadcasts.
+            replaced_speech = resume and transcriber is not None
+            if replaced_speech and self._understanding_done(ctx):
+                log.info("a transcript was supplied on resume; re-reading the broadcast")
+                ctx.note("resume_note",
+                         "the transcript was replaced, so the stored window summaries and "
+                         "event graph were rebuilt rather than reused")
+            if resume and not replaced_speech and self._understanding_done(ctx):
                 # The first pass is the expensive half of a run: one reasoning
                 # call per window, 180 of them on a six-hour broadcast. Paying
                 # for it again because a later stage failed would make 16장's

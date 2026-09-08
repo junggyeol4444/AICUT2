@@ -64,7 +64,10 @@ def label_situations(
         move = stillness(list(motion), at, end)
         face = face_ratio(at, end) if face_ratio else None
 
-        if not inside and move <= away_motion:
+        # `move` is None when nothing was sampled here. 대기·자리비움 is a claim
+        # about the screen, so it needs a measurement of the screen: without one
+        # the span falls through to UNKNOWN rather than being called empty.
+        if not inside and move is not None and move <= away_motion:
             label = SituationLabel.AWAY
         elif len(speakers) >= multi_min:
             label = SituationLabel.MULTI_PERSON
@@ -77,7 +80,10 @@ def label_situations(
 
         spans.append(SituationSpan(
             start_sec=at, end_sec=end, label=label, speakers=speakers,
-            evidence={"motion": round(move, 4), "face_ratio": face, "utterances": len(inside)},
+            evidence={
+                "motion": round(move, 4) if move is not None else None,
+                "face_ratio": face, "utterances": len(inside),
+            },
         ))
         at = end
     return _merge_adjacent(spans)

@@ -42,7 +42,10 @@ class SilenceContext:
     following_tension: float = 0.0
     speaker_before: str = UNKNOWN_SPEAKER
     speaker_after: str = UNKNOWN_SPEAKER
-    motion: float = 0.0
+    #: Mean visual change over the silence, or None when the sampling grid held
+    #: nothing for it. None means unmeasured, and every term below that reads it
+    #: is skipped rather than told the screen was still (9.2).
+    motion: float | None = 0.0
     #: 9.2 asks for 표정·움직임 정지 여부 - two things, not one. `motion` is the
     #: frame; this is the face. Someone frozen mid-reaction holds a still frame
     #: and a face that just moved a lot, which is the difference between the
@@ -137,11 +140,11 @@ class PacingJudge:
         keep_threshold = p.get_float("pacing.keep_score_threshold")
         weight = p.get("pacing.keep_signal_weights")
 
-        signals: dict[str, float | str | bool] = {
+        signals: dict[str, float | str | bool | None] = {
             "duration_sec": round(ctx.duration, 3),
             "preceding_tension": round(ctx.preceding_tension, 3),
             "speaker_handover": ctx.is_speaker_handover,
-            "motion": round(ctx.motion, 4),
+            "motion": round(ctx.motion, 4) if ctx.motion is not None else None,
             "expression_change": (
                 round(ctx.expression_change, 4) if ctx.expression_change is not None else None
             ),
@@ -161,7 +164,8 @@ class PacingJudge:
         if ctx.is_speaker_handover and ctx.duration <= grace:
             score += float(weight["speaker_handover"])
             reasons.append("waiting on a speaker handover")
-        if ctx.motion <= still_max and ctx.preceding_tension >= high:
+        still = ctx.motion is not None and ctx.motion <= still_max
+        if still and ctx.preceding_tension >= high:
             score += float(weight["frozen_after_peak"])
             reasons.append("person frozen on screen after a loud beat")
         # 9.2 asks for 표정 as well as 움직임, and 9.1's first 예능적 case -
@@ -170,7 +174,7 @@ class PacingJudge:
         # when no face signal exists, rather than read as a still face.
         if (
             ctx.expression_change is not None
-            and ctx.motion <= still_max
+            and still
             and ctx.expression_change >= p.get_float("pacing.expression_reaction_min")
         ):
             score += float(weight["reacting_face_on_still_frame"])

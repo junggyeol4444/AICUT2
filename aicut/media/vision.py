@@ -92,13 +92,38 @@ def _parse_motion(output: str, *, start_sec: float = 0.0, interval_sec: float = 
     return samples
 
 
-def stillness(samples: list[MotionSample], start_sec: float, end_sec: float) -> float:
-    """Mean visual change across a span; low means the person is not moving.
+#: How far apart two frames may sit and still be read as bracketing a span that
+#: has no sample of its own. Wider than this and the span is unmeasured rather
+#: than quiet. Deliberately generous: the cost of "unknown" is one signal not
+#: firing, and the cost of a wrong 0.0 is a keep decision built on nothing.
+_INTERPOLATION_SLACK_SEC = 2.0
 
-    Feeds 9.2's "is the person on screen frozen?" signal. The threshold that
-    calls a value "still" is a profile parameter, not a constant here.
+
+def stillness(
+    samples: list[MotionSample], start_sec: float, end_sec: float,
+) -> float | None:
+    """Mean visual change across a span, or None when nothing was measured.
+
+    Feeds 9.2's 화면상 인물의 표정·움직임 정지 여부. The threshold that calls a
+    value "still" is a profile parameter, not a constant here.
+
+    None is not 0.0. A short silence can fall between two sampled frames, and
+    returning 0.0 there told the pacing judge the screen was perfectly still -
+    so `frozen_after_peak` fired on no visual evidence at all, and 9.1's
+    황당해서 말을 잇지 못하는 구간 was inferred from a gap in the sampling grid.
+    When the span holds no sample, the nearest one on each side is used if they
+    bracket it closely enough; failing that the answer is "unknown".
     """
     inside = [s.score for s in samples if start_sec <= s.at_sec <= end_sec]
-    if not inside:
-        return 0.0
-    return sum(inside) / len(inside)
+    if inside:
+        return sum(inside) / len(inside)
+    before = [s for s in samples if s.at_sec < start_sec]
+    after = [s for s in samples if s.at_sec > end_sec]
+    if not before or not after:
+        return None
+    left, right = max(before, key=lambda s: s.at_sec), min(after, key=lambda s: s.at_sec)
+    # Only interpolate across a gap the sampling grid could plausibly leave.
+    # Anything wider is a hole in the measurement, not a value.
+    if right.at_sec - left.at_sec > 2 * (end_sec - start_sec) + _INTERPOLATION_SLACK_SEC:
+        return None
+    return (left.score + right.score) / 2

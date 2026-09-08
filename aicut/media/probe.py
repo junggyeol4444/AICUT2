@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 from dataclasses import dataclass, field
+import re
 from pathlib import Path
 from typing import Any
 
@@ -92,18 +93,42 @@ class MediaInfo:
         return warnings
 
 
+#: 5.2 assumes a multi-track recording - 내 마이크 / 통화 / 게임 / BGM on separate
+#: streams - and the whole of parsing depends on picking the right one: silence,
+#: RMS and STT all read the track this names "mic".
+#:
+#: Matched on word boundaries, not substrings. As substrings, the mic hint "me"
+#: is inside "game", so a stream titled `Game Audio` classified as the
+#: microphone and the entire broadcast was then transcribed and measured from
+#: gameplay audio instead of the host.
 _ROLE_HINTS = {
-    "mic": ("mic", "voice", "me", "본인", "마이크", "내목소리"),
+    "mic": ("mic", "microphone", "voice", "me", "본인", "마이크", "내목소리", "내 목소리"),
     "call": ("call", "discord", "party", "guest", "합방", "통화"),
-    "game": ("game", "app", "desktop", "게임"),
-    "bgm": ("bgm", "music", "brb", "배경"),
+    "game": ("game", "gameplay", "app", "application", "desktop", "게임"),
+    "bgm": ("bgm", "music", "brb", "배경", "배경음"),
 }
+
+#: What separates one word from the next in a track title. Latin titles use
+#: spaces and punctuation; Korean ones often do not, so a Korean hint still
+#: matches as a substring - "게임" inside "게임소리" is the same word, and none
+#: of the Korean hints is a fragment of another Korean word here.
+_WORD_SPLIT = re.compile(r"[^0-9a-z가-힣]+")
+
+
+def _matches(hint: str, title: str, words: set[str]) -> bool:
+    if hint.isascii():
+        # A Latin hint has to be a whole word, or the start of a hyphenated or
+        # numbered variant like "mic-2".
+        return hint in words
+    return hint in title
 
 
 def classify_track(title: str, index: int, total: int) -> str:
+    """Which of 5.2's four streams this is, from the recorder's own title."""
     lowered = title.lower()
+    words = {w for w in _WORD_SPLIT.split(lowered) if w}
     for role, hints in _ROLE_HINTS.items():
-        if any(h in lowered for h in hints):
+        if any(_matches(h, lowered, words) for h in hints):
             return role
     if total == 1:
         return "mixed"

@@ -98,6 +98,7 @@ class UiServer:
         backup_retention: int = 7,
         client_secrets: str | Path = "client_secrets.json",
         token_path: str | Path | None = None,
+        stt: dict[str, Any] | None = None,
     ):
         self.workspace = Path(workspace)
         try:
@@ -111,6 +112,12 @@ class UiServer:
         # 15.5's upload button needs the same OAuth material the CLI uses.
         self.client_secrets = Path(client_secrets)
         self.token_path = Path(token_path) if token_path else None
+        # 18장 puts STT 처리 on the program's side. 15.2 lets the operator drop
+        # a file in and nothing else, so the server has to own a recogniser -
+        # without one, a submission with no transcript ran on no speech at all
+        # and usually ended NO_CONTENT, which reads as "nothing was worth
+        # making" rather than "nothing was heard".
+        self.stt = dict(stt or {})
         self.jobs = JobRunner()
         self.db_path = self.workspace / "aicut.db"
         self.guard = guard if guard is not None else guard_from_environment()
@@ -315,18 +322,30 @@ class UiServer:
         frames = bool(body.get("sample_frames", False))
         stop_after = body.get("stop_after") or None
 
+        # Built here rather than inside the worker: a missing dependency should
+        # refuse the submission with a message the operator can act on, not
+        # surface later as a job that quietly found nothing.
+        if not transcript:
+            try:
+                self._speech_recogniser()
+            except Exception as exc:
+                raise ValueError(
+                    f"no transcript given and the speech recogniser cannot start: {exc}. "
+                    "Install it (pip install 'aicut[stt]'), point --stt-backend at one that "
+                    "runs here, or run `aicut transcribe` first and pass the transcript."
+                ) from exc
+
         def work(job: Job):
             job.append("info", f"submitted {source}")
             # The worker owns its own connection; the pipeline built above holds
             # the submitting thread's, so rebind it before running.
             pipeline.store = self.store
-            transcriber = TranscriptFileTranscriber(transcript) if transcript else None
-            if transcriber is None:
-                job.append(
-                    "warn",
-                    "no transcript supplied; STT must have been run separately or the project"
-                    " will fall back to whatever utterances are already stored",
-                )
+            if transcript:
+                transcriber = TranscriptFileTranscriber(transcript)
+                job.append("info", f"using the supplied transcript {transcript}")
+            else:
+                transcriber = self._speech_recogniser()
+                job.append("info", f"transcribing with {self.stt.get('backend', 'whisperx')}")
             try:
                 return pipeline.run(
                     project,
@@ -348,6 +367,13 @@ class UiServer:
         return {"job_id": job.job_id, "project_id": project.project_id}
 
     # ---- 15.3 monitor ------------------------------------------------------
+    def _speech_recogniser(self):
+        """The recogniser this server transcribes with, from its own settings."""
+        from aicut.media.stt import build_transcriber
+
+        settings = dict(self.stt)
+        return build_transcriber(settings.pop("backend", "whisperx"), **settings)
+
     def job(self, job_id: str) -> dict[str, Any]:
         job = self.jobs.get(job_id)
         if job is None:
@@ -727,6 +753,7 @@ def serve(
     backup_retention: int = 7,
     client_secrets: str | Path = "client_secrets.json",
     token_path: str | Path | None = None,
+    stt: dict[str, Any] | None = None,
 ) -> tuple[ThreadingHTTPServer, UiServer]:
     """Start the UI.
 
@@ -743,6 +770,7 @@ def serve(
         backup_retention=backup_retention,
         client_secrets=client_secrets,
         token_path=token_path,
+        stt=stt,
     )
     if ui.scheduler:
         ui.scheduler.start()

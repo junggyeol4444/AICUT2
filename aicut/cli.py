@@ -773,6 +773,13 @@ def cmd_ui(args) -> int:
         backup_interval_sec=args.backup_every,
         backup_retention=args.backup_keep,
         client_secrets=args.client_secrets, token_path=args.token,
+        # 18장: the server transcribes what it is given, like `aicut run` does.
+        stt={
+            "backend": args.backend, "model_size": args.stt_model,
+            "device": args.device, "compute_type": args.compute_type,
+            "language": args.language, "hf_token": args.hf_token,
+            "diarize": not args.no_diarize,
+        },
     )
     print(f"aicut ui on http://{args.host}:{args.port}  (workspace {args.workspace})")
     if guard.enabled:
@@ -862,29 +869,22 @@ def cmd_transcribe(args) -> int:
 
 
 def _transcriber(args):
-    from aicut.media.stt import (
-        FasterWhisperTranscriber,
-        PocketSphinxTranscriber,
-        WhisperXTranscriber,
-    )
+    """The recogniser these flags name. The building itself is stt.build_transcriber,
+    so the UI produces the same one from its own settings (18장)."""
+    from aicut.media.stt import build_transcriber
 
-    if args.backend == "pocketsphinx":
+    if args.backend == "pocketsphinx" and args.language and args.language != "en":
         # No GPU, no download - the model is in the package. Poor accuracy, and
         # English only, but it runs on a machine that can host nothing else.
-        if args.language and args.language != "en":
-            print(f"pocketsphinx is English-only; ignoring --language {args.language}",
-                  file=sys.stderr)
-        return PocketSphinxTranscriber()
-    if args.backend == "faster-whisper":
-        return FasterWhisperTranscriber(
-            model_size=args.stt_model, device=args.device,
-            compute_type=args.compute_type, language=args.language,
-        )
-    return WhisperXTranscriber(
+        print(f"pocketsphinx is English-only; ignoring --language {args.language}",
+              file=sys.stderr)
+    return build_transcriber(
+        args.backend,
         model_size=args.stt_model, device=args.device, language=args.language,
-        # Dropping this left every whisperx run on the class default (float16),
-        # so --compute-type int8 was accepted and ignored - which on a CPU run
-        # is the difference between working and an unsupported-precision failure.
+        # Dropping compute_type left every whisperx run on the class default
+        # (float16), so --compute-type int8 was accepted and ignored - which on
+        # a CPU run is the difference between working and an unsupported-
+        # precision failure.
         compute_type=args.compute_type,
         hf_token=args.hf_token, diarize=not args.no_diarize,
     )
@@ -1309,6 +1309,16 @@ def build_parser() -> argparse.ArgumentParser:
     upload.set_defaults(func=cmd_upload)
 
     ui = _sub("ui", help="operator screens: submit, monitor, review (15장)")
+    # 15.2 lets an operator submit a file and nothing else, so the server needs
+    # the same recogniser settings `aicut run` takes (18장).
+    ui.add_argument("--backend", choices=["faster-whisper", "whisperx", "pocketsphinx"],
+                    default="whisperx", help="STT backend for submissions with no transcript")
+    ui.add_argument("--stt-model", default="large-v3")
+    ui.add_argument("--compute-type", default="int8")
+    ui.add_argument("--language", default=None)
+    ui.add_argument("--device", default="cuda")
+    ui.add_argument("--hf-token", default=None)
+    ui.add_argument("--no-diarize", action="store_true")
     ui.add_argument("--client-secrets", default="client_secrets.json",
                     help="OAuth client secrets, for 15.5's upload button")
     ui.add_argument("--token", help="stored OAuth token (11.4)")

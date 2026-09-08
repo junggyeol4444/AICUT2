@@ -374,7 +374,14 @@ def _merge_events(ctx: RunContext, partial: list[Event]) -> list[Event]:
 
     merged: list[Event] = []
     claimed: set[int] = set()
-    for group in groups:
+    # Which merged event each group became. Relations arrive as indices into
+    # the group list, and `merged` is not that list: a group whose members were
+    # all claimed earlier is skipped, and unmerged leftovers are appended at the
+    # end. zip()ing the two therefore slid every relation after the first skip
+    # onto a different event, silently rewiring the 5.4 graph that discovery
+    # and planning then read.
+    event_for_group: dict[int, Event] = {}
+    for group_index, group in enumerate(groups):
         indices = [int(i) for i in (group.get("member_indices") or []) if 0 <= int(i) < len(partial)]
         indices = [i for i in indices if i not in claimed]
         if not indices:
@@ -396,6 +403,7 @@ def _merge_events(ctx: RunContext, partial: list[Event]) -> list[Event]:
                     quote=mention.quote,
                 ))
         event.mentions.sort(key=lambda m: m.source_start_sec)
+        event_for_group[group_index] = event
         merged.append(event)
 
     # An event the merge pass forgot is kept as itself rather than dropped: a
@@ -404,11 +412,16 @@ def _merge_events(ctx: RunContext, partial: list[Event]) -> list[Event]:
         if i not in claimed:
             merged.append(event)
 
-    for group, event in zip(groups, merged):
+    for group_index, group in enumerate(groups):
+        event = event_for_group.get(group_index)
+        if event is None:                 # this group was skipped; it has no event
+            continue
         event.relations = [
-            {"event_id": merged[int(rel["event_index"])].event_id, "kind": rel.get("kind", "related")}
+            {"event_id": event_for_group[int(rel["event_index"])].event_id,
+             "kind": rel.get("kind", "related")}
             for rel in (group.get("relations") or [])
-            if isinstance(rel.get("event_index"), int) and 0 <= int(rel["event_index"]) < len(merged)
+            if isinstance(rel.get("event_index"), int)
+            and int(rel["event_index"]) in event_for_group
         ]
     return merged
 

@@ -17,6 +17,8 @@ Two rules from 2장 are enforced here rather than trusted:
 
 from __future__ import annotations
 
+import dataclasses
+
 import logging
 from typing import Sequence
 
@@ -269,10 +271,21 @@ def _apply_pacing(ctx: RunContext, episode: Episode) -> None:
     utterances = ctx.store.utterances(ctx.project.project_id)
 
     for cut in episode.timeline:
-        inside = [
-            s for s in ctx.signals.silences
-            if s.start_sec >= cut.source_start_sec and s.end_sec <= cut.source_end_sec
-        ]
+        # Clipped to the cut, not filtered by containment. A cut carries the
+        # profile's head and tail padding, so dead air at its edges is exactly
+        # the silence that straddles a boundary - and requiring both ends inside
+        # dropped it, leaving the cut with "no silence" and a KEEP. 9장's job is
+        # that dead air specifically.
+        inside = []
+        for silence in ctx.signals.silences:
+            start = max(silence.start_sec, cut.source_start_sec)
+            end = min(silence.end_sec, cut.source_end_sec)
+            if end - start <= 0:
+                continue
+            inside.append(
+                silence if (start, end) == (silence.start_sec, silence.end_sec)
+                else dataclasses.replace(silence, start_sec=start, end_sec=end)
+            )
         if not inside:
             cut.pacing_mode = PacingMode.KEEP
             cut.pacing_reason = "no silence inside this cut"

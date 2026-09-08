@@ -383,6 +383,40 @@ class PocketSphinxTranscriber(Transcriber):
 _SPHINX_NOISE = {"<s>", "</s>", "<sil>", "[SPEECH]", "[NOISE]", "(NULL)", "++UH++", "++UM++"}
 
 
+def build_transcriber(
+    backend: str = "whisperx",
+    *,
+    model_size: str = "large-v3",
+    device: str = "auto",
+    compute_type: str = "float16",
+    language: str | None = None,
+    hf_token: str | None = None,
+    diarize: bool = True,
+) -> Transcriber:
+    """The recogniser named by `backend`, built the same way everywhere.
+
+    18장 puts STT 처리 on the program's side of the line, so every entry point
+    that accepts a broadcast has to be able to produce one. This lived in the
+    CLI only, and the UI - which offers the same submission with an optional
+    transcript field - built nothing and ran the pipeline with no speech at all.
+    """
+    if backend == "pocketsphinx":
+        return PocketSphinxTranscriber()
+    if backend == "faster-whisper":
+        return FasterWhisperTranscriber(
+            model_size=model_size, device=device,
+            compute_type=compute_type, language=language,
+        )
+    if backend != "whisperx":
+        raise ValueError(
+            f"unknown STT backend {backend!r}; expected whisperx, faster-whisper or pocketsphinx"
+        )
+    return WhisperXTranscriber(
+        model_size=model_size, device=device, language=language,
+        compute_type=compute_type, hf_token=hf_token, diarize=diarize,
+    )
+
+
 def group_words_into_utterances(
     words: list[dict],
     *,
