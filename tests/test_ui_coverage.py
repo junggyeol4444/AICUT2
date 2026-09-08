@@ -137,3 +137,55 @@ class InputPanelTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorkReportIsInTheResultsPanelTests(unittest.TestCase):
+    """15.5 puts 작업 리포트 in the 결과 패널.
+
+    It was rendered only from the live job object in the progress monitor, and a
+    job lives in the process: a project that finished before the page was opened
+    - or before the program was last restarted - had no way to show its report,
+    even though report.json was sitting in the project folder and the route to
+    read it already existed.
+    """
+
+    def test_the_results_panel_loads_the_report_for_the_chosen_project(self):
+        page = Path("aicut/ui/static/index.html").read_text(encoding="utf-8")
+
+        self.assertIn("ep-report-card", page)
+        self.assertIn("/report`", page)
+
+    def test_it_reuses_the_same_summary_the_monitor_shows(self):
+        """Two renderings of the same report would drift apart."""
+        page = Path("aicut/ui/static/index.html").read_text(encoding="utf-8")
+
+        self.assertEqual(page.count("function reportSummary"), 1)
+        self.assertGreaterEqual(page.count("reportSummary("), 3)
+
+    def test_the_summary_shows_where_the_time_went(self):
+        """22.6 asks for 처리 시간; R3 is about one stage in particular."""
+        page = Path("aicut/ui/static/index.html").read_text(encoding="utf-8")
+
+        self.assertIn("stage_seconds", page)
+        self.assertIn("단계별", page)
+
+    def test_the_route_serves_a_report_written_by_an_earlier_run(self):
+        import json
+        import tempfile
+
+        from aicut.ui.server import UiServer
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            server = UiServer(Path(tmp))
+            try:
+                folder = Path(tmp) / "p1"
+                folder.mkdir()
+                (folder / "report.json").write_text(
+                    json.dumps({"candidates_found": 3, "elapsed_sec": 12.5}),
+                    encoding="utf-8",
+                )
+                report = server.report("p1")
+            finally:
+                server.store.close()
+
+        self.assertEqual(report["candidates_found"], 3)

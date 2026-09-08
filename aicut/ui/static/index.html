@@ -161,6 +161,14 @@
         <input id="reviewer" placeholder="검수자 이름" style="max-width:180px">
       </div>
     </div>
+    <!-- 15.5: 작업 리포트는 결과 패널에 있다. 진행 모니터에만 두면 작업이
+         끝난 뒤, 특히 프로그램을 다시 켠 뒤에는 볼 방법이 없다 - 작업 객체는
+         프로세스 안에만 있고 리포트는 프로젝트 폴더에 있다. -->
+    <div class="card" id="ep-report-card" style="display:none">
+      <div class="muted">작업 리포트 (22.6)</div>
+      <div id="ep-summary"></div>
+      <details><summary class="muted">전체 리포트</summary><pre id="ep-report"></pre></details>
+    </div>
     <div id="ep-list"></div>
     <div class="card" id="plan-card" style="display:none">
       <div class="muted">편집 계획 — 이것만 읽고 결과물을 예상할 수 있어야 한다 (MVP 5)</div>
@@ -285,6 +293,13 @@ function reportSummary(r) {
        · 보류 ${decisions.hold || 0} · 제외 ${decisions.reject || 0})`],
     ["처리 시간", r.elapsed_sec != null ? hms(r.elapsed_sec) : "—"],
   ];
+  // R3 makes 처리 시간 an open risk about one stage in particular, so the
+  // breakdown goes next to the total rather than only into report.json.
+  const stages = r.stage_seconds || {};
+  if (Object.keys(stages).length) {
+    rows.push(["단계별", Object.entries(stages)
+      .map(([name, sec]) => `${name} ${Number(sec).toFixed(1)}s`).join(" · ")]);
+  }
   const drift = (r.environment_drift || []);
   return `<table class="summary">${rows.map(([k, v]) =>
       `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</table>
@@ -380,6 +395,16 @@ el("cand-load").onclick = async () => {
 el("ep-load").onclick = async () => {
   const pid = el("ep-project").value;
   if (!pid) return;
+  // A project that finished before this page was opened still has its report on
+  // disk; the job that produced it does not survive a restart.
+  try {
+    const report = await api(`/api/projects/${pid}/report`);
+    el("ep-report-card").style.display = "";
+    el("ep-summary").innerHTML = reportSummary(report);
+    el("ep-report").textContent = JSON.stringify(report, null, 2);
+  } catch {
+    el("ep-report-card").style.display = "none";
+  }
   const rows = await api(`/api/projects/${pid}/episodes`);
   el("ep-list").innerHTML = rows.map((e) => `
     <div class="card">
