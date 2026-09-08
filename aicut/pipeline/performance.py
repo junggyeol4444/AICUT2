@@ -35,15 +35,18 @@ METRICS_12_1 = {
     "공유": "shares",
 }
 
-#: How far below its neighbours a point on the retention curve has to sit before
-#: it is a 이탈 구간 rather than the ordinary slope every video has, and how far
-#: above before it is a 재시청 구간. Ratios of the curve's own mean, so a video
-#: nobody finishes and a video everybody finishes are read on their own terms.
-DROPOFF_FALL = 0.15
-REWATCH_RISE = 0.15
+#: Only for a caller with no profile. How far below its neighbours a point on
+#: the retention curve has to sit before it is a 이탈 구간 rather than the
+#: ordinary slope every video has, and how far above before it is a 재시청 구간.
+#: These decide what gets reported as a place viewers left, so 17.1 keeps them in
+#: the profile under `performance.*`; the constants here are the fallback.
+DEFAULT_DROPOFF_FALL = 0.15
+DEFAULT_REWATCH_RISE = 0.15
 
 
-def retention_features(curve: list[dict[str, float]]) -> dict[str, list[dict[str, float]]]:
+def retention_features(
+    curve: list[dict[str, float]], profile: Any = None,
+) -> dict[str, list[dict[str, float]]]:
     """이탈 구간 and 재시청 구간, read off the retention curve (12.1).
 
     `audienceWatchRatio` is how much of the audience was still watching at each
@@ -53,7 +56,18 @@ def retention_features(curve: list[dict[str, float]]) -> dict[str, list[dict[str
 
     Arithmetic only. Which drop-off matters, and what to do about it, is 12.2's
     question and it goes to the model with everything else.
+
+    The two ratios come from the profile (17.1): they decide what is reported as
+    a place viewers left, and that is a judgement about this channel's videos.
     """
+    fall = (
+        profile.get_float("performance.dropoff_fall_ratio")
+        if profile is not None else DEFAULT_DROPOFF_FALL
+    )
+    rise = (
+        profile.get_float("performance.rewatch_rise_ratio")
+        if profile is not None else DEFAULT_REWATCH_RISE
+    )
     points = [
         (float(p.get("elapsedVideoTimeRatio", 0.0)), float(p.get("audienceWatchRatio", 0.0)))
         for p in curve
@@ -71,10 +85,10 @@ def retention_features(curve: list[dict[str, float]]) -> dict[str, list[dict[str
     rewatches: list[dict[str, float]] = []
     for (at, before), (next_at, after) in zip(points, points[1:]):
         change = (after - before) / mean
-        if change <= -DROPOFF_FALL:
+        if change <= -fall:
             dropoffs.append({"at_ratio": round(at, 4), "to_ratio": round(next_at, 4),
                              "fall": round(-change, 4)})
-        elif change >= REWATCH_RISE:
+        elif change >= rise:
             rewatches.append({"at_ratio": round(at, 4), "to_ratio": round(next_at, 4),
                               "rise": round(change, 4)})
     return {"dropoffs": dropoffs, "rewatches": rewatches}
@@ -119,7 +133,7 @@ def collect(ctx: RunContext, client: YouTubeClient, *, days: int = 28) -> list[d
         metrics["retention_curve"] = curve
         # 12.1 collects 이탈 구간 and 재시청 구간 as their own items; the API
         # returns the curve, not its turns.
-        metrics.update(retention_features(curve))
+        metrics.update(retention_features(curve, ctx.profile))
         metrics["structure"] = episode.planned_structure.get("structure_name", "")
         metrics["target_type"] = episode.target_type
         absent = missing_metrics(metrics)

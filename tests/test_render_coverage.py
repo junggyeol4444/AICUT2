@@ -329,17 +329,21 @@ class ZoomSegmentPiecesTests(unittest.TestCase):
 
     def test_keyframes_closer_than_the_minimum_do_not_become_pieces(self):
         """A quarter-second piece costs a seek and a join and reads as a glitch."""
-        from aicut.render.ffmpeg import MIN_ZOOM_PIECE_SEC, zoom_pieces
+        from aicut.config import CalibrationProfile
+        from aicut.render.ffmpeg import zoom_pieces
 
+        # 17.1: how short a framing step may be is a judgement about camera
+        # work, so it comes from the profile, not from a constant in the file.
+        minimum = CalibrationProfile.load().get_float("render.zoom.min_piece_sec")
         pieces = zoom_pieces(self._segment(), [
             {"at_sec": 0.0, "scale": 1.0},
             {"at_sec": 0.05, "scale": 0.9},
             {"at_sec": 3.0, "scale": 0.5},
-        ])
+        ], min_piece_sec=minimum)
 
         self.assertEqual(len(pieces), 2)
         for piece, _ in pieces:
-            self.assertGreaterEqual(piece.duration, MIN_ZOOM_PIECE_SEC)
+            self.assertGreaterEqual(piece.duration, minimum)
 
     def test_a_keyframe_past_the_segment_end_cannot_lengthen_it(self):
         from aicut.render.ffmpeg import zoom_pieces

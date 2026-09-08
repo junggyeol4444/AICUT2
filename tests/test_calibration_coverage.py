@@ -365,3 +365,65 @@ class Mvp2DensityGateTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual([e.what for e in load_remembered(path)], ["a", "b"])
+
+
+class NewThresholdsAreProfileValuesTests(unittest.TestCase):
+    """17.1: 모든 판정 기준을 코드가 아닌 설정 파일에 둔다.
+
+    Two thresholds added while auditing the spec decide what the system reports
+    about a video: how short a zoom step may be, and how far the retention curve
+    must fall before it is called an 이탈 구간. Both are judgements about this
+    channel's material, so both belong in the profile with the rest.
+    """
+
+    def test_the_zoom_step_minimum_comes_from_the_profile(self):
+        import inspect
+
+        from aicut.config import CalibrationProfile
+        from aicut.render import ffmpeg
+
+        self.assertIsInstance(
+            CalibrationProfile.load().get_float("render.zoom.min_piece_sec"), float,
+        )
+        self.assertIn(
+            'get_float("render.zoom.min_piece_sec")',
+            inspect.getsource(ffmpeg.Renderer.render),
+        )
+
+    def test_the_retention_turn_ratios_come_from_the_profile(self):
+        import inspect
+
+        from aicut.config import CalibrationProfile
+        from aicut.pipeline import performance
+
+        profile = CalibrationProfile.load()
+        self.assertIsInstance(profile.get_float("performance.dropoff_fall_ratio"), float)
+        self.assertIsInstance(profile.get_float("performance.rewatch_rise_ratio"), float)
+        source = inspect.getsource(performance.retention_features)
+        self.assertIn("performance.dropoff_fall_ratio", source)
+        self.assertIn("performance.rewatch_rise_ratio", source)
+
+    def test_a_stricter_profile_finds_fewer_turns(self):
+        """The value has to actually reach the arithmetic, not just be read."""
+        from aicut.config import CalibrationProfile
+        from aicut.pipeline.performance import retention_features
+
+        curve = [{"elapsedVideoTimeRatio": i / 6, "audienceWatchRatio": v}
+                 for i, v in enumerate([1.0, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6])]
+        base = CalibrationProfile.load()
+
+        loose = retention_features(curve, base.with_overrides({"performance.dropoff_fall_ratio": 0.05}))
+        strict = retention_features(curve, base.with_overrides({"performance.dropoff_fall_ratio": 0.9}))
+
+        self.assertTrue(loose["dropoffs"])
+        self.assertEqual(strict["dropoffs"], [])
+
+    def test_they_are_marked_unmeasured_like_everything_else(self):
+        """17.5: 측정하지 않은 값은 확정값으로 적지 않는다."""
+        from aicut.config import CalibrationProfile
+
+        profile = CalibrationProfile.load()
+        self.assertIn("performance", profile.provisional)
+        # The rest of `render` is codec and container settings, which are not
+        # judgements; this one value is, and it has never been measured.
+        self.assertIn("render.zoom.min_piece_sec", profile.provisional)

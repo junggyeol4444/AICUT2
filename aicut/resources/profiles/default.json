@@ -20,7 +20,9 @@
       "thumbnail",
       "topic_shift",
       "scan.frames_per_window",
-      "calibration"
+      "calibration",
+      "performance",
+      "render.zoom.min_piece_sec"
     ]
   },
   "scan": {
@@ -154,7 +156,8 @@
     "zoom": {
       "strategy": "segment_crop",
       "default_scale": 0.83,
-      "max_scale_step": 0.05
+      "max_scale_step": 0.05,
+      "min_piece_sec": 0.4
     },
     "subtitle_style_profile": "default"
   },
@@ -180,5 +183,9 @@
       "discovery": 0.6,
       "pacing": 0.4
     }
+  },
+  "performance": {
+    "dropoff_fall_ratio": 0.15,
+    "rewatch_rise_ratio": 0.15
   }
 }

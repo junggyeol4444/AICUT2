@@ -737,14 +737,15 @@ def _effects_for_piece(
     return visual, audio
 
 
-#: Smaller than this and a sub-segment is not worth cutting: ffmpeg's keyframe
-#: seek plus the concat join costs more than the framing change is worth, and a
-#: quarter-second piece reads as a glitch rather than a camera move.
-MIN_ZOOM_PIECE_SEC = 0.4
+#: Only for a caller with no profile. How short a framing step may be is a
+#: judgement about camera work - 17.1 keeps those in the profile, under
+#: `render.zoom.min_piece_sec`.
+DEFAULT_MIN_ZOOM_PIECE_SEC = 0.4
 
 
 def zoom_pieces(
     segment: Segment, keyframes: Sequence[dict[str, Any]],
+    *, min_piece_sec: float = DEFAULT_MIN_ZOOM_PIECE_SEC,
 ) -> list[tuple[Segment, dict[str, Any]]]:
     """Split one segment at its zoom keyframes, strategy (a) of 10.4-1.
 
@@ -757,6 +758,11 @@ def zoom_pieces(
 
     Keyframe times are on the segment's own clock. Each piece runs from its
     keyframe to the next and holds that keyframe's framing.
+
+    ``min_piece_sec`` is how short a framing step may be before it is not worth
+    cutting: ffmpeg's keyframe seek plus the concat join costs more than the
+    change is worth, and a quarter-second piece reads as a glitch rather than a
+    camera move. It comes from the profile (17.1).
     """
     ordered = sorted(keyframes, key=lambda k: float(k.get("at_sec", 0.0)))
     if len(ordered) < 2:
@@ -764,7 +770,7 @@ def zoom_pieces(
     bounds: list[tuple[float, dict[str, Any]]] = []
     for keyframe in ordered:
         at = max(0.0, min(segment.duration, float(keyframe.get("at_sec", 0.0))))
-        if bounds and at - bounds[-1][0] < MIN_ZOOM_PIECE_SEC:
+        if bounds and at - bounds[-1][0] < min_piece_sec:
             continue
         bounds.append((at, keyframe))
     if not bounds:
@@ -774,7 +780,7 @@ def zoom_pieces(
     bounds[0] = (0.0, bounds[0][1])
     if len(bounds) < 2:
         return []
-    if segment.duration - bounds[-1][0] < MIN_ZOOM_PIECE_SEC:
+    if segment.duration - bounds[-1][0] < min_piece_sec:
         bounds.pop()
     if len(bounds) < 2:
         return []
@@ -862,7 +868,10 @@ class Renderer:
                 # Strategy (a) of 10.4-1: one fixed crop per keyframe, joined.
                 # Without this branch the keyframes were dropped in silence and
                 # the camera stood still.
-                zoomed = zoom_pieces(segment, keyframes)
+                zoomed = zoom_pieces(
+                    segment, keyframes,
+                    min_piece_sec=self.profile.get_float("render.zoom.min_piece_sec"),
+                )
                 if zoomed:
                     for part, (piece, framing) in enumerate(zoomed):
                         piece_path = stage / f"seg_{i:05d}_{part:03d}.mp4"
