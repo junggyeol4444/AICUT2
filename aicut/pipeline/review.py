@@ -103,8 +103,19 @@ def candidate_review(ctx: RunContext) -> list[dict[str, Any]]:
     """The 15.4 screen: every candidate, the decision, and why."""
     return [
         {
+            # 15.4 asks the reviewer whether they agree with the decision, and
+            # 19장 scores MVP 3 on that agreement. They cannot judge a summary
+            # and two scores, so the whole of 6.1 is on the screen.
             "candidate_id": c.candidate_id,
             "core_summary": c.core_summary,
+            "people": c.people,
+            "scenes": c.scenes,
+            "start_point": c.start_point,
+            "start_sec": c.start_sec,
+            "key_changes": c.key_changes,
+            "outcome": c.outcome,
+            "event_relations": c.event_relations,
+            "suggested_form": c.suggested_form,
             "decision": c.decision.value,
             "reason": c.decision_reason,
             "independence_score": c.independence_score,

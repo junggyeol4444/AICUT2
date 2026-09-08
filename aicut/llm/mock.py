@@ -160,9 +160,28 @@ class MockProducer(Producer):
             # Stand-in for "is there enough here": how many separate moments the
             # event has, not how much of the broadcast it covers.
             density = min(1.0, len(mentions) / 3.0)
+            span = event.get("span_sec") or [0.0, 0.0]
+            first = min(mentions, key=lambda m: m.get("source_start_sec", 0.0), default={})
             out.append({
+                # 6.1 asks for ten things. The mock answers all ten from the
+                # event graph so the offline suite exercises the same shape the
+                # real producer returns.
                 "core_summary": event.get("summary", ""),
+                "people": event.get("people", []),
                 "related_event_ids": [event.get("event_id", "")],
+                "scenes": [
+                    {"start_sec": m.get("source_start_sec", 0.0),
+                     "end_sec": m.get("source_end_sec", 0.0),
+                     "what": m.get("role", "")}
+                    for m in mentions
+                ],
+                "start_point": first.get("role", ""),
+                "start_sec": span[0],
+                "key_changes": [m.get("role", "") for m in mentions if m.get("role")],
+                "outcome": next((m.get("quote", "") for m in mentions
+                                 if m.get("role") == "result"), ""),
+                "event_relations": event.get("relations", []),
+                "suggested_form": "shorts" if (span[1] - span[0]) < 60 else "long",
                 "required_context": "",
                 "required_context_sec": 0.0,
                 "independence_score": min(1.0, 0.3 + 0.2 * len(mentions)),

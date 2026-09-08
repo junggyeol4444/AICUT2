@@ -26,7 +26,17 @@ def run(ctx: RunContext, candidates: list[ContentCandidate]) -> list[ContentCand
         "candidates": [
             {
                 "candidate_id": c.candidate_id,
+                # 6.3 judges a candidate on 사건 완결 and 맥락, so it needs the
+                # whole of 6.1, not the scores. 결말 없음 is `outcome`; 강한 반응
+                # is in 주요 변화 and the scenes.
                 "core_summary": c.core_summary,
+                "people": c.people,
+                "scenes": c.scenes,
+                "start_point": c.start_point,
+                "key_changes": c.key_changes,
+                "outcome": c.outcome,
+                "event_relations": c.event_relations,
+                "suggested_form": c.suggested_form,
                 "required_context": c.required_context,
                 "required_context_sec": c.required_context_sec,
                 "independence_score": c.independence_score,

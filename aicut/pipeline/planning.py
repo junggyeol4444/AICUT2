@@ -79,7 +79,17 @@ def plan_episode(
 
     structure = ctx.producer.plan_structure({
         "content": {
+            # 7장 decides the structure, and 6.1 is what discovery already
+            # worked out about this content. Re-deriving it from the events
+            # would throw away the reading that produced the candidate.
             "core_summary": " / ".join(c.core_summary for c in group),
+            "people": sorted({p for c in group for p in c.people}),
+            "scenes": [s for c in group for s in c.scenes],
+            "start_point": [c.start_point for c in group if c.start_point],
+            "key_changes": [k for c in group for k in c.key_changes],
+            "outcome": [c.outcome for c in group if c.outcome],
+            "event_relations": [r for c in group for r in c.event_relations],
+            "suggested_form": [c.suggested_form for c in group if c.suggested_form],
             "required_context": [c.required_context for c in group if c.required_context],
             "combined_from": [c.candidate_id for c in group],
         },

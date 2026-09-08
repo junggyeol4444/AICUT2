@@ -52,10 +52,19 @@ def run(ctx: RunContext) -> list[ContentCandidate]:
             # can defend, so it is dropped rather than produced.
             log.info("dropping a candidate with no event anchor: %r", item.get("core_summary", "")[:60])
             continue
+        start_sec = item.get("start_sec")
         candidates.append(ContentCandidate(
             project_id=ctx.project.project_id,
             core_summary=item.get("core_summary", ""),
+            people=item.get("people", []) or [],
             related_event_ids=related,
+            scenes=item.get("scenes", []) or [],
+            start_point=item.get("start_point", ""),
+            start_sec=float(start_sec) if isinstance(start_sec, (int, float)) else None,
+            key_changes=item.get("key_changes", []) or [],
+            outcome=item.get("outcome", ""),
+            event_relations=item.get("event_relations", []) or [],
+            suggested_form=item.get("suggested_form", ""),
             required_context=item.get("required_context", ""),
             required_context_sec=float(item.get("required_context_sec", 0.0)),
             independence_score=float(item.get("independence_score", 0.0)),

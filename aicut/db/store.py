@@ -82,6 +82,14 @@ class Store:
         ("tb_window_summary", "conversations", "TEXT NOT NULL DEFAULT '[]'"),
         ("tb_window_summary", "changes", "TEXT NOT NULL DEFAULT '[]'"),
         ("tb_window_summary", "temporal_links", "TEXT NOT NULL DEFAULT '[]'"),
+        ("tb_content_candidate", "people", "TEXT NOT NULL DEFAULT '[]'"),
+        ("tb_content_candidate", "scenes", "TEXT NOT NULL DEFAULT '[]'"),
+        ("tb_content_candidate", "start_point", "TEXT NOT NULL DEFAULT ''"),
+        ("tb_content_candidate", "start_sec", "REAL"),
+        ("tb_content_candidate", "key_changes", "TEXT NOT NULL DEFAULT '[]'"),
+        ("tb_content_candidate", "outcome", "TEXT NOT NULL DEFAULT ''"),
+        ("tb_content_candidate", "event_relations", "TEXT NOT NULL DEFAULT '[]'"),
+        ("tb_content_candidate", "suggested_form", "TEXT NOT NULL DEFAULT ''"),
     )
 
     def _add_missing_columns(self) -> None:
@@ -306,13 +314,20 @@ class Store:
 
     def upsert_candidates(self, project_id: str, candidates: Sequence[ContentCandidate]) -> None:
         self.conn.executemany(
-            "INSERT INTO tb_content_candidate (candidate_id, project_id, core_summary,"
-            " related_event_ids, required_context, required_context_sec, independence_score, density_score,"
+            "INSERT INTO tb_content_candidate (candidate_id, project_id, core_summary, people,"
+            " related_event_ids, scenes, start_point, start_sec, key_changes, outcome,"
+            " event_relations, suggested_form,"
+            " required_context, required_context_sec, independence_score, density_score,"
             " has_resolution, decision, decision_reason, combine_with, human_verdict)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             " ON CONFLICT(candidate_id) DO UPDATE SET"
             " project_id=excluded.project_id, core_summary=excluded.core_summary,"
-            " related_event_ids=excluded.related_event_ids, required_context=excluded.required_context,"
+            " people=excluded.people,"
+            " related_event_ids=excluded.related_event_ids, scenes=excluded.scenes,"
+            " start_point=excluded.start_point, start_sec=excluded.start_sec,"
+            " key_changes=excluded.key_changes, outcome=excluded.outcome,"
+            " event_relations=excluded.event_relations, suggested_form=excluded.suggested_form,"
+            " required_context=excluded.required_context,"
             " required_context_sec=excluded.required_context_sec,"
             " independence_score=excluded.independence_score, density_score=excluded.density_score,"
             " has_resolution=excluded.has_resolution, decision=excluded.decision,"
@@ -320,7 +335,10 @@ class Store:
             " human_verdict=excluded.human_verdict",
             [
                 (
-                    c.candidate_id, project_id, c.core_summary, _j(c.related_event_ids), c.required_context,
+                    c.candidate_id, project_id, c.core_summary, _j(c.people),
+                    _j(c.related_event_ids), _j(c.scenes), c.start_point, c.start_sec,
+                    _j(c.key_changes), c.outcome, _j(c.event_relations), c.suggested_form,
+                    c.required_context,
                     c.required_context_sec, c.independence_score, c.density_score, int(c.has_resolution),
                     c.decision.value, c.decision_reason, _j(c.combine_with), c.human_verdict,
                 )
@@ -333,7 +351,12 @@ class Store:
         return [
             ContentCandidate(
                 candidate_id=r["candidate_id"], project_id=project_id, core_summary=r["core_summary"],
-                related_event_ids=_u(r["related_event_ids"], []), required_context=r["required_context"],
+                people=_u(r["people"], []),
+                related_event_ids=_u(r["related_event_ids"], []), scenes=_u(r["scenes"], []),
+                start_point=r["start_point"], start_sec=r["start_sec"],
+                key_changes=_u(r["key_changes"], []), outcome=r["outcome"],
+                event_relations=_u(r["event_relations"], []), suggested_form=r["suggested_form"],
+                required_context=r["required_context"],
                 required_context_sec=r["required_context_sec"], independence_score=r["independence_score"],
                 density_score=r["density_score"], has_resolution=bool(r["has_resolution"]),
                 decision=Decision(r["decision"]), decision_reason=r["decision_reason"],

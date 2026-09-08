@@ -231,8 +231,26 @@ def cmd_candidates(args) -> int:
         return 0
     for row in review_mod.candidate_review(ctx):
         mark = {"produce": "+", "combine": "~", "hold": "?", "reject": "-"}.get(row["decision"], " ")
-        print(f"{mark} {row['candidate_id'][:8]}  {row['decision']:<8} {row['core_summary'][:70]}")
+        form = f" [{row['suggested_form']}]" if row.get("suggested_form") else ""
+        print(f"{mark} {row['candidate_id'][:8]}  {row['decision']:<8}{form} {row['core_summary'][:70]}")
         print(f"    why: {row['reason']}")
+        # 6.1 in the order the clause lists it, so a reviewer can check the
+        # decision against the content rather than against two scores (15.4).
+        if row.get("people"):
+            print(f"    인물: {', '.join(row['people'][:6])}")
+        if row.get("start_point"):
+            at = f" @{row['start_sec']:.0f}s" if row.get("start_sec") is not None else ""
+            print(f"    시작 지점{at}: {row['start_point'][:70]}")
+        if row.get("key_changes"):
+            print(f"    주요 변화: {' / '.join(str(k) for k in row['key_changes'][:4])}")
+        if row.get("outcome"):
+            print(f"    결과: {row['outcome'][:70]}")
+        if row.get("required_context"):
+            print(f"    필요한 맥락: {row['required_context'][:70]}")
+        if row.get("event_relations"):
+            print(f"    다른 사건과의 관계: {len(row['event_relations'])}건")
+        if row.get("scenes"):
+            print(f"    관련 장면: {len(row['scenes'])}개")
         print(
             f"    independence={row['independence_score']:.2f} density={row['density_score']:.2f}"
             f" resolution={'yes' if row['has_resolution'] else 'no'}"

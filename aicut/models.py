@@ -156,13 +156,27 @@ class ContentCandidate:
 
     candidate_id: str = field(default_factory=new_id)
     project_id: str = ""
-    core_summary: str = ""
-    related_event_ids: list[str] = field(default_factory=list)
-    required_context: str = ""
+    # 6.1 and the original 16장 list what a candidate holds. It is not a clip:
+    # 핵심 내용 / 관련 인물 / 관련 사건 / 관련 장면 / 시작 지점 / 주요 변화 /
+    # 결과 / 필요한 맥락 / 다른 사건과의 관계 / 독립 콘텐츠로서의 가능성.
+    core_summary: str = ""                                          # 핵심 내용
+    people: list[str] = field(default_factory=list)                 # 관련 인물
+    related_event_ids: list[str] = field(default_factory=list)      # 관련 사건
+    scenes: list[dict] = field(default_factory=list)                # 관련 장면
+    start_point: str = ""                                           # 시작 지점
+    start_sec: float | None = None
+    key_changes: list[str] = field(default_factory=list)            # 주요 변화
+    outcome: str = ""                                               # 결과
+    required_context: str = ""                                      # 필요한 맥락
     required_context_sec: float = 0.0
-    independence_score: float = 0.0
+    event_relations: list[dict] = field(default_factory=list)       # 다른 사건과의 관계
+    independence_score: float = 0.0                                 # 독립 콘텐츠로서의 가능성
     density_score: float = 0.0
     has_resolution: bool = True
+    # 원본 17·18장: 장편과 Shorts는 개수도 형태도 고정이 아니다. The AI's own word
+    # for the form it thinks this is; 2.3 forbids promoting it to a fixed output
+    # category, so it is a note the planner reads, not an enum.
+    suggested_form: str = ""
     decision: Decision = Decision.HOLD
     decision_reason: str = ""
     combine_with: list[str] = field(default_factory=list)

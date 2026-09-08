@@ -116,17 +116,64 @@ Return: [{"member_indices": [int], "summary": str, "people": [str],
 Every input index must appear in exactly one group.
 """,
     "discover_candidates": """\
-Decide which self-contained contents exist inside this broadcast (6장).
-Split by event, never by screen state: mixed screens with one event are one
-content; one unchanging screen holding several events is several contents.
-Return: [{"core_summary": str, "related_event_ids": [str], "required_context": str,
-"required_context_sec": number, "independence_score": 0..1, "density_score": 0..1,
-"has_resolution": bool, "reason": str}]
+One question (6장): "이 방송에서 독립적인 콘텐츠로 만들 가치가 있는 것은 무엇인가?"
+The count is not fixed. Zero is a correct answer.
+
+Split by event, never by screen state (6.2). 하나의 영상은 하나의 사건으로
+완결되어야 한다 — a result that goes 토크 -> 게임 -> 토크 -> 게임 is the 짜깁기
+1.2 rejects. The spec gives both directions:
+
+  화면이 섞여도 사건이 하나면 -> 하나의 콘텐츠
+    (게임 중 벌어진 사건을 게임 종료 후 토크에서 계속 언급 — screens mix,
+     the event is one, so it is one content)
+  화면이 같아도 사건이 다르면 -> 다른 콘텐츠
+    (같은 게임을 3시간 연속 — one screen throughout, several events inside,
+     so several contents)
+
+A screen change inside one content is allowed when the event's flow needs it.
+Cutting between screens with no thread is not.
+
+`boundary_hints` are hints only (6.4) — a place to look, never a boundary. The
+boundary comes from the event structure.
+
+6.1 says a candidate is not a clip. Each one carries all ten:
+
+  core_summary      핵심 내용
+  people            관련 인물
+  related_event_ids 관련 사건 (ids from the events given to you)
+  scenes            관련 장면 — [{"start_sec", "end_sec", "what"}]
+  start_point       시작 지점 — where this content should open, and why
+  start_sec         the second that opening is at, when you can name one
+  key_changes       주요 변화 — what turns inside it
+  outcome           결과 — how it lands. "" if it does not land
+  required_context  필요한 맥락 — what a viewer must be told to follow it
+  event_relations   다른 사건과의 관계 — [{"event_id", "how"}]
+  independence_score 독립 콘텐츠로서의 가능성, 0..1
+
+Also give `density_score` 0..1, `has_resolution`, `reason`, and `suggested_form`
+— your own words for the form this seems to be (원본 17·18장 allow 장편 and
+Shorts in any mix, and 18장's C is 짧지만 강한 장면 -> Shorts 적합). It is a note
+for the planner, not a category: 2.3 forbids turning it into a fixed output type.
+
+Return: [{...the keys above...}]
 Return [] if this broadcast contains nothing worth making.
 """,
     "evaluate_candidates": """\
-Judge each candidate (6.3): produce it, combine it with another, hold it, or reject
-it. Rejecting is normal. Say why in one or two sentences a human can check.
+Judge each candidate (6.3). 모든 후보를 영상으로 만들지 않는다. The spec's four:
+
+  독립적으로 이해 가능 / 사건 완결 / 강한 반응  -> produce
+  재미는 있으나 결말 없음                       -> combine, with the related
+                                                   event that finishes it
+  맥락이 과도하게 필요                          -> reject
+  사건은 있으나 밀도 부족                       -> reject
+
+Rejecting is normal, and so is rejecting everything. Say why in one or two
+sentences a human can check against the broadcast.
+
+The original 18장 has one more: 짧지만 강한 장면 -> Shorts 적합. That is a produce
+with a different form, not a rejection — say so in the reason and leave the form
+in the candidate's suggested_form.
+
 Return: [{"candidate_id": str, "decision": "produce"|"combine"|"hold"|"reject",
 "reason": str, "combine_with": [str]}]
 """,
