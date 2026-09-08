@@ -130,6 +130,9 @@ def _thumbnails(ctx: RunContext, episode: Episode) -> list[thumbnails.ThumbnailC
         try:
             frames = vision_mod.sample_frames(
                 video, ctx.project_dir / "thumbnails" / episode.episode_id / "scan",
+                start_sec=0.0, duration_sec=duration,
+                # Same second-by-second grid the motion curve above was measured
+                # on, so a face reading lines up with a screen_event reading.
                 interval_sec=1.0, prefix="thumb",
             )
             faces = detector.read_frames([(f.at_sec, f.path) for f in frames])

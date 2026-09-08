@@ -95,7 +95,9 @@ def watch(
     frames: list[str] = []
     if frames_dir is not None:
         samples = vision_mod.sample_frames(
-            path, Path(frames_dir), interval_sec=interval, prefix="ref",
+            path, Path(frames_dir),
+            start_sec=0.0, duration_sec=media.duration_sec,
+            interval_sec=interval, prefix="ref",
         )
         frames = [f.path for f in samples]
     return {"frames": frames, "duration_sec": media.duration_sec}
