@@ -78,9 +78,12 @@ def measure_densities(
         ctx.store = scratch
         for window_sec in densities:
             ctx.profile = base_profile.with_overrides({"scan.pass1_window_sec": window_sec})
-            started = time.time()
+            # perf_counter, not time(): the wall clock can step, and on Windows
+            # it ticks about every 15ms - a fast pass measured 0.0s there and
+            # the realtime factor came back undefined.
+            started = time.perf_counter()
             understand(ctx)
-            elapsed = time.time() - started
+            elapsed = time.perf_counter() - started
             events = scratch.events(ctx.project.project_id)
             log.info("density %ss: %d events in %.1fs", window_sec, len(events), elapsed)
             rows.append(DensityMeasurement(

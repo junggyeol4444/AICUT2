@@ -300,7 +300,10 @@ class Mvp2DensityGateTests(unittest.TestCase):
         self.assertEqual([r.pass1_window_sec for r in rows], [60.0, 120.0])
         self.assertEqual([r.events for r in rows], [2, 2])
         for row in rows:
-            self.assertGreaterEqual(row.seconds, 0.0)
+            # A monotonic high-resolution clock, so even a callback that does
+            # almost nothing takes a measurable amount of time. On the wall
+            # clock this was 0.0 on Windows and the factor came back undefined.
+            self.assertGreater(row.seconds, 0.0)
             self.assertIsNotNone(row.realtime_factor)
 
     def test_the_measurement_does_not_destroy_the_project_it_measures(self):
