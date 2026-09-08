@@ -375,8 +375,13 @@ Return: {"selected": [...], "dropped": [...], "joined": [...], "reordered": [...
 Turn measured viewer response into changes to production strategy (12.2, 27장).
 
 The metrics are 12.1's: 조회수 / 클릭률 / 평균 시청 지속 시간 / 시청자 유지율 /
-이탈 구간 / 재시청 구간 / 좋아요 / 댓글 / 공유. `retention_curve` is where the
-이탈 구간 and 재시청 구간 are - read it against the episode's own structure.
+이탈 구간 / 재시청 구간 / 좋아요 / 댓글 / 공유. `retention_curve` is the whole
+curve; `dropoffs` and `rewatches` are the turns already read off it, as elapsed
+ratios of the video. Read them against the episode's own structure - a fall at
+0.08 of a video whose first cut runs to 0.10 is about that cut.
+
+`missing_12_1` names the metrics this collection did not get. Reason from what
+is here and say when an observation would have needed one of those.
 
 27장 shows the shape of an answer: 초반 이탈률이 높다 -> "이 유형에서는 초반 정보
 전달 방식 개선 필요". Keep the hedge; a curve is evidence, not proof.

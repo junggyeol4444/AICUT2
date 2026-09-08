@@ -20,6 +20,90 @@ from aicut.pipeline.context import RunContext
 log = logging.getLogger(__name__)
 
 
+#: 12.1's collected metrics, by the clause's own names, and where each one comes
+#: from. Two of them are not metrics the API returns at all - they are places in
+#: the video, and they have to be read off the retention curve.
+METRICS_12_1 = {
+    "조회수": "views",
+    "클릭률": "impressionsClickThroughRate",
+    "평균 시청 지속 시간": "averageViewDuration",
+    "시청자 유지율": "averageViewPercentage",
+    "이탈 구간": "dropoffs",
+    "재시청 구간": "rewatches",
+    "좋아요": "likes",
+    "댓글": "comments",
+    "공유": "shares",
+}
+
+#: How far below its neighbours a point on the retention curve has to sit before
+#: it is a 이탈 구간 rather than the ordinary slope every video has, and how far
+#: above before it is a 재시청 구간. Ratios of the curve's own mean, so a video
+#: nobody finishes and a video everybody finishes are read on their own terms.
+DROPOFF_FALL = 0.15
+REWATCH_RISE = 0.15
+
+
+def retention_features(curve: list[dict[str, float]]) -> dict[str, list[dict[str, float]]]:
+    """이탈 구간 and 재시청 구간, read off the retention curve (12.1).
+
+    `audienceWatchRatio` is how much of the audience was still watching at each
+    elapsed ratio. A fall from one point to the next is people leaving; a rise
+    is people going back. 12.1 collects both as their own items, and neither is
+    a metric the API returns - the curve is, and these are where it turns.
+
+    Arithmetic only. Which drop-off matters, and what to do about it, is 12.2's
+    question and it goes to the model with everything else.
+    """
+    points = [
+        (float(p.get("elapsedVideoTimeRatio", 0.0)), float(p.get("audienceWatchRatio", 0.0)))
+        for p in curve
+        if p.get("audienceWatchRatio") is not None
+    ]
+    points.sort(key=lambda p: p[0])
+    if len(points) < 3:
+        # Two points describe a line; a line has no turn in it to report.
+        return {"dropoffs": [], "rewatches": []}
+    mean = sum(v for _, v in points) / len(points)
+    if mean <= 0:
+        return {"dropoffs": [], "rewatches": []}
+
+    dropoffs: list[dict[str, float]] = []
+    rewatches: list[dict[str, float]] = []
+    for (at, before), (next_at, after) in zip(points, points[1:]):
+        change = (after - before) / mean
+        if change <= -DROPOFF_FALL:
+            dropoffs.append({"at_ratio": round(at, 4), "to_ratio": round(next_at, 4),
+                             "fall": round(-change, 4)})
+        elif change >= REWATCH_RISE:
+            rewatches.append({"at_ratio": round(at, 4), "to_ratio": round(next_at, 4),
+                              "rise": round(change, 4)})
+    return {"dropoffs": dropoffs, "rewatches": rewatches}
+
+
+def missing_metrics(metrics: dict[str, Any]) -> list[str]:
+    """Which of 12.1's nine items this collection did not get.
+
+    A metric that came back empty is not the same as one nobody asked for, and
+    12.2 reasons from whatever is here - so what is absent has to be visible
+    rather than inferred from a strategy update that reads oddly.
+
+    An empty 이탈 구간 is an answer: this video has no sharp drop. What makes
+    those two missing is having no retention curve to read them off, not the
+    reading coming back empty. A zero view count is likewise a number, not a
+    gap - only an absent key is.
+    """
+    absent: list[str] = []
+    has_curve = bool(metrics.get("retention_curve"))
+    for name, key in METRICS_12_1.items():
+        if key in ("dropoffs", "rewatches"):
+            if not has_curve:
+                absent.append(name)
+            continue
+        if metrics.get(key) is None:
+            absent.append(name)
+    return absent
+
+
 def collect(ctx: RunContext, client: YouTubeClient, *, days: int = 28) -> list[dict[str, Any]]:
     """Pull metrics for every published episode of this project."""
     end = date.today()
@@ -31,11 +115,27 @@ def collect(ctx: RunContext, client: YouTubeClient, *, days: int = 28) -> list[d
         if not video_id or episode.review_status != "published":
             continue
         metrics = client.analytics(video_id, start.isoformat(), end.isoformat())
-        metrics["retention_curve"] = client.audience_retention(video_id, start.isoformat(), end.isoformat())
+        curve = client.audience_retention(video_id, start.isoformat(), end.isoformat())
+        metrics["retention_curve"] = curve
+        # 12.1 collects 이탈 구간 and 재시청 구간 as their own items; the API
+        # returns the curve, not its turns.
+        metrics.update(retention_features(curve))
         metrics["structure"] = episode.planned_structure.get("structure_name", "")
         metrics["target_type"] = episode.target_type
+        absent = missing_metrics(metrics)
+        if absent:
+            log.warning(
+                "%s: 12.1 asks for %s and this collection has none of them",
+                episode.episode_id, ", ".join(absent),
+            )
+            metrics["missing_12_1"] = absent
         ctx.store.save_performance(episode.episode_id, metrics)
         collected.append({"episode_id": episode.episode_id, "metrics": metrics})
+    if collected:
+        ctx.note("performance_missing_metrics", {
+            row["episode_id"]: row["metrics"]["missing_12_1"]
+            for row in collected if row["metrics"].get("missing_12_1")
+        })
     return collected
 
 

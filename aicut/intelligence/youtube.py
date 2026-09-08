@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 from aicut.errors import AicutError, QuotaExceeded
 from aicut.intelligence.quota import (
@@ -102,8 +102,38 @@ class YouTubeClient:
         return [item["id"]["videoId"] for item in response.get("items", []) if item.get("id", {}).get("videoId")]
 
     # -- own channel only ----------------------------------------------------
+    #: 12.1's list, minus the two that come out of the retention curve. These
+    #: are the metrics a video report carries whatever else the channel has.
+    CORE_METRICS = ("views", "estimatedMinutesWatched", "averageViewDuration",
+                    "averageViewPercentage", "likes", "comments", "shares")
+
+    #: 클릭률 (12.1) and the CTR of 4.2 mean the thumbnail's: how many people who
+    #: saw it in a feed clicked. That is the reach report, and it is asked for
+    #: separately on purpose - a metric name the account cannot serve fails the
+    #: whole query, and losing 조회수 and 유지율 to a CTR problem would be worse
+    #: than losing CTR. The older `annotationClickThroughRate` this used to ask
+    #: for is the click rate of *annotations*, a feature YouTube discontinued in
+    #: 2019; on any recent video it is zero, so 클릭률 was collected as 0 and
+    #: nothing said it was the wrong number.
+    REACH_METRICS = ("impressions", "impressionsClickThroughRate")
+
     def analytics(self, video_id: str, start_date: str, end_date: str) -> dict[str, Any]:
         """Retention-grade metrics. Own channel only, by API design (4.2, 12.1)."""
+        metrics = self._report(video_id, start_date, end_date, self.CORE_METRICS)
+        try:
+            metrics.update(self._report(video_id, start_date, end_date, self.REACH_METRICS))
+        except Exception as exc:
+            # Not fatal, and not silent: 12.1 asks for 클릭률 and this is where
+            # it comes from, so a run that could not get it says so.
+            log.warning(
+                "could not read %s for %s (12.1 클릭률): %s",
+                ", ".join(self.REACH_METRICS), video_id, exc,
+            )
+        return metrics
+
+    def _report(
+        self, video_id: str, start_date: str, end_date: str, metrics: Sequence[str],
+    ) -> dict[str, Any]:
         try:
             from googleapiclient.discovery import build
         except ImportError as exc:  # pragma: no cover - optional dep
@@ -113,8 +143,7 @@ class YouTubeClient:
             ids="channel==MINE",
             startDate=start_date,
             endDate=end_date,
-            metrics="views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,"
-                    "annotationClickThroughRate,likes,comments,shares",
+            metrics=",".join(metrics),
             filters=f"video=={video_id}",
         ).execute()
         headers = [h["name"] for h in response.get("columnHeaders", [])]

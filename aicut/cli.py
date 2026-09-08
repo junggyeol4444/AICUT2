@@ -953,6 +953,10 @@ def cmd_learn(args) -> int:
     client = _youtube(args, store)
     collected = performance.collect(ctx, client, days=args.days)
     print(f"collected metrics for {len(collected)} published episodes")
+    for episode_id, absent in (ctx.report.get("performance_missing_metrics") or {}).items():
+        # 12.2 reasons from whatever came back. A strategy update built without
+        # 클릭률 reads no differently from one built with it.
+        print(f"  MISSING (12.1) for {episode_id[:8]}: {', '.join(absent)}")
     result = performance.learn(ctx, knowledge_path)
     for observation in result.get("observations", []):
         print(f"  {observation}")

@@ -355,6 +355,10 @@ def build_report(ctx: RunContext, state: State, episodes: list[Episode]) -> dict
         # 11.2's package as written, measured against what YouTube will accept
         # and against the payload the model was given. Reported, never fixed.
         "packaging_warnings": ctx.report.get("packaging_warnings", {}),
+        # Which of 12.1's nine a performance collection did not get. Empty on a
+        # normal run - loop C is its own command - but the field exists so a
+        # report never silently omits it.
+        "performance_missing_metrics": ctx.report.get("performance_missing_metrics", {}),
         "provisional_parameters_used": ctx.report.get("provisional_parameters_used", []),
         "warning": "; ".join(part for part in (
             (

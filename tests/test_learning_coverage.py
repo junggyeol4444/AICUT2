@@ -234,3 +234,87 @@ class Mvp1GateTests(unittest.TestCase):
             finally:
                 reopened.close()
             self.assertIn("human_verdict", columns)
+
+
+class RetentionTurnsTests(unittest.TestCase):
+    """12.1 collects 이탈 구간 and 재시청 구간 as their own items.
+
+    Neither is a metric the API returns. The curve is, and these are where it
+    turns - so until something read them off the curve, two of the nine things
+    12.1 collects were not collected.
+    """
+
+    def _curve(self, values):
+        return [{"elapsedVideoTimeRatio": i / len(values), "audienceWatchRatio": v}
+                for i, v in enumerate(values)]
+
+    def test_a_fall_is_a_dropoff_and_a_rise_is_a_rewatch(self):
+        from aicut.pipeline.performance import retention_features
+
+        found = retention_features(self._curve(
+            [1.0, 0.95, 0.6, 0.55, 0.5, 0.5, 0.72, 0.5, 0.45, 0.4],
+        ))
+
+        self.assertEqual([d["at_ratio"] for d in found["dropoffs"]], [0.1, 0.6])
+        self.assertEqual([r["at_ratio"] for r in found["rewatches"]], [0.5])
+
+    def test_an_ordinary_slope_is_not_a_dropoff(self):
+        """Every video loses viewers steadily; that is not an 이탈 구간."""
+        from aicut.pipeline.performance import retention_features
+
+        found = retention_features(self._curve([1.0, 0.97, 0.94, 0.91, 0.88, 0.85, 0.82]))
+
+        self.assertEqual(found["dropoffs"], [])
+        self.assertEqual(found["rewatches"], [])
+
+    def test_a_curve_too_short_to_have_a_turn_reports_none(self):
+        from aicut.pipeline.performance import retention_features
+
+        self.assertEqual(retention_features([]), {"dropoffs": [], "rewatches": []})
+        self.assertEqual(
+            retention_features(self._curve([1.0, 0.2])),
+            {"dropoffs": [], "rewatches": []},
+        )
+
+    def test_an_empty_dropoff_list_is_an_answer_not_a_missing_metric(self):
+        from aicut.pipeline.performance import missing_metrics
+
+        absent = missing_metrics({
+            "views": 0, "impressionsClickThroughRate": 0.04,
+            "averageViewDuration": 90, "averageViewPercentage": 41.0,
+            "likes": 3, "comments": 1, "shares": 0,
+            "retention_curve": [{"elapsedVideoTimeRatio": 0.0, "audienceWatchRatio": 1.0}],
+            "dropoffs": [], "rewatches": [],
+        })
+
+        self.assertEqual(absent, [])
+
+    def test_no_curve_means_both_turn_metrics_are_missing(self):
+        from aicut.pipeline.performance import missing_metrics
+
+        absent = missing_metrics({"views": 10, "dropoffs": [], "rewatches": []})
+
+        self.assertIn("이탈 구간", absent)
+        self.assertIn("재시청 구간", absent)
+
+    def test_click_through_is_asked_for_as_the_thumbnail_metric(self):
+        """12.1's 클릭률 and 4.2's CTR are the thumbnail's, not annotations'.
+
+        Annotations were discontinued in 2019, so annotationClickThroughRate is
+        zero on any recent video - it was being collected as 클릭률 and nothing
+        said it was the wrong number.
+        """
+        from aicut.intelligence.youtube import YouTubeClient
+
+        self.assertIn("impressionsClickThroughRate", YouTubeClient.REACH_METRICS)
+        self.assertNotIn("annotationClickThroughRate", YouTubeClient.CORE_METRICS)
+        self.assertNotIn("annotationClickThroughRate", YouTubeClient.REACH_METRICS)
+
+    def test_the_reach_report_is_asked_for_separately(self):
+        """A metric name the account cannot serve fails the whole query, and
+        losing 조회수 and 유지율 to a CTR problem would be worse than losing CTR."""
+        from aicut.intelligence.youtube import YouTubeClient
+
+        self.assertFalse(set(YouTubeClient.CORE_METRICS) & set(YouTubeClient.REACH_METRICS))
+        for metric in ("views", "averageViewPercentage", "likes", "comments", "shares"):
+            self.assertIn(metric, YouTubeClient.CORE_METRICS)
