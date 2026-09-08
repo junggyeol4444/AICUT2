@@ -348,6 +348,10 @@ def build_report(ctx: RunContext, state: State, episodes: list[Episode]) -> dict
         # never corrected - re-measuring needs the 17.2 dataset.
         "environment": ctx.report.get("environment", {}),
         "environment_drift": ctx.report.get("environment_drift", []),
+        # A judgement threshold this broadcast never crossed. The label it
+        # gates was therefore impossible for the whole run, and nothing else
+        # would have said so (17.4, 17.5).
+        "threshold_never_reached": ctx.report.get("threshold_never_reached", []),
         "provisional_parameters_used": ctx.report.get("provisional_parameters_used", []),
         "warning": "; ".join(part for part in (
             (
@@ -359,6 +363,11 @@ def build_report(ctx: RunContext, state: State, episodes: list[Episode]) -> dict
                 "this broadcast's setup differs from the one the profile was "
                 "measured in, so 17.4 step 4 asks for a re-measurement"
                 if ctx.report.get("environment_drift") else ""
+            ),
+            (
+                "a judgement threshold was never reached in this broadcast, so the "
+                "label it gates could not occur - see threshold_never_reached"
+                if ctx.report.get("threshold_never_reached") else ""
             ),
         ) if part),
     }

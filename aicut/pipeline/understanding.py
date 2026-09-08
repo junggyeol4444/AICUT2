@@ -65,6 +65,7 @@ def run(ctx: RunContext, *, sample_frames: bool = False) -> RunContext:
     ctx.note("events", len(events))
     ctx.note("boundary_hints", [{"at_sec": h.at_sec, "kinds": h.kinds} for h in hints])
     ctx.note("situation_mix", _situation_mix(situations, duration))
+    _note_unreached_thresholds(ctx, situations)
     if not ctx.signals.faces:
         ctx.note(
             "vision_note",
@@ -488,6 +489,51 @@ def _situation_at(situations, start: float, end: float) -> str:
         return SituationLabel.UNKNOWN.value
     dominant = max(overlapping, key=lambda s: min(end, s.end_sec) - max(start, s.start_sec))
     return dominant.label.value
+
+
+def _note_unreached_thresholds(ctx: RunContext, situations) -> None:
+    """Say when a judgement threshold was never crossed in this broadcast.
+
+    A threshold nobody measured (17.5) can sit on the wrong side of the material
+    and produce a label that never appears - and nothing fails, so nothing says
+    so. Measured on a real 7-minute source: the face ratio peaked at 0.103
+    against a `situation.face_ratio_solo_talk` of 0.12, so 단독 토크 was
+    impossible for the whole broadcast and the report showed 100% 게임 플레이
+    without comment.
+
+    This does not adjust the value. 17.4 says a threshold is settled by
+    measurement against a labelled dataset, and one broadcast is not that;
+    moving it here would be the code deciding a number 17.1 gives to the
+    profile. It says the number was never reached, which is what turns a silent
+    mis-calibration into something the operator can act on.
+    """
+    seen = {span.label for span in situations}
+    faces = ctx.signals.faces
+    if faces:
+        peak = max((f.face_ratio for f in faces), default=0.0)
+        line = ctx.profile.get_float("situation.face_ratio_solo_talk")
+        if peak < line and SituationLabel.SOLO_TALK not in seen:
+            ctx.note("threshold_never_reached", ctx.report.get("threshold_never_reached", []) + [{
+                "parameter": "situation.face_ratio_solo_talk",
+                "threshold": line,
+                "highest_measured": round(peak, 4),
+                "consequence": "단독 토크 was never labelled; every talking stretch reads as 게임 플레이",
+                "provisional": ctx.profile.is_provisional("situation.face_ratio_solo_talk"),
+            }])
+
+    motion = [s.score for s in ctx.signals.motion if s.score is not None]
+    if motion:
+        peak = max(motion)
+        line = ctx.profile.get_float("situation.away_max_motion")
+        if peak < line:
+            # Everything is below the "away" line, so nothing can ever be busy.
+            ctx.note("threshold_never_reached", ctx.report.get("threshold_never_reached", []) + [{
+                "parameter": "situation.away_max_motion",
+                "threshold": line,
+                "highest_measured": round(peak, 4),
+                "consequence": "no stretch of this source moves more than the away-from-desk line",
+                "provisional": ctx.profile.is_provisional("situation.away_max_motion"),
+            }])
 
 
 def _situation_mix(situations, duration: float) -> dict[str, float]:

@@ -1,0 +1,163 @@
+# 로컬 PC에서 돌리기
+
+이 저장소를 만든 샌드박스는 `ollama.com`, HuggingFace, Anthropic API를 전부
+차단한다. **코드 한계가 아니라 그 환경의 네트워크 정책이다.** 니 PC에서는
+아래대로 하면 전부 된다.
+
+먼저 뭐가 없는지 확인한다:
+
+```bash
+aicut doctor
+aicut --producer ollama --ollama-model qwen2.5vl:7b doctor
+```
+
+없는 항목마다 설치 명령을 같이 찍는다.
+
+---
+
+## 1. 판단 모델 (Ollama)
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh     # macOS/Linux
+ollama serve
+```
+
+**이미지를 받는 모델이어야 한다.** 5.2는 화면과 소리를 같이 보라고 하고 4.3은
+프레임을 봐야 답할 수 있는 것만 묻는다. 텍스트 전용 모델에 이미지를 보내면
+Ollama가 조용히 버리고, 모델은 대사만 보고 답한다 — 기획안 1.2가 거부한 그
+편집기로 되돌아간다. `aicut doctor`가 이걸 먼저 말한다.
+
+| 모델 | 크기 | 필요 VRAM(대략) | 비고 |
+|---|---|---|---|
+| `qwen2.5vl:7b` | ~6GB | 8GB+ | 기본값. 화면 안 글자(채팅·HP·점수)를 잘 읽는다 |
+| `qwen2.5vl:32b` | ~21GB | 24GB+ | 같은 계열 상위. 판단이 더 낫다 |
+| `llava:13b` | ~8GB | 12GB+ | 가장 오래됐고 자료가 많다 |
+| `llava:7b` | ~4.7GB | 6GB+ | 가벼운 쪽 |
+| `gemma3:12b` | ~8GB | 12GB+ | 이미지 받는다. 한국어가 낫다는 보고가 있다 |
+| `gemma3:4b` | ~3.3GB | 4GB+ | 최소 구성 |
+| `llama3.2-vision:11b` | ~7.9GB | 12GB+ | |
+| `minicpm-v` | ~5.5GB | 8GB+ | 작은 것 치고 화면 이해가 좋다 |
+
+크기·VRAM은 대략치다. 정확한 값과 현재 태그는 `ollama list`와
+<https://ollama.com/library> 에서 확인해라 — 이 문서를 쓴 환경에서는 레지스트리에
+접근이 안 돼서 대조하지 못했다.
+
+**쓰면 안 되는 것:** `llama3`, `qwen2.5`(vl 없는 것), `mistral`, `phi4`,
+`deepseek-r1`. 전부 텍스트 전용이다.
+
+```bash
+ollama pull qwen2.5vl:7b
+aicut run stream.mkv --producer ollama --ollama-model qwen2.5vl:7b
+```
+
+**컨텍스트가 모자라면** 빈 응답이 온다. 그때 나오는 메시지가 뭘 하라는지 말한다:
+
+```bash
+aicut run stream.mkv --producer ollama --ollama-num-ctx 32768
+# 또는 창을 줄인다 (17.1: 프로파일 값이다)
+```
+
+다른 PC에서 돌린다면:
+
+```bash
+export OLLAMA_HOST=192.168.1.9:11434     # 또는 --ollama-host
+```
+
+---
+
+## 2. 음성 인식
+
+정확도 순서: `whisperx` > `faster-whisper` > `pocketsphinx`.
+
+```bash
+pip install 'aicut[stt]'        # whisperx, GPU 있으면 이것
+pip install faster-whisper      # CPU만 있으면 이것
+```
+
+`pocketsphinx`는 모델 다운로드도 GPU도 필요 없는 대신 정확도가 낮고 **단어별
+신뢰도를 안 준다.** 그러면 자막 검증(`subtitle.min_word_confidence`)이 통째로
+꺼져서 잡음이 화면 위 글자가 된다. 실행 리포트가 그 사실을 적는다.
+
+장시간 방송에서는 `condition_on_previous_text`가 반복 루프를 만든다 — 한 구간이
+망가지면 다음을 오염시키고, 긴 침묵이 없는 말로 채워진다. 그래서 기본을 껐다.
+짧은 클립이면 `build_transcriber(..., long_form=False)`로 되돌린다.
+
+```bash
+aicut transcribe stream.mkv --backend faster-whisper --stt-model large-v3
+aicut run stream.mkv --transcript stream.transcript.json
+```
+
+화자 분리는 pyannote가 필요하고 **HuggingFace 게이트 모델 승인**을 받아야 한다
+(20.2). 멀티트랙 녹화라면 필요 없다 — 5.2대로 트랙이 화자다.
+
+---
+
+## 3. 얼굴 검출
+
+5.3 상황 라벨(단독 토크 / 게임 플레이 / 다인원 / 대기)과 9.2·11.1의 표정 신호가
+여기 달려 있다. **없으면 화면이 통째로 UNKNOWN으로 남는다.**
+
+OpenCV 5.0이 `CascadeClassifier`를 없앴다. 둘 중 하나:
+
+```bash
+# (a) YuNet 모델을 준다 — 권장
+curl -L -o yunet.onnx \
+  https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
+export AICUT_FACE_MODEL=$PWD/yunet.onnx
+
+# (b) 예전 OpenCV
+pip install 'opencv-python<5'
+```
+
+`aicut doctor`가 어느 백엔드가 잡혔는지 찍는다.
+
+---
+
+## 4. YouTube
+
+```bash
+pip install 'aicut[youtube]'
+```
+
+Google Cloud 콘솔에서 프로젝트를 만들고 YouTube Data API v3를 켜고 OAuth 클라이언트
+시크릿을 받는다. 11.4: 기본 쿼터 10,000 units, 업로드 1건이 약 1,600 units이라
+하루 6개쯤이고, 리셋은 **태평양 시간 자정** 기준이다.
+
+---
+
+## 5. 임계값을 실제로 측정하기 (17장)
+
+기본 프로파일의 값은 **아무도 측정 안 한 추측이다.** 그대로 쓰면 판단이 니
+채널이 아니라 그 추측을 따른다. 실제로 이런 일이 일어난다 — 실측 사례:
+
+```
+situation.face_ratio_solo_talk = 0.12   (임시값)
+이 방송의 얼굴 비율 최대       = 0.103
+→ 단독 토크가 한 번도 안 나온다. 말하는 구간이 전부 게임 플레이로 찍힌다
+```
+
+실행 리포트의 `threshold_never_reached`가 이걸 적는다. 값을 코드가 고치지는
+않는다 — 17.4는 라벨된 데이터셋으로 측정해서 정하라고 한다.
+
+```bash
+# 17.2: 원본 + 그 원본으로 사람이 만든 완성본
+aicut learn pairs --source 원본.mkv --output 완성본.mp4
+aicut dataset derive-silences ...
+aicut calibrate --dataset ...
+```
+
+이 쌍은 12.3 B 학습 데이터이기도 하다. 한 번 만들면 두 군데에 쓰인다.
+
+---
+
+## 최소 구성으로 한 번 돌려보기
+
+```bash
+pip install -e '.[vision]' faster-whisper
+export AICUT_FACE_MODEL=/path/to/yunet.onnx
+ollama pull gemma3:4b
+aicut doctor --producer ollama --ollama-model gemma3:4b
+aicut run clip.mkv --producer ollama --ollama-model gemma3:4b --frames
+```
+
+`--frames`가 없으면 화면을 안 본다.

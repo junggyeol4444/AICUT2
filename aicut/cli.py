@@ -1109,27 +1109,94 @@ def cmd_fetch_ffmpeg(args) -> int:
     return 0
 
 
+def _check_face_detector() -> None:
+    """OpenCV importing is not the same as a face detector existing (5.3, 9.2, 11.1).
+
+    OpenCV 5.0 removed CascadeClassifier and ships no face model, so on 5.x the
+    package check above says [ok] while nothing can actually detect a face - and
+    the run then labels every screen UNKNOWN and drops the 표정 signal, quietly.
+    """
+    from aicut.media import faces as faces_mod
+
+    if not faces_mod.available():
+        return
+    detector = faces_mod.build_detector()
+    if detector is not None:
+        print(f"  [ok] face detector ({detector.backend}) - 화면 상황 라벨 (5.3), 표정 (9.2, 11.1)")
+        return
+    print("  [--] face detector - OpenCV is installed but has no usable face model")
+    print("       OpenCV 5 removed CascadeClassifier. Point AICUT_FACE_MODEL at a")
+    print("       YuNet face_detection_yunet .onnx (opencv_zoo), or use opencv-python<5.")
+    print("       Without it 5.3 leaves every screen UNKNOWN and 9.2 loses 표정.")
+
+
+def _check_reasoning_backend(args) -> None:
+    """Whether the judgement half of 18장 can actually run.
+
+    `mock` decides nothing. It exists so the pipeline can be exercised without a
+    model, and a run on it is a wiring test, not an edit - which is worth saying
+    out loud, because the output looks the same either way.
+    """
+    producer = getattr(args, "producer", "mock")
+    if producer == "mock":
+        print("  [--] reasoning backend is 'mock', which decides nothing (18장)")
+        print("       Every judgement - what is content, what to cut, what to say -")
+        print("       comes back canned. Use --producer ollama (local) or anthropic.")
+        return
+    if producer == "anthropic":
+        has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        print(f"  [{'ok' if has_key else '--'}] ANTHROPIC_API_KEY set")
+        if not has_key:
+            print("       --producer anthropic sends every judgement to the API and needs")
+            print("       a key: export ANTHROPIC_API_KEY=...")
+        return
+    if producer == "ollama":
+        from aicut.llm.ollama_provider import DEFAULT_MODEL, OllamaProducer
+
+        model = getattr(args, "ollama_model", None) or DEFAULT_MODEL
+        try:
+            state = OllamaProducer(
+                model=model, host=getattr(args, "ollama_host", None),
+                warn_on_text_only=False,
+            ).check()
+        except Exception as exc:
+            print(f"  [--] ollama - {exc}")
+            return
+        print(f"  [ok] ollama {state['model']} at {state['host']}")
+        if state["takes_images"]:
+            print("       takes images, so 5.2 can read 화면 and 소리 together")
+        else:
+            print(f"  [--] {state['model']} is not known to take images.")
+            print("       5.2 has the passes read screen and sound together; a text-only")
+            print("       model drops the frames and judges from words alone, which is")
+            print("       the editor 1.2 rejects. Try llava, qwen2.5vl or gemma3.")
+
+
 def cmd_doctor(args) -> int:
     """Check the preconditions of 20.2 before a run rather than during one."""
-    checks = {
-        "ffmpeg/ffprobe on PATH": have_ffmpeg(),
-        "whisperx installed": _importable("whisperx"),
-        "pyannote installed (gated model, needs HF approval - 20.2)": _importable("pyannote.audio"),
-        "anthropic sdk installed": _importable("anthropic"),
-        "google api client installed": _importable("googleapiclient"),
-        "opencv installed": _importable("cv2"),
-    }
-    for name, ok in checks.items():
+    #: What to type when a check comes back missing. A report that says a thing
+    #: is absent and not how to get it sends the operator to a search engine.
+    checks = (
+        ("ffmpeg/ffprobe on PATH", have_ffmpeg(),
+         "install ffmpeg, or `aicut fetch-ffmpeg`"),
+        ("whisperx installed (best word timings, wants a GPU)", _importable("whisperx"),
+         "pip install 'aicut[stt]'"),
+        ("faster-whisper installed (word timings on a CPU)", _importable("faster_whisper"),
+         "pip install faster-whisper"),
+        ("pyannote installed (gated model, needs HF approval - 20.2)",
+         _importable("pyannote.audio"), "pip install 'aicut[diarization]'"),
+        ("anthropic sdk installed", _importable("anthropic"), "pip install 'aicut[llm]'"),
+        ("google api client installed", _importable("googleapiclient"),
+         "pip install 'aicut[youtube]'"),
+        ("opencv installed", _importable("cv2"), "pip install 'aicut[vision]'"),
+    )
+    for name, ok, remedy in checks:
         print(f"  [{'ok' if ok else '--'}] {name}")
+        if not ok:
+            print(f"       {remedy}")
 
-    # The key is what `--producer anthropic` needs and the one precondition
-    # that is not a package: a run without it gets through parsing and STT
-    # before failing, which is twenty minutes to learn one export line. The
-    # value is never printed - only whether the environment has one.
-    if args.producer == "anthropic" or _importable("anthropic"):
-        has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
-        print(f"  [{'ok' if has_key else '--'}] ANTHROPIC_API_KEY set"
-              f"{'' if has_key else ' (needed by --producer anthropic)'}")
+    _check_face_detector()
+    _check_reasoning_backend(args)
 
     # Having ffmpeg is not the same as having the ffmpeg this needs: the plain
     # Homebrew bottle links no libass, so `subtitles` is absent and captions

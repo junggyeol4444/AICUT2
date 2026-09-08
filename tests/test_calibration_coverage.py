@@ -181,3 +181,67 @@ class ProfileEnvironmentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnreachedThresholdTests(unittest.TestCase):
+    """A threshold nobody measured can gate a label out of existence, silently.
+
+    Measured on a real 7-minute broadcast: the face ratio peaked at 0.103 while
+    `situation.face_ratio_solo_talk` sits at 0.12, so 단독 토크 was impossible
+    for the whole run and the report said 100% 게임 플레이 without comment. The
+    run now says the number was never reached.
+    """
+
+    class _Signals:
+        def __init__(self, faces=(), motion=()):
+            self.faces, self.motion = list(faces), list(motion)
+
+    class _Ctx:
+        def __init__(self, profile, signals):
+            self.profile, self.signals, self.report = profile, signals, {}
+
+        def note(self, key, value):
+            self.report[key] = value
+
+    def _run(self, *, peak_face=None, peak_motion=None, labels=()):
+        from aicut.media.faces import FaceReading
+        from aicut.media.vision import MotionSample
+        from aicut.pipeline.understanding import _note_unreached_thresholds
+
+        faces = [FaceReading(at_sec=0.0, face_ratio=peak_face, box=(0, 0, 10, 10))] \
+            if peak_face is not None else []
+        motion = [MotionSample(at_sec=0.0, score=peak_motion)] if peak_motion is not None else []
+        ctx = self._Ctx(CalibrationProfile.load(), self._Signals(faces, motion))
+        spans = [type("S", (), {"label": label})() for label in labels]
+        _note_unreached_thresholds(ctx, spans)
+        return ctx.report.get("threshold_never_reached", [])
+
+    def test_a_face_that_never_fills_enough_of_the_frame_is_reported(self):
+        found = self._run(peak_face=0.103)
+        names = [f["parameter"] for f in found]
+        self.assertIn("situation.face_ratio_solo_talk", names)
+        entry = next(f for f in found if f["parameter"] == "situation.face_ratio_solo_talk")
+        self.assertEqual(entry["highest_measured"], 0.103)
+        self.assertTrue(entry["provisional"], "the value is a guess and should say so")
+
+    def test_a_face_that_does_cross_the_line_is_not_reported(self):
+        found = self._run(peak_face=0.5, labels=[SituationLabel.SOLO_TALK])
+        self.assertNotIn("situation.face_ratio_solo_talk", [f["parameter"] for f in found])
+
+    def test_nothing_is_claimed_when_nothing_was_measured(self):
+        """No detector is not a threshold problem; 5.3 already leaves it UNKNOWN."""
+        self.assertEqual(self._run(), [])
+
+    def test_a_source_that_never_moves_is_reported_too(self):
+        found = self._run(peak_motion=0.001)
+        self.assertIn("situation.away_max_motion", [f["parameter"] for f in found])
+
+    def test_the_threshold_is_reported_not_adjusted(self):
+        """17.4 settles a value by measurement; one broadcast is not that."""
+        import inspect
+
+        from aicut.pipeline import understanding
+
+        source = inspect.getsource(understanding._note_unreached_thresholds)
+        self.assertNotIn("with_overrides", source)
+        self.assertIn("does not adjust the value", source)
