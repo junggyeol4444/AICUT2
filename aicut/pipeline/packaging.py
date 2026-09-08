@@ -17,6 +17,7 @@ from aicut.media import vision as vision_mod
 from aicut.media.ffmpeg_util import have_ffmpeg
 from aicut.models import Episode
 from aicut.pipeline.context import RunContext
+from aicut.media import faces as faces_mod
 from aicut.render import thumbnails
 from aicut.render.timeline import Timeline
 
@@ -66,6 +67,11 @@ def package_episode(ctx: RunContext, episode: Episode, *, knowledge: dict | None
         "description": answer.get("description", ""),
         "tags": answer.get("tags", []) or [],
         "chapters": answer.get("chapters", []) or [],
+        # 원본 24장 lists 업로드 정보 alongside the rest of the package. Privacy
+        # is deliberately not in here: 11.3 makes that the profile's and the
+        # reviewer's, never the model's.
+        "upload": {k: v for k, v in (answer.get("upload") or {}).items()
+                   if k in ("category_id", "language", "playlist") and v},
         "duration_sec": round(timeline.duration, 2),
     }
     path = ctx.project_dir / "metadata" / f"{episode.episode_id}.json"
@@ -87,5 +93,19 @@ def _thumbnails(ctx: RunContext, episode: Episode) -> list[thumbnails.ThumbnailC
         return []
     curve: TensionCurve = build_tension_curve(rms, [], ctx.profile)
     duration = curve.times[-1] if curve.times else 0.0
-    picked = thumbnails.score_frames(duration, curve, motion, ctx.profile)
+    # 11.1's 표정 변화 폭 needs a face, so the finished cut is read for one.
+    # Optional, like every other visual stage: without a detector the signal is
+    # simply absent (see score_frames).
+    faces: list = []
+    detector = faces_mod.build_detector()
+    if detector is not None:
+        try:
+            frames = vision_mod.sample_frames(
+                video, ctx.project_dir / "thumbnails" / episode.episode_id / "scan",
+                interval_sec=1.0, prefix="thumb",
+            )
+            faces = detector.read_frames([(f.at_sec, f.path) for f in frames])
+        except Exception as exc:
+            log.warning("thumbnail face scan skipped for %s: %s", episode.episode_id, exc)
+    picked = thumbnails.score_frames(duration, curve, motion, ctx.profile, faces=faces)
     return thumbnails.extract(video, picked, ctx.project_dir / "thumbnails" / episode.episode_id)

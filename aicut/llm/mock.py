@@ -286,6 +286,9 @@ class MockProducer(Producer):
             "description": summary,
             "tags": sorted(_keywords(summary))[:10],
             "chapters": chapters,
+            # 원본 24장's 업로드 정보. Never privacy - 11.3 keeps that away from
+            # whatever writes the package.
+            "upload": {"category_id": "20", "language": "ko", "playlist": None},
         }
 
     # -- 12.3 ----------------------------------------------------------------

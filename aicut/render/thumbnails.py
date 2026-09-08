@@ -14,8 +14,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Sequence
 
 from aicut.analysis.tension import TensionCurve
+from aicut.media import faces as faces_mod
 from aicut.config import CalibrationProfile
 from aicut.media.ffmpeg_util import require_ffmpeg, run
 from aicut.media.vision import MotionSample
@@ -36,22 +38,35 @@ def score_frames(
     profile: CalibrationProfile,
     *,
     step_sec: float = 1.0,
+    faces: Sequence[Any] = (),
 ) -> list[ThumbnailCandidate]:
-    """Rank moments of the finished video as thumbnail sources."""
+    """Rank moments of the finished video as thumbnail sources.
+
+    11.1 names three signals: 오디오 텐션 / 표정 변화 폭 / 화면 사건 발생 여부.
+    They are three, not two dressed as three - the face moving and the screen
+    changing are different events, and a thumbnail wants the first. When face
+    readings are supplied the expression signal comes from them; without a
+    detector it is absent from the signal set rather than filled in with the
+    frame delta, because a weight applied to a stand-in is a weight 17장 cannot
+    calibrate.
+    """
     weights = profile.get("thumbnail.weights")
     min_gap = profile.get_float("thumbnail.min_gap_sec")
     count = profile.get_int("thumbnail.candidate_count")
+    face_window = profile.get_float("thumbnail.expression_window_sec")
 
     motion_by_sec = {round(m.at_sec): m.score for m in motion}
     scored: list[ThumbnailCandidate] = []
     at = 0.0
     while at < duration_sec:
-        audio = tension.at(at)
-        # Expression change and screen event both come out of the visual delta;
-        # a face-landmark model would separate them, and until one is wired in
-        # the same measurement feeds both rather than inventing a number.
-        visual = motion_by_sec.get(round(at), 0.0)
-        signals = {"audio_tension": audio, "expression_change": visual, "screen_event": visual}
+        signals: dict[str, float] = {
+            "audio_tension": tension.at(at),
+            "screen_event": motion_by_sec.get(round(at), 0.0),
+        }
+        if faces:
+            signals["expression_change"] = faces_mod.expression_change(
+                faces, at, window_sec=face_window,
+            )
         score = sum(float(weights.get(k, 0.0)) * v for k, v in signals.items())
         scored.append(ThumbnailCandidate(at_sec=at, score=score, signals=signals))
         at += step_sec

@@ -146,23 +146,36 @@ class YouTubeClient:
         metadata: dict[str, Any],
         *,
         privacy_status: str = "private",
-        category_id: str = "20",
+        category_id: str | None = None,
         chunk_size: int = 8 * 1024 * 1024,
     ) -> UploadResult:
-        """Upload one video. Defaults to private - the human gate decides the rest (11.3)."""
+        """Upload one video. Defaults to private - the human gate decides the rest (11.3).
+
+        ``category_id`` and the language come from the package (원본 24장's
+        업로드 정보) via ``metadata``; the argument is the override. There is no
+        code default: a hardcoded category is 2.3's 고정 카테고리 in the one place
+        it is visible to viewers, and the caller's profile carries the fallback.
+        """
         try:
             from googleapiclient.http import MediaFileUpload
         except ImportError as exc:  # pragma: no cover - optional dep
             raise AicutError("install aicut[youtube] to talk to the YouTube API") from exc
 
         self._require(COST_VIDEO_INSERT, "videos.insert")
+        snippet: dict[str, Any] = {
+            "title": metadata.get("title", "")[:100],
+            "description": metadata.get("description", "")[:5000],
+            "tags": metadata.get("tags", [])[:30],
+        }
+        category = category_id or metadata.get("category_id")
+        if category:
+            snippet["categoryId"] = str(category)
+        language = metadata.get("language")
+        if language:
+            snippet["defaultLanguage"] = language
+            snippet["defaultAudioLanguage"] = language
         body = {
-            "snippet": {
-                "title": metadata.get("title", "")[:100],
-                "description": metadata.get("description", "")[:5000],
-                "tags": metadata.get("tags", [])[:30],
-                "categoryId": category_id,
-            },
+            "snippet": snippet,
             "status": {"privacyStatus": privacy_status, "selfDeclaredMadeForKids": False},
         }
         media = MediaFileUpload(video_path, chunksize=chunk_size, resumable=True)

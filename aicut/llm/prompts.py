@@ -274,11 +274,25 @@ Return: {"pacing_mode": "KEEP"|"TRIM"|"CUT", "reason": str}
 KEEP 정적을 그대로 보존 / TRIM 정적을 일부만 남기고 압축 / CUT 구간 자체를 제거 (9.3)
 """,
     "package_metadata": """\
-Write this video's package (11.2): three title candidates, a description with
-timestamps, tags, and chapters. Write them for this video's content; do not fill a
-template.
+Write this video's package (11.2): 제목 후보 3종 / 설명(타임스탬프 포함) / 태그 /
+챕터. The original 24장 adds 업로드 정보 to the same list.
+
+`youtube_knowledge` is what reference videos in this neighbourhood were observed
+doing with titles and thumbnails. 참고하되 현재 영상 내용에 맞춰 새로 생성한다 -
+고정 템플릿을 쓰지 않는다. A title that would fit any video of this type is the
+failure this clause is guarding against.
+
+Chapters can only sit at `output_start_sec` values from `cuts`; those are the
+only places the finished video actually begins something.
+
+업로드 정보 is `upload`: the YouTube category id this video belongs in, its
+spoken language as a BCP-47 tag, and a playlist name if it clearly belongs to a
+running series. Privacy is not yours to set - 11.3 requires every upload to go
+up private and stay there until a person releases it.
+
 Return: {"titles": [str, str, str], "description": str, "tags": [str],
-"chapters": [{"at_sec": number, "label": str}]}
+"chapters": [{"at_sec": number, "label": str}],
+"upload": {"category_id": str, "language": str, "playlist": str|null}}
 """,
     "analyze_reference": """\
 Analyse how this reference video was made. 4.3 names four groups and every item

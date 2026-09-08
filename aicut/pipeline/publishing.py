@@ -58,10 +58,20 @@ def upload_episode(
         raise ValueError(f"episode {episode.episode_id} has not been rendered")
 
     privacy = _pre_review_privacy(ctx.profile.get("upload.privacy_on_upload"))
+    # 원본 24장's 업로드 정보, written by the packaging step. The profile
+    # supplies the fallback category so nothing is hardcoded in the client (2.3).
+    upload_info = episode.metadata.get("upload") or {}
     metadata = {
         "title": (episode.title_candidates or ["untitled"])[0],
         "description": episode.metadata.get("description", ""),
         "tags": episode.metadata.get("tags", []),
+        # Defaulted rather than required: a profile written before these keys
+        # existed still uploads, and an absent category means YouTube's own
+        # default rather than a refusal.
+        "category_id": upload_info.get("category_id")
+        or ctx.profile.get("upload.default_category_id", ""),
+        "language": upload_info.get("language")
+        or ctx.profile.get("upload.default_language", ""),
     }
     try:
         result = client.upload(episode.output_mp4_path, metadata, privacy_status=privacy)

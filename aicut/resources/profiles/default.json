@@ -116,7 +116,8 @@
       "expression_change": 0.4,
       "screen_event": 0.2
     },
-    "min_gap_sec": 5.0
+    "min_gap_sec": 5.0,
+    "expression_window_sec": 2.0
   },
   "subtitle": {
     "min_word_confidence": 0.35,
@@ -159,7 +160,9 @@
     "privacy_on_upload": "private",
     "require_human_review": true,
     "daily_quota_units": 10000,
-    "quota_reset_timezone": "America/Los_Angeles"
+    "quota_reset_timezone": "America/Los_Angeles",
+    "default_category_id": "20",
+    "default_language": "ko"
   },
   "laughter": {
     "detector": "loud_non_speech",
