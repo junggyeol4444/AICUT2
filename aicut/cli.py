@@ -186,6 +186,14 @@ def cmd_run(args) -> int:
         if episode["output"]:
             print(f"      output: {episode['output']}")
     _print_report_warnings(result.report)
+    stages = result.report.get("stage_seconds") or {}
+    if stages:
+        total = result.report.get("elapsed_sec") or sum(stages.values())
+        # R3 is an open risk about 처리 시간 and 22.6 asks the report for it.
+        # Printing it makes every run a measurement instead of an estimate.
+        print(f"\n  time {total:.1f}s: " + ", ".join(
+            f"{name} {seconds:.1f}s" for name, seconds in stages.items()
+        ))
     if result.report.get("provisional_parameters_used"):
         print(f"\n  {result.report['warning']}")
         print(f"  provisional: {', '.join(result.report['provisional_parameters_used'])}")

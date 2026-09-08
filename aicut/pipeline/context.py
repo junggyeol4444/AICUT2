@@ -119,6 +119,11 @@ class RunContext:
     media: MediaInfo | None = None
     signals: SignalBundle = field(default_factory=SignalBundle)
     report: dict[str, Any] = field(default_factory=dict)
+    #: Which stage is running and since when, so the runner can close its clock
+    #: when the next one opens. R3 names 처리 시간 as an open risk and 22.6 asks
+    #: for it in the work report; a single total for a six-hour run does not say
+    #: which stage cost it.
+    stage_open: tuple[str, float] | None = None
 
     @property
     def project_dir(self) -> Path:

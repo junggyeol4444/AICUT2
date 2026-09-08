@@ -612,3 +612,54 @@ class Mvp3AssessmentTests(PipelineHarness):
         self.assertEqual(
             review.assessment_rates(ctx)["items"][review.ASSESSMENT_ITEMS[1]]["rate"], 0.0,
         )
+
+
+class StageTimingTests(PipelineHarness):
+    """22.6 asks the work report for 처리 시간; R3 makes it an open risk.
+
+    A single total for a six-hour run does not say which stage cost it, and R3
+    names the answer outright: 1차 통과 밀도가 비용과 시간을 결정하는 핵심
+    변수다. That is a claim about one stage.
+    """
+
+    def test_the_report_carries_a_number_per_stage(self):
+        ctx = self.seed()
+        result = self.pipeline.run(ctx.project, context=ctx, render=False)
+
+        stages = result.report["stage_seconds"]
+        self.assertIn("UNDERSTANDING", stages)
+        self.assertIn("PARSING", stages)
+        for name, seconds in stages.items():
+            self.assertGreaterEqual(seconds, 0.0, name)
+
+    def test_the_stages_add_up_to_no_more_than_the_run(self):
+        ctx = self.seed()
+        result = self.pipeline.run(ctx.project, context=ctx, render=False)
+
+        stages = result.report["stage_seconds"]
+        # Rounding is to a tenth per stage, so allow that much slack per entry.
+        self.assertLessEqual(
+            sum(stages.values()),
+            result.report["elapsed_sec"] + 0.05 * len(stages) + 0.1,
+        )
+
+    def test_no_stage_is_left_running_when_the_run_ends(self):
+        """Every transition closes the previous clock and the ending closes the
+        last one; a stage left open would be missing from the report."""
+        ctx = self.seed()
+        self.pipeline.run(ctx.project, context=ctx, render=False)
+
+        self.assertIsNone(ctx.stage_open)
+
+    def test_a_failed_run_still_reports_the_time_it_spent(self):
+        from unittest import mock
+
+        from aicut.pipeline import discovery
+
+        ctx = self.seed()
+        with mock.patch.object(discovery, "run", side_effect=RuntimeError("boom")):
+            result = self.pipeline.run(ctx.project, context=ctx, render=False)
+
+        self.assertEqual(result.final_state.value, "FAILED")
+        self.assertIn("PARSING", result.report["stage_seconds"])
+        self.assertIsNone(ctx.stage_open)

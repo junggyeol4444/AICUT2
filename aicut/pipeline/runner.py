@@ -211,9 +211,25 @@ class Pipeline:
         return self.run(project, **kwargs)
 
     def _advance(self, ctx: RunContext, state: State) -> None:
+        self._close_stage(ctx)
+        ctx.stage_open = (state.value, time.time())
         self.store.set_status(ctx.project.project_id, state.value)
         ctx.project.status = state.value
         log.info("project %s -> %s", ctx.project.project_id, state.value)
+
+    def _close_stage(self, ctx: RunContext) -> None:
+        """Stop the clock on the stage that was running.
+
+        Every transition goes through `_advance` and every ending through
+        `_finish`, so those two are the whole of it. R3: 1차 통과 밀도가 비용과
+        시간을 결정하는 핵심 변수다 - and that cost is invisible in a total.
+        """
+        if ctx.stage_open is None:
+            return
+        name, since = ctx.stage_open
+        seconds = ctx.report.setdefault("stage_seconds", {})
+        seconds[name] = round(seconds.get(name, 0.0) + (time.time() - since), 1)
+        ctx.stage_open = None
 
     def _no_content(self, ctx: RunContext, reason: str, started: float) -> RunResult:
         """A normal ending, not a failure (16장)."""
@@ -232,6 +248,7 @@ class Pipeline:
     ) -> RunResult:
         if record_state:
             ctx.project.status = state.value
+        self._close_stage(ctx)
         ctx.note("elapsed_sec", round(time.time() - started, 1))
         # Report on the profile and producer that actually ran this context - a
         # resumed run may have been handed different ones than the pipeline holds.
@@ -341,6 +358,10 @@ def build_report(ctx: RunContext, state: State, episodes: list[Episode]) -> dict
         "resumed_from": ctx.report.get("resumed_from"),
         "source_warnings": ctx.report.get("source_warnings", []),
         "elapsed_sec": ctx.report.get("elapsed_sec"),
+        # 22.6 asks the work report for 처리 시간, and R3 makes it an open risk
+        # to be measured rather than estimated. Per stage, because that is the
+        # number that says whether a six-hour source is usable.
+        "stage_seconds": ctx.report.get("stage_seconds", {}),
         "profile": ctx.report.get("profile"),
         "producer": ctx.report.get("producer"),
         # 17.4 step 4: the setup this broadcast was recorded in, and how it
