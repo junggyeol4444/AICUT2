@@ -97,6 +97,7 @@ class ReplayHarness:
         silences = [Silence(v.start_sec, v.end_sec) for v in self.dataset.silence_verdicts]
         contexts = build_silence_contexts(
             silences, self.utterances, tension, self.signals.motion, profile,
+            faces=self.signals.faces,
         )
         return [judge.judge(ctx).mode is PacingMode.KEEP for ctx in contexts]
 

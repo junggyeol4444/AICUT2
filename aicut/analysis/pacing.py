@@ -21,11 +21,12 @@ material (17.3) rather than trusted.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Any, Sequence
 
 from aicut.analysis.tension import TensionCurve
 from aicut.config import CalibrationProfile
 from aicut.llm import Producer
+from aicut.media import faces as faces_mod
 from aicut.media.audio import Silence
 from aicut.media.vision import MotionSample, stillness
 from aicut.models import PacingMode, UNKNOWN_SPEAKER, Utterance
@@ -42,6 +43,12 @@ class SilenceContext:
     speaker_before: str = UNKNOWN_SPEAKER
     speaker_after: str = UNKNOWN_SPEAKER
     motion: float = 0.0
+    #: 9.2 asks for 표정·움직임 정지 여부 - two things, not one. `motion` is the
+    #: frame; this is the face. Someone frozen mid-reaction holds a still frame
+    #: and a face that just moved a lot, which is the difference between the
+    #: 황당해서 말을 잇지 못하는 구간 of 9.1 and someone who left the desk.
+    #: None means no face signal was available, which is not the same as 0.
+    expression_change: float | None = None
     scene_role: str = ""
 
     @property
@@ -82,9 +89,11 @@ def build_silence_contexts(
     profile: CalibrationProfile,
     *,
     scene_role: str = "",
+    faces: Sequence[Any] = (),
 ) -> list[SilenceContext]:
     """Attach context to raw silences so they can be judged rather than measured."""
     look_back = profile.get_float("pacing.preroll_tension_window_sec")
+    face_window = profile.get_float("pacing.expression_window_sec")
     out: list[SilenceContext] = []
     for s in silences:
         before = [u for u in utterances if u.end_sec <= s.start_sec + 0.05]
@@ -98,6 +107,12 @@ def build_silence_contexts(
                 speaker_before=before[-1].speaker if before else UNKNOWN_SPEAKER,
                 speaker_after=after[0].speaker if after else UNKNOWN_SPEAKER,
                 motion=stillness(list(motion), s.start_sec, s.end_sec),
+                expression_change=(
+                    faces_mod.expression_change(
+                        faces, (s.start_sec + s.end_sec) / 2, window_sec=face_window,
+                    )
+                    if faces else None
+                ),
                 scene_role=scene_role,
             )
         )
@@ -127,6 +142,9 @@ class PacingJudge:
             "preceding_tension": round(ctx.preceding_tension, 3),
             "speaker_handover": ctx.is_speaker_handover,
             "motion": round(ctx.motion, 4),
+            "expression_change": (
+                round(ctx.expression_change, 4) if ctx.expression_change is not None else None
+            ),
             "scene_role": ctx.scene_role,
         }
 
@@ -146,6 +164,17 @@ class PacingJudge:
         if ctx.motion <= still_max and ctx.preceding_tension >= high:
             score += float(weight["frozen_after_peak"])
             reasons.append("person frozen on screen after a loud beat")
+        # 9.2 asks for 표정 as well as 움직임, and 9.1's first 예능적 case -
+        # 황당한 상황에 직면해 말을 잇지 못하는 구간 - is exactly the pair coming
+        # apart: the frame stopped moving but the face did not. Skipped entirely
+        # when no face signal exists, rather than read as a still face.
+        if (
+            ctx.expression_change is not None
+            and ctx.motion <= still_max
+            and ctx.expression_change >= p.get_float("pacing.expression_reaction_min")
+        ):
+            score += float(weight["reacting_face_on_still_frame"])
+            reasons.append("still frame but the face is still reacting")
         if ctx.duration > keep_max:
             score += float(weight["over_keep_max"])
             reasons.append("longer than this channel's keepable beat")

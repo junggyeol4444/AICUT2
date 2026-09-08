@@ -262,6 +262,11 @@ class MockProducer(Producer):
             "end_sec": best["end_sec"],
             "speaker": best.get("speaker", "UNKNOWN"),
             "subtitle_emphasis": False,
+            # 8.2's editing intent. The mock states nothing rather than
+            # inventing an effect: 10.1 gives the renderer no discretion, so an
+            # empty intent is a scene that is cut plain, which is a real answer.
+            "visual_effect": {"zoom": None, "crop": None, "graphic": None, "transition": None},
+            "audio_effect": {"bgm": None, "sfx": None, "gain_db": None},
             "reason": "mock: highest retrieval score not already used by an earlier beat",
         }
 

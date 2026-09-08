@@ -178,13 +178,44 @@ Return: [{"candidate_id": str, "decision": "produce"|"combine"|"hold"|"reject",
 "reason": str, "combine_with": [str]}]
 """,
     "plan_structure": """\
-Design this one video (7장) and issue the scene queries needed to build it (8.1).
-Choose the order that serves this content - it may open on the result, jump back,
-withhold, repeat, or skip. Choose a length that fits the content; the user's length
-hint is a hint, and if you depart from it say so in "length_note".
+Design this one video (7장): "이 콘텐츠를 어떤 방식으로 보여주는 것이 가장 좋은가?"
+
+영상 구조는 하드코딩하지 않는다. 7장 shows four different answers to make the
+point that there is no house shape:
+
+  A: 결과 장면 -> 과거 장면 -> 원인 -> 진행 -> 결과
+  B: 평범한 대화 -> 이상한 발언 -> 주변 반응 -> 사실 공개 -> 후속
+  C: 게임 시작 -> 실패 -> 재도전 -> 위기 -> 성공
+  D: 짧은 사건 -> 반응 -> 종료
+
+Those are examples, not a menu. 콘텐츠마다 다른 구조를 사용할 수 있다 — build the
+one this content needs. It may open on the result, jump back, withhold, repeat or
+skip; 2.4 says the source's time order is data, not an order to follow.
+
+7.1: `knowledge` is what other videos in this neighbourhood were observed doing —
+for example 유사 콘텐츠에서는 결과를 먼저 보여주는 방식이 자주 사용됨. 그러나
+무조건 적용하지 않는다. Compare it against what this content actually is, and say
+in "rationale" when you went against a well-supported pattern and why. A pattern
+with high support is evidence, not an instruction.
+
+Length: 2.6 makes the user's slider a hint. Choose what the content needs and, if
+you depart from the hint, say so in "length_note".
+
+Then issue the scene queries that build it (8.1). 8.1's examples of what a query
+looks like:
+
+  "사건이 처음 언급된 장면"
+  "상대방이 처음 반응한 장면"
+  "상황이 바뀐 장면"
+  "결과가 발생한 장면"
+
+Write each one for the beat it has to fill.
+
 Return: {"structure_name": str, "rationale": str, "target_type": str,
 "planned_duration_sec": number, "length_note": str,
 "beats": [{"role": str, "intent": str, "query": str, "must_include_event_id": str|null}]}
+"role" is this beat's job in the structure — 8.2 records it on the cut, and 9.2
+uses it when judging that cut's silences.
 """,
     "select_scene": """\
 Pick which retrieved scene actually serves this beat, or reject them all (8.1).
@@ -192,16 +223,51 @@ Pick which retrieved scene actually serves this beat, or reject them all (8.1).
 lets a video return to a moment - but the viewer will see that shot twice, so
 reuse it only when this beat genuinely needs that moment and not merely because
 it scored highest again.
+8.2 says each scene carries its editing intent alongside it. Give what this beat
+needs and leave out what it does not — 자막 / 확대 / 크롭 / BGM / 효과음 / 그래픽 /
+전환 / 오디오 조정. 호흡 처리 방식 is the ninth and is judged separately (9장), so
+do not set it here.
+
+The renderer decides nothing (10.1): anything not stated here does not happen.
+
 Return: {"chosen_index": int|null, "start_sec": number, "end_sec": number,
-"reason": str, "speaker": str, "subtitle_emphasis": bool}
+"reason": str, "speaker": str, "subtitle_emphasis": bool,
+"visual_effect": {"zoom": number|null, "crop": str|null, "graphic": str|null,
+"transition": str|null},
+"audio_effect": {"bgm": str|null, "sfx": str|null, "gain_db": number|null}}
 Set chosen_index to null when none of them does the job.
 """,
     "judge_pacing": """\
-Judge one silence (9장). A silence that carries the moment - stunned speechlessness,
-the breath before a comeback, a beat waiting for the other person - must be kept.
-A silence that is only dead time - clicking, walking, farming, away from desk - is
-cut. Anything between is trimmed.
+Judge one silence (9장). 기계적 오디오 갭 킬링을 폐기하고 문맥적 템포 조절을
+도입한다 — the question is what this particular silence is doing, not how long it is.
+
+9.1 names two kinds.
+
+  지루한 정적 -> 압축 대상
+    의미 없는 마우스 클릭 / 숨소리만 있는 구간 / 파밍·이동 등 반복 작업 / 자리비움
+  예능적 정적 -> 보존 대상
+    황당한 상황에 직면해 말을 잇지 못하는 구간
+    반박 직전 숨을 고르는 구간
+    화자 전환 대기 구간
+    직전에 고텐션 발화(소리지름/폭소)가 있었던 직후
+
+9.2 names the signals to judge on, and they are all in the payload:
+
+  duration_sec        무음 지속 시간
+  preceding_tension   직전 구간의 오디오 텐션 — a high one right before is the
+                      fourth 예능적 case above, on its own
+  speaker_handover    화자 전환 여부, with duration_sec as the 대기 시간
+  motion / face       화면상 인물의 표정·움직임 정지 여부. A still frame and a
+                      still face are not the same thing: someone frozen
+                      mid-reaction is not someone who left the desk
+  scene_role          이 컷이 편집 계획에서 부여받은 역할 (8.2)
+
+No number here decides anything; every threshold is in the profile and settled by
+17장. 9.4 says this is the most subjective judgement in the system and gets
+checked against a human's own edit, so give a reason that can be checked.
+
 Return: {"pacing_mode": "KEEP"|"TRIM"|"CUT", "reason": str}
+KEEP 정적을 그대로 보존 / TRIM 정적을 일부만 남기고 압축 / CUT 구간 자체를 제거 (9.3)
 """,
     "package_metadata": """\
 Write this video's package (11.2): three title candidates, a description with

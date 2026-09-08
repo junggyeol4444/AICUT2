@@ -238,11 +238,29 @@ def _lay_out_cuts(ctx: RunContext, structure: dict, index: SceneIndex) -> list[C
             source_end_sec=end,
             speaker_tag=chosen.get("speaker", scene.speaker) or UNKNOWN_SPEAKER,
             scene_role=beat.get("role", ""),
-            visual_effect=beat.get("visual_effect", {}) or {},
-            audio_effect=beat.get("audio_effect", {}) or {},
+            # 8.2: 각 장면에 편집 의도를 함께 지정한다 - 자막 / 확대 / 크롭 / BGM /
+            # 효과음 / 그래픽 / 전환 / 오디오 조정. The beat says what the structure
+            # wants of this position; the selection says what this particular
+            # scene needs, and it saw the scene, so it wins on a conflict.
+            visual_effect=_intent(beat.get("visual_effect"), chosen.get("visual_effect")),
+            audio_effect=_intent(beat.get("audio_effect"), chosen.get("audio_effect")),
             subtitle_ref=None,
         ))
     return cuts
+
+
+def _intent(from_beat: dict | None, from_scene: dict | None) -> dict:
+    """Merge the editing intent of 8.2, dropping the keys nobody asked for.
+
+    A null means "not this one", and 10.1 gives the renderer no discretion, so a
+    key that survives here is a thing that will actually happen. Keeping the
+    nulls would make the plan read as though every scene had been considered for
+    every effect, which is not what either half said.
+    """
+    merged = {**(from_beat or {}), **{
+        k: v for k, v in (from_scene or {}).items() if v is not None
+    }}
+    return {k: v for k, v in merged.items() if v is not None}
 
 
 def _apply_pacing(ctx: RunContext, episode: Episode) -> None:
@@ -263,6 +281,10 @@ def _apply_pacing(ctx: RunContext, episode: Episode) -> None:
         contexts = build_silence_contexts(
             inside, utterances, ctx.signals.tension, ctx.signals.motion, ctx.profile,
             scene_role=cut.scene_role,
+            # 9.2: 표정 as well as 움직임. The face readings were taken during the
+            # first pass and cached; without them the expression term is simply
+            # absent rather than read as a still face.
+            faces=ctx.signals.faces,
         )
         decisions = judge.judge_all(contexts)
         removals: list[list[float]] = []
