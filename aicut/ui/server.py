@@ -493,6 +493,35 @@ class UiServer:
         plan = EditPlan.load(path)
         return {"path": str(path), "readable": describe(plan), "plan": plan.to_dict()}
 
+    def edit_model(self, episode_id: str, mode: str = "new_sequence") -> dict[str, Any]:
+        """The Common Edit Model for one episode (플러그인 기획안 37장).
+
+        This is the 9번 AI Engine Connector's half on the engine side: what an
+        editor plugin asks for after the analysis is done. 37장 puts this
+        structure between the engine and any editor API, so an adapter reads
+        this and never the edit plan - a plugin that re-read the plan would be
+        a second implementation of its meaning, and two of those disagree.
+
+        ``mode`` is 25장's choice and it comes from the person at the plugin:
+        `new_sequence` leaves what they built alone, `edit_current` does not.
+        """
+        from aicut.render.editmodel import from_edit_plan
+
+        episode = self.store.get_episode(episode_id)
+        if episode is None:
+            raise KeyError(f"unknown episode {episode_id}")
+        path = self.workspace / episode.project_id / "plans" / f"{episode_id}.json"
+        if not path.exists():
+            raise KeyError(f"no edit plan written for {episode_id}")
+        project = self.store.get_project(episode.project_id)
+        model = from_edit_plan(
+            EditPlan.load(path),
+            name=(episode.title_candidates or [f"AI_{episode_id[:8]}"])[0],
+            mode=mode,
+            source_duration_sec=project.duration_sec if project else 0.0,
+        )
+        return model.as_dict()
+
     def review(self, episode_id: str, body: dict[str, Any]) -> dict[str, Any]:
         episode = self.store.get_episode(episode_id)
         if episode is None:
@@ -631,6 +660,12 @@ class _Handler(BaseHTTPRequestHandler):
             (re.compile(r"^/api/projects/([\w-]+)/episodes$"), "GET", lambda pid: ui.episodes(pid)),
             (re.compile(r"^/api/projects/([\w-]+)/report$"), "GET", lambda pid: ui.report(pid)),
             (re.compile(r"^/api/episodes/([\w-]+)/plan$"), "GET", lambda eid: ui.plan(eid)),
+            # 37장: what an editor adapter reads. The mode is 25장's and the
+            # plugin passes the person's choice through.
+            (re.compile(r"^/api/episodes/([\w-]+)/edit-model$"), "GET",
+             lambda eid: ui.edit_model(eid)),
+            (re.compile(r"^/api/episodes/([\w-]+)/edit-model$"), "POST",
+             lambda eid, body: ui.edit_model(eid, body.get("mode", "new_sequence"))),
             (re.compile(r"^/api/episodes/([\w-]+)/review$"), "POST", lambda eid, body: ui.review(eid, body)),
             (re.compile(r"^/api/episodes/([\w-]+)/upload$"), "POST", lambda eid, body: ui.upload(eid, body)),
         ]
