@@ -15,9 +15,18 @@ Three questions, taken verbatim from the document:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
+
+if TYPE_CHECKING:
+    from aicut.config import CalibrationProfile
 
 Span = tuple[float, float]
+
+#: Used only when no profile is passed - a caller scoring two lists of spans
+#: outside a calibration run. Every path that has a profile reads it from there,
+#: because these decide which profile a sweep picks (17.1).
+DEFAULT_MIN_IOU = 0.3
+DEFAULT_SCORE_WEIGHTS = {"discovery": 0.6, "pacing": 0.4}
 
 
 def overlap(a: Span, b: Span) -> float:
@@ -92,14 +101,25 @@ def score_content_discovery(
     system_spans: Sequence[Span],
     human_spans: Sequence[Span],
     *,
-    min_iou: float = 0.3,
+    min_iou: float | None = None,
+    profile: "CalibrationProfile | None" = None,
 ) -> ContentDiscoveryScore:
     """Match discovered contents to human-marked ones by span overlap.
 
-    ``min_iou`` is loose on purpose: agreeing that something is content matters
-    more here than agreeing on its exact boundaries, which the planner sets
-    later anyway.
+    How much overlap counts as agreement is a 판정 기준, so 17.1 puts it in the
+    profile - ``calibration.content_match_min_iou``. It is loose because
+    agreeing that something is content matters more here than agreeing on its
+    exact boundaries, which the planner sets later anyway; how loose is a thing
+    17.4 measures rather than a thing decided here.
+
+    ``min_iou`` overrides the profile for one call, which is what the sweep
+    needs when it is the parameter being swept.
     """
+    if min_iou is None:
+        min_iou = (
+            profile.get_float("calibration.content_match_min_iou")
+            if profile is not None else DEFAULT_MIN_IOU
+        )
     unmatched = list(human_spans)
     matched = 0
     for span in system_spans:
@@ -125,18 +145,28 @@ def score_content_discovery(
     )
 
 
-def combined_score(pacing: PacingScore | None, discovery: ContentDiscoveryScore | None) -> float:
+def combined_score(
+    pacing: PacingScore | None,
+    discovery: ContentDiscoveryScore | None,
+    *,
+    profile: "CalibrationProfile | None" = None,
+) -> float:
     """One number for the sweep to maximise.
 
     Discovery is weighted above pacing because MVP 3 is the project's first gate:
     a system that breathes beautifully around the wrong content is worth less
-    than one that finds the right content and paces it adequately.
+    than one that finds the right content and paces it adequately. How much
+    above is `calibration.score_weights` in the profile (17.1) - the ratio
+    decides which profile a sweep picks, so it is not a constant in here.
     """
+    weights = (
+        profile.get("calibration.score_weights") if profile is not None else DEFAULT_SCORE_WEIGHTS
+    )
     parts: list[tuple[float, float]] = []
     if discovery is not None:
-        parts.append((0.6, discovery.f1))
+        parts.append((float(weights["discovery"]), discovery.f1))
     if pacing is not None:
-        parts.append((0.4, pacing.f1))
+        parts.append((float(weights["pacing"]), pacing.f1))
     if not parts:
         return 0.0
     total_weight = sum(w for w, _ in parts)

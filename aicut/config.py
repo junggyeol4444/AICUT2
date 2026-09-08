@@ -77,6 +77,9 @@ class CalibrationProfile:
     measured: set[str] = field(default_factory=set)
     measured_at: str | None = None
     eval_score: dict[str, float] = field(default_factory=dict)
+    #: 17.4 step 4: the broadcast setup this profile was measured in, so a run
+    #: can notice when the setup has changed and the values need re-measuring.
+    environment: dict[str, Any] = field(default_factory=dict)
     notes: str = ""
     strict: bool = False
     source_path: Path | None = None
@@ -94,6 +97,7 @@ class CalibrationProfile:
             measured=set(meta.get("measured", [])),
             measured_at=meta.get("measured_at"),
             eval_score=meta.get("eval_score", {}) or {},
+            environment=meta.get("environment", {}) or {},
             notes=meta.get("notes", ""),
             source_path=source_path,
         )
@@ -199,6 +203,7 @@ class CalibrationProfile:
             measured=set(self.measured) | set(measured),
             measured_at=self.measured_at,
             eval_score=dict(self.eval_score),
+            environment=dict(self.environment),
             notes=self.notes,
             strict=self.strict,
             source_path=self.source_path,
@@ -212,6 +217,7 @@ class CalibrationProfile:
             "measured": sorted(self.measured),
             "measured_at": self.measured_at,
             "eval_score": self.eval_score,
+            "environment": self.environment,
             "notes": self.notes,
         }
         return out

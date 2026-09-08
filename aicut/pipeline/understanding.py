@@ -46,6 +46,7 @@ def run(ctx: RunContext, *, sample_frames: bool = False) -> RunContext:
         face_ratio=faces_mod.face_ratio_lookup(ctx.signals.faces) if ctx.signals.faces else None,
     )
     ctx.store.replace_situations(ctx.project.project_id, situations)
+    _check_environment(ctx, situations, utterances)
 
     windows = _first_pass(ctx, duration, situations, frames=frames)
     ctx.store.replace_windows(ctx.project.project_id, windows)
@@ -70,6 +71,24 @@ def run(ctx: RunContext, *, sample_frames: bool = False) -> RunContext:
             "no face signal: talk/gameplay labelling stays UNKNOWN rather than being guessed (5.3)",
         )
     return ctx
+
+
+def _check_environment(ctx: RunContext, situations, utterances) -> None:
+    """17.4 step 4: say when the setup has moved away from the measured one.
+
+    Reported, never corrected. Re-measuring needs the labelled dataset of 17.2,
+    which only a person can supply, and quietly nudging a parameter here would
+    be code deciding a value 17.1 gives to the profile.
+    """
+    from aicut.calibration import environment as environment_mod
+
+    current = environment_mod.fingerprint(ctx.media, situations, utterances)
+    drift = environment_mod.compare(ctx.profile.environment, current)
+    ctx.note("environment", current)
+    if drift:
+        ctx.note("environment_drift", drift)
+        for line in drift:
+            log.warning("profile %r may need re-measuring - %s", ctx.profile.name, line)
 
 
 def _sample_frames(ctx: RunContext, duration: float) -> list[tuple[float, str]]:

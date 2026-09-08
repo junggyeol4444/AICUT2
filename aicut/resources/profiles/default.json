@@ -19,7 +19,8 @@
       "tension",
       "thumbnail",
       "topic_shift",
-      "scan.frames_per_window"
+      "scan.frames_per_window",
+      "calibration"
     ]
   },
   "scan": {
@@ -170,5 +171,13 @@
     "min_duration_sec": 0.8,
     "max_word_density": 0.7,
     "merge_gap_sec": 0.5
+  },
+  "calibration": {
+    "silence_survival_ratio": 0.6,
+    "content_match_min_iou": 0.3,
+    "score_weights": {
+      "discovery": 0.6,
+      "pacing": 0.4
+    }
   }
 }

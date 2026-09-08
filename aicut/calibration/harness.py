@@ -175,8 +175,14 @@ def build_evaluator(harness: ReplayHarness):
         system = harness.run(profile)
         pacing = score_pacing(system["pacing_keeps"], human_keeps) if human_keeps else None
         found = [(float(a), float(b)) for a, b in system["content_spans"]]
-        content = score_content_discovery(found, human_spans) if human_spans else None
-        return combined_score(pacing, content)
+        # The profile being tried carries the match threshold and the score
+        # weights too (17.1), so a sweep over them changes what it is
+        # maximising - which is the point of sweeping them.
+        content = (
+            score_content_discovery(found, human_spans, profile=profile)
+            if human_spans else None
+        )
+        return combined_score(pacing, content, profile=profile)
 
     return evaluate
 

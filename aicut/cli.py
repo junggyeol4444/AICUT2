@@ -411,6 +411,9 @@ def cmd_calibrate(args) -> int:
         if harness is not None:
             harness.close()
 
+    # 17.4 step 4 needs to know what setup this profile was measured in, or a
+    # later run has nothing to compare against.
+    result.profile.environment = _dataset_environment(args, dataset)
     out = Path(args.out or Path(args.workspace) / "profiles" / f"{result.profile.name}.json")
     result.profile.save(out)
     result.save_trials(out.with_suffix(".trials.json"))
@@ -458,6 +461,34 @@ def _calibrate_init(args) -> int:
     print(f"profile saved to {out}")
     print("this is step 1 of 17.4; run the sweep before treating these as final")
     return 0
+
+
+def _dataset_environment(args, dataset) -> dict:
+    """The broadcast setup a sweep was run against (17.4 step 4).
+
+    Read from the dataset's own source. It is best effort: a sweep is still a
+    valid sweep if the source has since moved, and an empty environment simply
+    means later runs have nothing to compare against rather than a failure.
+    """
+    from aicut.calibration import environment as environment_mod
+
+    try:
+        from aicut.media.probe import probe
+
+        store = _store(args)
+        media = probe(dataset.source_path)
+        source = str(Path(dataset.source_path).resolve())
+        project = next(
+            (p for p in reversed(store.list_projects())
+             if p.file_path and str(Path(p.file_path).resolve()) == source),
+            None,
+        )
+        situations = store.situations(project.project_id) if project else []
+        utterances = store.utterances(project.project_id) if project else []
+        return environment_mod.fingerprint(media, situations, utterances)
+    except Exception as exc:
+        log.warning("could not record the measurement environment: %s", exc)
+        return {}
 
 
 def _record_profile(args, profile: CalibrationProfile) -> str:
@@ -941,7 +972,9 @@ def _derive_silences(args, dataset, path: Path) -> int:
         TranscriptFileTranscriber(args.output_transcript).transcribe(),
         source_duration_sec=project.duration_sec or 0.0,
     )
-    verdicts = dataset.derive_silence_verdicts(signals.silences, alignment)
+    verdicts = dataset.derive_silence_verdicts(
+        signals.silences, alignment, profile=_profile(args),
+    )
     dataset.save(path)
     kept = sum(1 for v in verdicts if v.kept)
     print(f"derived {len(verdicts)} silence verdicts from the human edit: {kept} kept, {len(verdicts) - kept} cut")

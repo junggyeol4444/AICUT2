@@ -332,10 +332,22 @@ def build_report(ctx: RunContext, state: State, episodes: list[Episode]) -> dict
         "elapsed_sec": ctx.report.get("elapsed_sec"),
         "profile": ctx.report.get("profile"),
         "producer": ctx.report.get("producer"),
+        # 17.4 step 4: the setup this broadcast was recorded in, and how it
+        # differs from the one the profile was measured in. Drift is reported,
+        # never corrected - re-measuring needs the 17.2 dataset.
+        "environment": ctx.report.get("environment", {}),
+        "environment_drift": ctx.report.get("environment_drift", []),
         "provisional_parameters_used": ctx.report.get("provisional_parameters_used", []),
-        "warning": (
-            "some judgement thresholds are still unmeasured guesses (17.5); "
-            "run the calibration sweep before trusting these results"
-            if ctx.report.get("provisional_parameters_used") else ""
-        ),
+        "warning": "; ".join(part for part in (
+            (
+                "some judgement thresholds are still unmeasured guesses (17.5); "
+                "run the calibration sweep before trusting these results"
+                if ctx.report.get("provisional_parameters_used") else ""
+            ),
+            (
+                "this broadcast's setup differs from the one the profile was "
+                "measured in, so 17.4 step 4 asks for a re-measurement"
+                if ctx.report.get("environment_drift") else ""
+            ),
+        ) if part),
     }

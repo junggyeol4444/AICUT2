@@ -28,6 +28,9 @@ from aicut.errors import AicutError
 
 SCHEMA_VERSION = "1"
 
+#: Used only when no profile is passed. Every calibration path has one.
+DEFAULT_SURVIVAL_RATIO = 0.6
+
 
 @dataclass
 class ContentSpan:
@@ -137,7 +140,8 @@ class Dataset:
         silences: Sequence[Any],
         alignment,
         *,
-        survival_ratio: float = 0.6,
+        survival_ratio: float | None = None,
+        profile: Any = None,
     ) -> list[SilenceVerdict]:
         """Read the pacing verdicts out of what a human actually kept (12.3 B).
 
@@ -152,7 +156,18 @@ class Dataset:
         This is what makes 17.2 affordable. The labels come out of an edit that
         already exists rather than a person marking hundreds of pauses by hand,
         and they carry the distinction 17.3 actually scores.
+
+        How much of a gap has to survive to count as kept is
+        ``calibration.silence_survival_ratio`` in the profile. That one belongs
+        there more than any other: it decides the ground truth 17.3 scores the
+        system against, so a constant here would be a number nobody measured
+        deciding whether every measurement passes.
         """
+        if survival_ratio is None:
+            survival_ratio = (
+                profile.get_float("calibration.silence_survival_ratio")
+                if profile is not None else DEFAULT_SURVIVAL_RATIO
+            )
         kept = sorted(
             (s for s in alignment.kept_spans if s.output_start_sec is not None),
             key=lambda s: s.source_start_sec,
