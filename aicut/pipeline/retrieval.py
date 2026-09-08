@@ -226,10 +226,29 @@ class SceneIndex:
 
         for detail in details:
             for beat in detail.beats:
-                for scene in scenes:
-                    at = float(beat.get("at_sec", -1))
-                    if scene.start_sec <= at <= scene.end_sec:
+                at = float(beat.get("at_sec", -1))
+                if at < 0:
+                    continue
+                covering = [s for s in scenes if s.start_sec <= at <= s.end_sec]
+                if covering:
+                    for scene in covering:
                         scene.tokens.extend(tokenize(str(beat.get("what", ""))))
+                    continue
+                # A second-pass beat over a stretch with no speech and no event
+                # mention had nowhere to attach and was dropped: 5.1 sent the
+                # precise pass over exactly the moments worth looking at, and
+                # retrieval could never reach the ones that were silent. Same
+                # hole the mention branch above closes, on the other path -
+                # and 16장's first row is the case where this is the only path
+                # there is (음성 미감지 구간).
+                what = str(beat.get("what", ""))
+                end = min(detail.end_sec, at + max_scene_sec)
+                scenes.append(Scene(
+                    start_sec=at,
+                    end_sec=end if end > at else min(detail.end_sec, at + 1.0),
+                    text=what,
+                    tokens=tokenize(f"{what} {detail.notes}"),
+                ))
 
         scenes.sort(key=lambda s: s.start_sec)
         return cls(scenes)

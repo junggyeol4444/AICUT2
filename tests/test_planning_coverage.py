@@ -408,3 +408,74 @@ class StitchedEpisodeIsReportedTests(unittest.TestCase):
         self._report(episode, scenes, ["e1"])
 
         self.assertEqual(len(episode.timeline), 2)
+
+
+class SilentSecondPassBeatsAreRetrievableTests(unittest.TestCase):
+    """16장 row 1: 음성 미감지 구간 — STT 우회, 화면 기반으로 구성.
+
+    The mention branch already gives a silent event mention its own scene, with
+    the comment "a hole in one path is a hole". The second pass had the same
+    hole: a beat from 5.1's precise sweep landing on a stretch with no speech
+    and no mention had no scene to attach to and was dropped, so the moments
+    the system looked hardest at were the ones retrieval could not reach.
+    """
+
+    def _index(self, beats, utterances=(), notes=""):
+        from aicut.models import DetailSpan
+        from aicut.pipeline.retrieval import SceneIndex
+
+        return SceneIndex.build(
+            list(utterances), [],
+            [DetailSpan(start_sec=100.0, end_sec=160.0, beats=list(beats), notes=notes)],
+            source_sec=3600.0,
+        )
+
+    def test_a_beat_over_silence_becomes_a_retrievable_scene(self):
+        index = self._index([{"at_sec": 110.0, "what": "캐릭터가 절벽에서 떨어진다"}])
+
+        self.assertEqual(len(index.scenes), 1)
+        scene = index.scenes[0]
+        self.assertEqual(scene.start_sec, 110.0)
+        self.assertIn("절벽에서", scene.text)
+
+    def test_it_is_findable_by_what_the_pass_saw(self):
+        from aicut.config import CalibrationProfile
+
+        index = self._index([{"at_sec": 110.0, "what": "캐릭터가 절벽에서 떨어진다"}])
+        found = index.search("절벽에서 떨어진 장면", CalibrationProfile.load())
+
+        self.assertTrue(found)
+        self.assertEqual(found[0].scene.start_sec, 110.0)
+
+    def test_a_beat_inside_a_spoken_scene_still_only_enriches_it(self):
+        """Where speech already covers the moment, the beat is context for that
+        scene - not a second scene competing with it."""
+        from aicut.models import Utterance
+
+        index = self._index(
+            [{"at_sec": 105.0, "what": "표정이 굳는다"}],
+            utterances=[Utterance(start_sec=104.0, end_sec=108.0, text="어", speaker="A")],
+        )
+
+        self.assertEqual(len(index.scenes), 1)
+        self.assertIn("굳는다", " ".join(index.scenes[0].tokens))
+
+    def test_a_beat_with_no_timestamp_makes_no_scene(self):
+        self.assertEqual(self._index([{"what": "무언가"}]).scenes, [])
+
+    def test_the_new_scene_obeys_the_same_length_cap_as_the_others(self):
+        """A hole in one path is a hole: the mention branch was capped after an
+        uncapped scene reached a plan, and this path must not reopen it."""
+        from aicut.models import DetailSpan
+        from aicut.pipeline.retrieval import SceneIndex
+
+        index = SceneIndex.build(
+            [], [],
+            [DetailSpan(start_sec=0.0, end_sec=5000.0,
+                        beats=[{"at_sec": 10.0, "what": "일이 벌어진다"}])],
+            source_sec=100.0,
+        )
+
+        self.assertTrue(index.scenes)
+        for scene in index.scenes:
+            self.assertLessEqual(scene.end_sec - scene.start_sec, 100.0 * 0.2)
