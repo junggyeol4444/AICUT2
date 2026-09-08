@@ -616,6 +616,19 @@ def cmd_review(args) -> int:
         return 1
     project = store.get_project(episode.project_id)
     ctx = _context(args, project)
+    if args.action == "thumbnail":
+        # 11.1 offers the frames 사용자에게; this is where a person says which.
+        try:
+            updated = review_mod.choose_thumbnail(ctx, args.episode, args.index)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(f"{args.episode} will upload thumbnail {args.index}: {updated.thumbnail_path}")
+        return 0
+    if not args.reviewer:
+        print("--reviewer is required; the gate records who released the video (11.3)",
+              file=sys.stderr)
+        return 1
     if args.action == "approve":
         review_mod.approve(ctx, args.episode, reviewer=args.reviewer, note=args.note or "")
         print(f"{args.episode} approved by {args.reviewer}; it may now be published")
@@ -1354,8 +1367,11 @@ def cmd_fetch_ffmpeg(args) -> int:
         return 0
     build = platform_build()
     print(f"fetching {build.url}")
+    if not build.sha256 and not args.sha256:
+        print(f"  no digest is recorded for this build. {build.note}" if build.note else "")
+        print("  read the publisher's checksum and pass it: --sha256 <digest>")
     try:
-        target = fetch(args.workspace)
+        target = fetch(args.workspace, sha256=args.sha256)
     except FetchRefused as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -1431,8 +1447,7 @@ def cmd_doctor(args) -> int:
     #: What to type when a check comes back missing. A report that says a thing
     #: is absent and not how to get it sends the operator to a search engine.
     checks = (
-        ("ffmpeg/ffprobe on PATH", have_ffmpeg(),
-         "install ffmpeg, or `aicut fetch-ffmpeg`"),
+        ("ffmpeg/ffprobe on PATH", have_ffmpeg(), _ffmpeg_remedy()),
         ("whisperx installed (best word timings, wants a GPU)", _importable("whisperx"),
          "pip install 'aicut[stt]'"),
         ("faster-whisper installed (word timings on a CPU)", _importable("faster_whisper"),
@@ -1494,6 +1509,28 @@ def mvp2_module():
     from aicut.calibration import mvp2
 
     return mvp2
+
+
+def _ffmpeg_remedy() -> str:
+    """What to type to get an ffmpeg, and only what will work.
+
+    `aicut fetch-ffmpeg` refuses to install a build whose digest was never
+    recorded, and none of the three platform builds has one. Offering it as the
+    remedy sent an operator with no ffmpeg to a command that cannot succeed, so
+    it is only offered when it can - and otherwise the way to make it work is
+    named instead.
+    """
+    from aicut.media.ffmpeg_fetch import has_recorded_checksum
+
+    if has_recorded_checksum():
+        return "install ffmpeg, or `aicut fetch-ffmpeg`"
+    return (
+        "install ffmpeg yourself (apt install ffmpeg / brew install ffmpeg /"
+        " winget install ffmpeg).\n"
+        "       `aicut fetch-ffmpeg` needs a digest to verify the download against:"
+        " no build here has one recorded, so pass the publisher's own with"
+        " `--sha256 <digest>`"
+    )
 
 
 def _importable(name: str) -> bool:
@@ -1630,9 +1667,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     review = _sub("review", help="approve or reject an episode (11.3 gate)")
     review.add_argument("episode")
-    review.add_argument("action", choices=["approve", "reject"])
-    review.add_argument("--reviewer", required=True)
+    review.add_argument("action", choices=["approve", "reject", "thumbnail"])
+    review.add_argument("--reviewer", help="required for approve and reject (11.3)")
     review.add_argument("--note")
+    review.add_argument("--index", type=int, default=0, metavar="N",
+                        help="thumbnail: which candidate (0-based) 11.1 offered")
     review.set_defaults(func=cmd_review)
 
     quota = _sub("quota", help="YouTube quota state and the next PT reset (11.4)")
@@ -1766,6 +1805,10 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.set_defaults(func=cmd_benchmark)
 
     fetch_p = _sub("fetch-ffmpeg", help="download a static ffmpeg into the workspace")
+    fetch_p.add_argument("--sha256", default=None, metavar="DIGEST",
+                         help="the publisher's SHA-256 for this build; required when "
+                              "none is recorded here, because an unverified ffmpeg "
+                              "runs whatever the network returns")
     fetch_p.add_argument("--force", action="store_true", help="fetch even if one is already present")
     fetch_p.set_defaults(func=cmd_fetch_ffmpeg)
 

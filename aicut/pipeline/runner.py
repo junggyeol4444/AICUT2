@@ -70,6 +70,7 @@ class Pipeline:
         *,
         length_hint_sec: float | None = None,
         channel_ref: str = "",
+        profile_id: str = "",
     ) -> Project:
         project = Project(
             # Absolute: the edit plan carries this path and is read back later,
@@ -79,6 +80,9 @@ class Pipeline:
             file_path=str(Path(file_path).expanduser().resolve()),
             status=State.QUEUED.value,
             profile_name=self.profile.name,
+            # Which stored row, not just which name (17장). Names repeat across
+            # recalibrations of the same channel; ids do not.
+            profile_id=profile_id,
             channel_ref=channel_ref,
             length_hint_sec=length_hint_sec,
         )
@@ -362,6 +366,10 @@ def build_report(ctx: RunContext, state: State, episodes: list[Episode]) -> dict
         # to be measured rather than estimated. Per stage, because that is the
         # number that says whether a six-hour source is usable.
         "stage_seconds": ctx.report.get("stage_seconds", {}),
+        # Which audio tracks were actually listened to (5.2). On a multitrack
+        # recording this is how an operator sees that the guest's call track was
+        # read rather than silently skipped.
+        "speech_tracks": ctx.report.get("speech_tracks", []),
         "profile": ctx.report.get("profile"),
         "producer": ctx.report.get("producer"),
         # 17.4 step 4: the setup this broadcast was recorded in, and how it

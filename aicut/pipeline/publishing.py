@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from aicut.errors import ConfigError, QuotaExceeded
+from aicut.errors import AlreadyUploaded, ConfigError, QuotaExceeded
 from aicut.intelligence.quota import QuotaLedger
 from aicut.intelligence.youtube import YouTubeClient
 from aicut.models import Episode
@@ -57,6 +57,20 @@ def upload_episode(
     """Upload one episode privately and record the result."""
     if not episode.output_mp4_path:
         raise ValueError(f"episode {episode.episode_id} has not been rendered")
+
+    # A successful upload leaves review_status at `pending` or `approved`, which
+    # is not one of the states the UI hides the 업로드 button for - so a reload
+    # and a second click uploaded the same video again, spending another 1,600
+    # units (11.4) and leaving a duplicate on the channel that nobody asked for.
+    # The video id is the fact that settles it; the button's state is not.
+    existing = (episode.metadata.get("youtube") or {}).get("video_id")
+    if existing:
+        raise AlreadyUploaded(
+            f"episode {episode.episode_id} is already video {existing}. Uploading "
+            "again would spend another 1,600 quota units (11.4) and put a second "
+            "copy on the channel. Publish it with `aicut upload --publish`, or "
+            "clear metadata.youtube first if the video was deleted on YouTube."
+        )
 
     privacy = _pre_review_privacy(ctx.profile.get("upload.privacy_on_upload"))
     # 원본 24장's 업로드 정보, written by the packaging step. The profile
@@ -105,7 +119,37 @@ def upload_episode(
     episode.review_status = "pending" if ctx.profile.get("upload.require_human_review") else "approved"
     ctx.store.save_episode(episode)
 
-    chosen = thumbnail_path or (episode.thumbnail_candidates[0] if episode.thumbnail_candidates else None)
+    # 11.1 offers the frames so a person picks one, and 15.5 puts that choice on
+    # the results screen. `thumbnail_path` is the reviewer's pick; `episode
+    # .thumbnail_path` is a pick they made earlier and it was stored. Only when
+    # neither exists does the first candidate stand in - and that is now a
+    # fallback rather than the only outcome, which is what it had been: nothing
+    # ever passed `thumbnail_path`, so candidate 0 was always the one uploaded.
+    playlist = (upload_info.get("playlist") or "").strip()
+    if playlist:
+        # Packaging stores the playlist the metadata chose (원본 24장). Storing
+        # it and never acting on it made the upload report success while leaving
+        # the video out of the playlist picked for it.
+        try:
+            playlist_id = client.add_to_playlist(result.video_id, playlist)
+            episode.metadata["youtube"] = dict(episode.metadata["youtube"])
+            episode.metadata["youtube"]["playlist_id"] = playlist_id
+            ctx.store.save_episode(episode)
+        except Exception as exc:
+            log.warning("uploaded %s but could not add it to %r: %s",
+                        episode.episode_id, playlist, exc)
+            ctx.report.setdefault("degraded", []).append({
+                "episode_id": episode.episode_id,
+                "reason": "playlist_not_set",
+                "detail": f"{type(exc).__name__}: {exc}",
+                "video_id": result.video_id,
+            })
+
+    chosen = (
+        thumbnail_path
+        or episode.thumbnail_path
+        or (episode.thumbnail_candidates[0] if episode.thumbnail_candidates else None)
+    )
     if chosen:
         try:
             client.set_thumbnail(result.video_id, chosen)

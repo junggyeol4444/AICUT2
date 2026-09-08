@@ -386,6 +386,11 @@ ratios of the video. Read them against the episode's own structure - a fall at
 `missing_12_1` names the metrics this collection did not get. Reason from what
 is here and say when an observation would have needed one of those.
 
+One record per episode, the most recent measurement of it. `snapshots` is how
+many times it has been collected and `collected_at` is when this one was taken -
+an episode measured once a week ago and one measured this morning are not equally
+settled evidence, and neither is a video that is three days old.
+
 27장 shows the shape of an answer: 초반 이탈률이 높다 -> "이 유형에서는 초반 정보
 전달 방식 개선 필요". Keep the hedge; a curve is evidence, not proof.
 

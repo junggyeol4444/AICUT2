@@ -280,11 +280,29 @@ class UiServer:
     def profile_for_project(self, project) -> CalibrationProfile:
         """The profile this project was analysed with, not whatever is current.
 
-        `Pipeline.submit` records the profile's name on the project. Reading a
+        `Pipeline.submit` records the profile's id on the project. Reading a
         finished project back under a different profile would report thresholds
         that never produced it — the silent mismatch 17장 is written to prevent.
+
+        The id, not the name: `tb_calibration_profile.name` is not unique, and
+        recalibrating a channel naturally writes another row under the same
+        `<channel>-calibrated`. Resolving by name returned whichever row came
+        first, so after a restart a project analysed under the newer profile was
+        reviewed, reported and uploaded under the older one's thresholds.
+
+        Projects submitted before the id was recorded fall back to the name, and
+        then to the profile on disk - an old workspace still opens.
         """
-        for row in self.store.profiles():
+        rows = self.store.profiles()
+        if project.profile_id:
+            for row in rows:
+                if row["profile_id"] == project.profile_id:
+                    return CalibrationProfile.from_mapping(row["params"])
+            log.warning(
+                "project %s names profile %s, which is no longer stored; falling back",
+                project.project_id, project.profile_id,
+            )
+        for row in rows:
             if row["name"] == project.profile_name:
                 return CalibrationProfile.from_mapping(row["params"])
         return CalibrationProfile.load(self.profile_path)
@@ -311,11 +329,15 @@ class UiServer:
 
         # 15.2's profile picker. Unset means the server default, which is what
         # a first run has before anything has been measured (17.4).
-        pipeline = self.pipeline(body.get("profile_id") or None)
+        chosen_profile = body.get("profile_id") or ""
+        pipeline = self.pipeline(chosen_profile or None)
         project = pipeline.submit(
             source,
             length_hint_sec=_optional_float(body.get("length_hint_sec")),
             channel_ref=body.get("channel_ref", "") or "",
+            # The row that was picked, so reading this project back later finds
+            # the same thresholds even after the channel is recalibrated (17장).
+            profile_id=chosen_profile,
         )
         transcript = body.get("transcript") or None
         render = bool(body.get("render", True))
@@ -444,9 +466,17 @@ class UiServer:
                 "cuts": len(episode.timeline),
                 "titles": episode.title_candidates,
                 "thumbnails": episode.thumbnail_candidates,
+                "thumbnail_chosen": (
+                    episode.thumbnail_candidates.index(episode.thumbnail_path)
+                    if episode.thumbnail_path in episode.thumbnail_candidates else None
+                ),
                 "output": episode.output_mp4_path,
                 "render_status": episode.render_status,
                 "review_status": episode.review_status,
+                # The fact that settles whether uploading again would duplicate
+                # the video. review_status does not: a successful upload leaves
+                # it at pending or approved.
+                "youtube_video_id": (episode.metadata.get("youtube") or {}).get("video_id", ""),
                 "notes": episode.notes,
                 "plan_path": str(plan_path) if plan_path.exists() else None,
                 "metadata": episode.metadata,
@@ -469,6 +499,11 @@ class UiServer:
             raise KeyError(f"unknown episode {episode_id}")
         ctx = self.context(episode.project_id)
         action = body.get("action")
+        if action == "thumbnail":
+            # 11.1's candidates are offered so a person picks one; without a way
+            # to say which, the offer was decorative.
+            updated = review_mod.choose_thumbnail(ctx, episode_id, int(body.get("index", 0)))
+            return {"episode_id": episode_id, "thumbnail_path": updated.thumbnail_path}
         reviewer = (body.get("reviewer") or "").strip()
         if not reviewer:
             raise ValueError("a reviewer name is required; the gate records who released the video (11.3)")

@@ -38,5 +38,9 @@ class QuotaExceeded(AicutError):
         self.reset_at = reset_at
 
 
+class AlreadyUploaded(AicutError):
+    """This episode already has a YouTube video id (11.4: an upload costs 1,600 units)."""
+
+
 class ProviderError(AicutError):
     """The reasoning provider returned something unusable."""

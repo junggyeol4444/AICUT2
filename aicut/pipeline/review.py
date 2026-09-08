@@ -87,6 +87,29 @@ def reject(ctx: RunContext, episode_id: str, *, reviewer: str, reason: str) -> E
     return episode
 
 
+def choose_thumbnail(ctx: RunContext, episode_id: str, index: int) -> Episode:
+    """11.1 / 15.5: the person picks which candidate frame is the thumbnail.
+
+    11.1 extracts the top frames 사용자에게 제시한다 and fixes no template;
+    15.5 puts them on the results screen as something the reviewer chooses
+    between. Until this existed there was nowhere to record the choice, so the
+    upload always used candidate 0 and looking at the others changed nothing.
+    """
+    episode = ctx.store.get_episode(episode_id)
+    if episode is None:
+        raise KeyError(f"unknown episode {episode_id}")
+    if not episode.thumbnail_candidates:
+        raise ValueError(f"episode {episode_id} has no thumbnail candidates to choose from")
+    if not 0 <= index < len(episode.thumbnail_candidates):
+        raise ValueError(
+            f"thumbnail {index} is out of range; this episode has "
+            f"{len(episode.thumbnail_candidates)} candidate(s)"
+        )
+    episode.thumbnail_path = episode.thumbnail_candidates[index]
+    ctx.store.save_episode(episode)
+    return episode
+
+
 def record_candidate_verdict(ctx: RunContext, candidate_id: str, verdict: str, note: str = "") -> None:
     """15.4: a person agrees or disagrees with a discovery decision.
 

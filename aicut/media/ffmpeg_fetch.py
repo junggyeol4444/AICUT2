@@ -20,6 +20,7 @@ What it deliberately does not do:
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import logging
 import os
@@ -127,10 +128,24 @@ def platform_build() -> Build:
     return build
 
 
+def has_recorded_checksum() -> bool:
+    """Whether this platform's build can be verified, and so fetched at all.
+
+    Everything that offers `aicut fetch-ffmpeg` as the way out of a missing
+    ffmpeg has to ask first: the refusal below is correct, but advertising a
+    command that cannot succeed sends an operator with no ffmpeg in a circle.
+    """
+    try:
+        return bool(platform_build().sha256)
+    except FetchRefused:
+        return False
+
+
 def fetch(
     workspace: str | os.PathLike[str] | None = None,
     *,
     build: Build | None = None,
+    sha256: str | None = None,
     timeout: int = 300,
 ) -> Path:
     """Download, verify and unpack ffmpeg. Returns the directory it landed in.
@@ -139,6 +154,12 @@ def fetch(
     does not match.
     """
     build = build or platform_build()
+    if sha256:
+        # The operator read the digest off the publisher's own checksum file and
+        # passed it in. That is the same verification, done by the person who
+        # can actually see the publisher's page - and it is the difference
+        # between a refusal and a way forward on a machine with no ffmpeg.
+        build = dataclasses.replace(build, sha256=sha256.strip().lower())
     if not build.sha256:
         # The conditional here used to hang off the whole concatenated string
         # rather than the last line, so a build with no note raised with an
@@ -147,7 +168,8 @@ def fetch(
             "no checksum is recorded for this platform's build, so a download cannot be "
             "verified, and an unverified ffmpeg would run whatever the network handed "
             "back.\n"
-            f"  Install ffmpeg yourself, or record the digest for {build.url}"
+            f"  Install ffmpeg yourself, or pass the publisher's digest:\n"
+            f"    aicut fetch-ffmpeg --sha256 <digest>   for {build.url}"
         )
         if build.note:
             message += f"\n  ({build.note})"

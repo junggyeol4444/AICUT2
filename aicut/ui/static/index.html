@@ -393,15 +393,20 @@ el("ep-load").onclick = async () => {
       ${e.titles.length ? `<ol class="titles">${e.titles.map((t) =>
           `<li><span>후보</span>${esc(t)}</li>`).join("")}</ol>` : ""}
       ${(e.thumbnails || []).length ? `<div class="thumbs">${e.thumbnails.map((_, i) =>
-          `<img loading="lazy" alt="썸네일 후보 ${i + 1}" data-thumb="${esc(e.episode_id)}" data-i="${i}">`
-        ).join("")}</div><div class="muted">썸네일 후보 — 템플릿 없이 사람이 고른다 (11.1)</div>` : ""}
+          `<img loading="lazy" alt="썸네일 후보 ${i + 1}" data-thumb="${esc(e.episode_id)}" data-i="${i}"
+            title="이걸로 고르기" style="cursor:pointer${e.thumbnail_chosen === i
+              ? ";outline:3px solid currentColor" : ""}">`
+        ).join("")}</div><div class="muted">썸네일 후보 — 템플릿 없이 사람이 고른다 (11.1). ${
+          e.thumbnail_chosen == null ? "눌러서 고른다. 안 고르면 1번이 올라간다"
+            : `${e.thumbnail_chosen + 1}번 선택됨`}</div>` : ""}
       ${e.output ? `<video controls preload="none" data-video="${esc(e.episode_id)}"></video>
         <div class="muted">출력: ${esc(e.output)}</div>` : ""}
       <div class="row" style="margin-top:10px">
         <button class="small" data-plan="${esc(e.episode_id)}">편집 계획 보기</button>
         ${e.output ? `<button class="small" data-reveal="${esc(e.episode_id)}">폴더 열기</button>` : ""}
-        ${e.output && e.review_status !== "uploaded" && e.review_status !== "published"
+        ${e.output && !e.youtube_video_id
             ? `<button class="small" data-upload="${esc(e.episode_id)}">비공개 업로드</button>` : ""}
+        ${e.youtube_video_id ? `<span class="muted">업로드됨 ${esc(e.youtube_video_id)}</span>` : ""}
         ${e.review_status === "approved"
             ? `<button class="small" data-publish="${esc(e.episode_id)}">공개</button>` : ""}
         <button class="small" data-review="approve" data-e="${esc(e.episode_id)}">승인</button>
@@ -420,6 +425,13 @@ el("ep-load").onclick = async () => {
     return URL.createObjectURL(await res.blob());
   };
   el("ep-list").querySelectorAll("img[data-thumb]").forEach(async (img) => {
+    // 11.1: the candidates are offered so a person picks one. Clicking is that
+    // pick, and the upload uses it instead of always taking the first frame.
+    img.onclick = async () => {
+      await post(`/api/episodes/${img.dataset.thumb}/review`,
+                 { action: "thumbnail", index: Number(img.dataset.i) });
+      el("ep-load").click();
+    };
     try { img.src = await mediaUrl(`/api/episodes/${img.dataset.thumb}/thumbnail/${img.dataset.i}`); }
     catch { img.replaceWith(Object.assign(document.createElement("span"),
       { className: "muted", textContent: "썸네일 파일이 없다" })); }

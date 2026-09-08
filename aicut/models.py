@@ -275,6 +275,12 @@ class Project:
     duration_sec: float = 0.0
     status: str = "QUEUED"
     profile_name: str = "default"
+    #: The stored profile row this project was analysed with. Names are not
+    #: unique - recalibrating a channel writes another row under the same
+    #: `<channel>-calibrated` - so the name alone resolved to whichever row was
+    #: written first, and a finished project was reported under thresholds that
+    #: never produced it (17장). Empty means the shipped profile on disk.
+    profile_id: str = ""
     created_at: str = ""
     length_hint_sec: float | None = None     # 2.6: a hint, never a constraint
     channel_ref: str = ""

@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
+from typing import Sequence
 
 from aicut.config import CalibrationProfile
 from aicut.media.ffmpeg_util import require_ffmpeg, run
@@ -87,6 +88,70 @@ def _parse_silences(output: str, *, offset: float = 0.0, merge_gap: float = 0.0)
         else:
             merged.append(current)
     return merged
+
+
+def intersect_silences(
+    per_track: Sequence[Sequence[Silence]], *, min_duration_sec: float,
+) -> list[Silence]:
+    """Silence across every speech track at once (5.2, 16장).
+
+    On a multitrack recording the mic being quiet does not mean nobody is
+    talking - the guest is on the call track. Judging pacing from the mic alone
+    read those stretches as dead air and cut them out of a video whose audio
+    does contain the guest, so a silence here is a moment where all of the
+    speech tracks are quiet together.
+
+    Spans shorter than ``min_duration_sec`` after the intersection are dropped:
+    the same threshold the per-track detection used, applied again because an
+    intersection is shorter than either side.
+    """
+    lists = [sorted(s, key=lambda x: x.start_sec) for s in per_track if s]
+    if not lists:
+        return []
+    common = list(lists[0])
+    for other in lists[1:]:
+        merged: list[Silence] = []
+        i = j = 0
+        while i < len(common) and j < len(other):
+            start = max(common[i].start_sec, other[j].start_sec)
+            end = min(common[i].end_sec, other[j].end_sec)
+            if end > start:
+                merged.append(Silence(start_sec=start, end_sec=end))
+            if common[i].end_sec <= other[j].end_sec:
+                i += 1
+            else:
+                j += 1
+        common = merged
+        if not common:
+            return []
+    return [s for s in common if s.duration >= min_duration_sec]
+
+
+def loudest_envelope(
+    envelopes: Sequence[Sequence[tuple[float, float]]],
+) -> list[tuple[float, float]]:
+    """The loudest of several tracks at each moment (5.2).
+
+    Tension is the room's energy, and 5.2 lists 웃음 / 비명 / 환호 under 오디오
+    without saying which track they arrive on: a guest screaming on the call
+    track is a peak whether or not the host made a sound. Taking the mic alone
+    flattened it.
+
+    Frames are matched by their own timestamps, so tracks sampled on the same
+    grid line up and a track that is shorter simply stops contributing.
+    """
+    kept = [list(e) for e in envelopes if e]
+    if not kept:
+        return []
+    if len(kept) == 1:
+        return kept[0]
+    merged: dict[float, float] = {}
+    for envelope in kept:
+        for at, level in envelope:
+            key = round(at, 3)
+            if key not in merged or level > merged[key]:
+                merged[key] = level
+    return [(at, merged[at]) for at in sorted(merged)]
 
 
 def rms_envelope(

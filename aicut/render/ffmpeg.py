@@ -494,6 +494,21 @@ def _count_audio_streams(source: str) -> int:
         return 1
 
 
+def concat_entry(path: str | Path) -> str:
+    """One line of the concat demuxer's manifest, with the path escaped.
+
+    The demuxer parses quotes as syntax, so a path containing an apostrophe -
+    `/home/O'Brien/aicut` - ended the quoted string early and ffmpeg went
+    looking for `/home/OBrien/...`, which does not exist. Measured: every
+    segment encodes, and only the join fails, so the whole render is lost at
+    the last step.
+
+    Single quotes cannot be escaped inside single quotes; the quoting has to be
+    closed, an escaped quote emitted, and the quoting reopened - `'\''`.
+    """
+    return "file '" + str(path).replace("'", "'\\''") + "'"
+
+
 def build_concat_command(list_path: str, out_path: str) -> list[str]:
     """Join the segments (10.4-2: concat, not a tower of crossfades)."""
     return [
@@ -708,10 +723,16 @@ def _effects_for_piece(
         else:
             visual.pop("transition", None)
 
-    # Where this piece begins on the cut's own clock, once the removed spans
-    # before it are taken out.
-    elapsed = sum(p.duration for p in group[:group.index(segment)])
-    span = (elapsed, elapsed + segment.duration)
+    # Where this piece begins on the cut's own clock. The plan states a
+    # graphic's start/end and a sound effect's `at` in seconds within the cut,
+    # and it was written before pacing removed anything - so the offset is the
+    # piece's position in the SOURCE, not the sum of the surviving pieces before
+    # it. Measured: on a 0-20s cut with 10-12s removed, an effect at 14s belongs
+    # 2s into the piece starting at source 12s; summing durations put it at 4s,
+    # and a larger removal moves it onto the wrong piece or off the end.
+    offset = segment.source_start_sec - cut.source_start_sec
+    span = (offset, offset + segment.duration)
+    elapsed = offset
 
     graphic = visual.get("graphic")
     if graphic:
@@ -903,7 +924,8 @@ class Renderer:
 
         list_path = stage / "segments.txt"
         list_path.write_text(
-            "\n".join(f"file '{p.as_posix()}'" for p in segment_paths) + "\n", encoding="utf-8"
+            "\n".join(concat_entry(p.as_posix()) for p in segment_paths) + "\n",
+            encoding="utf-8",
         )
         joined = stage / "joined.mp4"
         run(build_concat_command(str(list_path), str(joined)))

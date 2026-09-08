@@ -157,15 +157,30 @@ def learn(ctx: RunContext, knowledge_path: str | Path | None = None) -> dict[str
     """Turn collected metrics into strategy updates and fold them into knowledge."""
     records = []
     for episode in ctx.store.episodes(ctx.project.project_id):
-        for row in ctx.store.performance(episode.episode_id):
-            records.append({
-                "episode_id": episode.episode_id,
-                "structure": episode.planned_structure.get("structure_name", ""),
-                "target_type": episode.target_type,
-                "duration_sec": episode.planned_duration_sec,
-                "cut_count": len(episode.timeline),
-                "metrics": row["metrics"],
-            })
+        rows = sorted(
+            ctx.store.performance(episode.episode_id),
+            key=lambda r: r.get("collected_at") or "",
+        )
+        if not rows:
+            continue
+        # One snapshot per episode: the newest. Every collection inserts a row,
+        # and two runs over the same rolling --days window measure the same
+        # views and the same retention curve. Passing both made one episode's
+        # evidence count twice and pulled 12.2's strategy updates toward
+        # whichever episode had been collected most often - not toward whatever
+        # the viewers actually did. History stays in the table; what the
+        # judgement sees is the current state of each video.
+        latest = rows[-1]
+        records.append({
+            "episode_id": episode.episode_id,
+            "structure": episode.planned_structure.get("structure_name", ""),
+            "target_type": episode.target_type,
+            "duration_sec": episode.planned_duration_sec,
+            "cut_count": len(episode.timeline),
+            "metrics": latest["metrics"],
+            "collected_at": latest.get("collected_at"),
+            "snapshots": len(rows),
+        })
     if not records:
         return {"observations": [], "strategy_updates": []}
 

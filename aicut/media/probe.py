@@ -58,6 +58,34 @@ class MediaInfo:
                 return track
         return None
 
+    def speech_tracks(self) -> list[AudioTrack]:
+        """Every track that carries somebody talking (5.2).
+
+        5.2 separates 내 마이크 / 통화 / 게임 / BGM and says 통화 트랙에 2인 이상이
+        있는 경우에만 트랙 내 화자 구분을 적용한다 - the call track is expected to
+        carry people, not just the mic. Reading the mic alone left a guest's
+        speech out of the transcript entirely, and out of understanding and
+        discovery with it; worse, the mic is silent while the guest talks, so
+        pacing read that stretch as dead air and cut it out of a video whose
+        audio does contain the guest.
+
+        Game and BGM are excluded: what is on them is not somebody in the room,
+        and transcribing a game's own dialogue as an utterance would put a
+        character's line in the mouth of whoever was streaming.
+        """
+        speaking = [t for t in self.audio_tracks if t.role in ("mic", "call", "mixed")]
+        if speaking:
+            return speaking
+        # An unlabelled recording: the recorder gave no titles, so nothing can be
+        # ruled out. One unknown track is the whole broadcast; several are more
+        # honestly all read than arbitrarily narrowed to the first.
+        #
+        # A recording whose tracks ARE labelled and carry no speech returns
+        # nothing at all rather than the first track: what is on a game or BGM
+        # stream is not somebody in the room, and transcribing it would put a
+        # character's line in a person's mouth.
+        return [t for t in self.audio_tracks if t.role == "unknown"]
+
     def validate(self, *, require_video: bool = True) -> list[str]:
         """Refuse a file that cannot be processed, and warn about one that lies.
 

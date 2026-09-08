@@ -250,11 +250,35 @@ class CutPieceEffectTests(unittest.TestCase):
         self.assertNotIn("graphic", placed[2][0])
 
     def test_a_sound_effect_is_rebased_onto_its_own_piece(self):
-        """14s into the cut is 4s into the second piece once 10-12 is removed."""
+        """The plan states the time within the cut, and it was written before
+        pacing removed anything - so the offset is the piece's position in the
+        SOURCE. The second piece starts at source 12s, so 14s into the cut is 2s
+        into it. Summing the surviving pieces before it gave 4s, and a larger
+        removal moves the effect onto the wrong piece or off the end entirely.
+        """
         placed = self._placed()
         self.assertNotIn("sfx", placed[0][1])
-        self.assertEqual(placed[1][1]["sfx"]["at"], 4.0)
+        self.assertEqual(placed[1][1]["sfx"]["at"], 2.0)
         self.assertNotIn("sfx", placed[2][1])
+
+    def test_a_bigger_removal_does_not_move_an_effect_onto_another_piece(self):
+        """The failure the offset arithmetic causes, stated as its own case."""
+        from aicut.models import Cut
+        from aicut.render.ffmpeg import _effects_for_piece, _pieces_per_cut
+        from aicut.render.timeline import Timeline
+
+        cut = Cut(
+            sequence_order=0, source_start_sec=0, source_end_sec=30,
+            audio_effect={"sfx": {"path": "/d.wav", "at": 25.0}},
+            remove_spans=[[5, 20]],
+        )
+        timeline = Timeline.from_cuts([cut])
+        pieces = _pieces_per_cut(timeline.segments)
+        placed = [_effects_for_piece(cut, s, pieces) for s in timeline.segments]
+
+        # Pieces are source 0-5 and 20-30. 25s belongs 5s into the second.
+        self.assertNotIn("sfx", placed[0][1])
+        self.assertEqual(placed[1][1]["sfx"]["at"], 5.0)
 
     def test_framing_and_level_stay_on_every_piece(self):
         for visual, audio in self._placed():

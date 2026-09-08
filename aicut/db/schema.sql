@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS tb_project (
     duration_sec    REAL NOT NULL DEFAULT 0,
     status          TEXT NOT NULL DEFAULT 'QUEUED',
     profile_name    TEXT NOT NULL DEFAULT 'default',
+    profile_id      TEXT NOT NULL DEFAULT '',
     channel_ref     TEXT NOT NULL DEFAULT '',
     length_hint_sec REAL,
     created_at      TEXT NOT NULL

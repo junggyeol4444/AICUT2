@@ -156,9 +156,22 @@ def _report_readiness() -> None:
     from aicut.media.ffmpeg_util import have_ffmpeg
 
     if not have_ffmpeg():
+        from aicut.media.ffmpeg_fetch import has_recorded_checksum
+
         print("\n  ffmpeg was not found. Nothing can be cut or rendered without it;")
-        print("  the screens will still open. Install it, or let aicut fetch it:")
-        print("      aicut fetch-ffmpeg")
+        print("  the screens will still open.")
+        if has_recorded_checksum():
+            print("  Install it, or let aicut fetch it:")
+            print("      aicut fetch-ffmpeg")
+        else:
+            # The fetcher refuses a build it cannot verify, and none of the
+            # three platform builds has a digest recorded. Telling a person who
+            # double-clicked the program to run a command that will refuse is
+            # worse than telling them nothing.
+            print("  Install it:  apt install ffmpeg / brew install ffmpeg /")
+            print("               winget install ffmpeg")
+            print("  (aicut fetch-ffmpeg needs the publisher's SHA-256 to verify")
+            print("   the download: aicut fetch-ffmpeg --sha256 <digest>)")
     try:
         profile = CalibrationProfile.load()
         if profile.provisional:

@@ -28,6 +28,11 @@ COST_VIDEO_INSERT = 1600
 COST_THUMBNAIL_SET = 50
 COST_LIST = 1
 COST_SEARCH = 100
+#: playlists.list is a read (1 unit); playlistItems.insert is a write (50), the
+#: same class as thumbnails.set. 11.4 rations the day at 10,000, so adding a
+#: video to a playlist costs about 3% of one upload - worth stating rather than
+#: leaving as an unbudgeted call.
+COST_PLAYLIST_ITEM_INSERT = 50
 
 
 def _pt_zone(name: str = "America/Los_Angeles"):

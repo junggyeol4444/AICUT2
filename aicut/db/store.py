@@ -92,6 +92,7 @@ class Store:
         ("tb_content_candidate", "suggested_form", "TEXT NOT NULL DEFAULT ''"),
         ("tb_content_candidate", "human_assessment", "TEXT NOT NULL DEFAULT '{}'"),
         ("tb_yt_reference", "human_verdict", "TEXT"),
+        ("tb_project", "profile_id", "TEXT NOT NULL DEFAULT ''"),
     )
 
     def _add_missing_columns(self) -> None:
@@ -113,14 +114,15 @@ class Store:
     def create_project(self, project: Project) -> Project:
         project.created_at = project.created_at or _now()
         self.conn.execute(
-            "INSERT INTO tb_project (project_id, file_path, duration_sec, status, profile_name,"
-            " channel_ref, length_hint_sec, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO tb_project (project_id, file_path, duration_sec, status, profile_name, profile_id,"
+            " channel_ref, length_hint_sec, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 project.project_id,
                 project.file_path,
                 project.duration_sec,
                 project.status,
                 project.profile_name,
+                project.profile_id,
                 project.channel_ref,
                 project.length_hint_sec,
                 project.created_at,
@@ -139,6 +141,7 @@ class Store:
             duration_sec=row["duration_sec"],
             status=row["status"],
             profile_name=row["profile_name"],
+            profile_id=row["profile_id"],
             channel_ref=row["channel_ref"],
             length_hint_sec=row["length_hint_sec"],
             created_at=row["created_at"],

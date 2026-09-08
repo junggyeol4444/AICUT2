@@ -24,6 +24,7 @@ from typing import Any, Iterable, Sequence
 from aicut.errors import AicutError, QuotaExceeded
 from aicut.intelligence.quota import (
     COST_LIST,
+    COST_PLAYLIST_ITEM_INSERT,
     COST_SEARCH,
     COST_THUMBNAIL_SET,
     COST_VIDEO_INSERT,
@@ -227,6 +228,44 @@ class YouTubeClient:
             privacy_status=privacy_status,
             url=f"https://www.youtube.com/watch?v={video_id}",
         )
+
+    def add_to_playlist(self, video_id: str, playlist: str) -> str:
+        """Put an uploaded video in a playlist (원본 24장's 업로드 정보).
+
+        ``playlist`` is what the package named - a title, not an id, because the
+        packaging step is writing for a person. The title is resolved against
+        the channel's own playlists; an unknown one is refused rather than
+        created, since creating a playlist is a channel-level change nobody
+        asked for.
+
+        Returns the playlist id it added to.
+        """
+        self._require(COST_LIST, "playlists.list")
+        response = self._data.playlists().list(
+            part="snippet", mine=True, maxResults=50,
+        ).execute()
+        self.ledger.spend(COST_LIST, "playlists.list")
+        wanted = playlist.strip().casefold()
+        match = next(
+            (item for item in response.get("items", [])
+             if item["snippet"]["title"].strip().casefold() == wanted),
+            None,
+        )
+        if match is None:
+            titles = ", ".join(i["snippet"]["title"] for i in response.get("items", [])[:10])
+            raise AicutError(
+                f"no playlist named {playlist!r} on this channel"
+                + (f" (it has: {titles})" if titles else "")
+            )
+        playlist_id = match["id"]
+        self._require(COST_PLAYLIST_ITEM_INSERT, "playlistItems.insert")
+        self._data.playlistItems().insert(
+            part="snippet",
+            body={"snippet": {"playlistId": playlist_id,
+                              "resourceId": {"kind": "youtube#video", "videoId": video_id}}},
+        ).execute()
+        self.ledger.spend(COST_PLAYLIST_ITEM_INSERT, "playlistItems.insert")
+        return playlist_id
 
     def set_thumbnail(self, video_id: str, image_path: str) -> None:
         try:
