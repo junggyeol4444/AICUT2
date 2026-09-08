@@ -42,6 +42,31 @@ sendcmd로 crop 크기 변경 시: 벽시계 60초, CPU 0.5초, 출력 0바이�
 따라서 **배율이 변하는 줌은 `segment_crop`**, 고정 배율 팬은 sendcmd.
 MVP 6의 (a)/(b) 비교에서 (b)는 "부드럽지만 팬 전용"으로 확정.
 
+### 같은 계획, 두 전략 — 실제 영상 실측
+
+원본 `broadcast.mkv` 20~26초, 키프레임 3개(scale 1.0 → 0.75 → 0.5, 중심도 이동):
+
+| 전략 | 벽시계 | 출력 | 중간 산출물 | 배율 변화 |
+|---|---|---|---|---|
+| `segment_crop` | 3.5s | 0.22 MB | `seg_00000_000/001/002.mp4` (3조각) | **있음** |
+| `sendcmd` | 2.7s | 0.21 MB | `seg_00000.cmd` + `seg_00000.mp4` (1조각) | 없음 — 경고 후 scale 1.00로 평탄화 |
+
+sendcmd 쪽이 찍는 경고 그대로:
+
+```
+sendcmd zoom holds 3 different scales [0.5, 0.75, 1.0]; crop cannot resize
+mid-segment without stalling the graph, so the camera pans at scale 1.00.
+Use the segment_crop strategy for a magnification change (10.4-1).
+```
+
+출력 md5가 서로 다르다 — 두 전략이 실제로 다른 결과를 낸다는 확인이다.
+
+**부드러움은 측정하지 못했다.** 출력 프레임 간 변화량(0.2초 간격)은
+segment_crop max 0.0203 / sendcmd max 0.0170으로, 이 구간 원본 자체가 거의
+안 움직여서 계단과 팬을 가르지 못한다. (a)/(b) 중 어느 쪽 카메라 워크를 쓸지는
+움직임이 큰 실제 방송에서 사람이 보고 정할 일이다 — 19장이 MVP 6에 "실측 후
+결정"이라고 적은 그 결정이다.
+
 ## OpenCV 버전 문제
 
 OpenCV 5.0이 `CascadeClassifier`를 **제거**했다. `pip install opencv-python`이

@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import shutil
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -737,6 +737,66 @@ def _effects_for_piece(
     return visual, audio
 
 
+#: Smaller than this and a sub-segment is not worth cutting: ffmpeg's keyframe
+#: seek plus the concat join costs more than the framing change is worth, and a
+#: quarter-second piece reads as a glitch rather than a camera move.
+MIN_ZOOM_PIECE_SEC = 0.4
+
+
+def zoom_pieces(
+    segment: Segment, keyframes: Sequence[dict[str, Any]],
+) -> list[tuple[Segment, dict[str, Any]]]:
+    """Split one segment at its zoom keyframes, strategy (a) of 10.4-1.
+
+    10.4-1 (a) is "줌 구간을 세그먼트로 분리하고 세그먼트별 고정 crop 적용 후
+    concat" - a stepped camera, and the one strategy that can actually change
+    magnification (see :func:`sendcmd_file` for why sendcmd cannot). Without
+    this the keyframes were read only by the sendcmd path: under
+    ``segment_crop`` a plan carrying a moving zoom rendered as one static crop
+    and nothing said the movement had been dropped.
+
+    Keyframe times are on the segment's own clock. Each piece runs from its
+    keyframe to the next and holds that keyframe's framing.
+    """
+    ordered = sorted(keyframes, key=lambda k: float(k.get("at_sec", 0.0)))
+    if len(ordered) < 2:
+        return []
+    bounds: list[tuple[float, dict[str, Any]]] = []
+    for keyframe in ordered:
+        at = max(0.0, min(segment.duration, float(keyframe.get("at_sec", 0.0))))
+        if bounds and at - bounds[-1][0] < MIN_ZOOM_PIECE_SEC:
+            continue
+        bounds.append((at, keyframe))
+    if not bounds:
+        return []
+    # The first piece starts at the segment's start whatever the first keyframe
+    # says: dropping the head would shorten the cut the plan asked for.
+    bounds[0] = (0.0, bounds[0][1])
+    if len(bounds) < 2:
+        return []
+    if segment.duration - bounds[-1][0] < MIN_ZOOM_PIECE_SEC:
+        bounds.pop()
+    if len(bounds) < 2:
+        return []
+
+    pieces: list[tuple[Segment, dict[str, Any]]] = []
+    for index, (at, keyframe) in enumerate(bounds):
+        end = bounds[index + 1][0] if index + 1 < len(bounds) else segment.duration
+        pieces.append((
+            replace(
+                segment,
+                source_start_sec=segment.source_start_sec + at,
+                source_end_sec=segment.source_start_sec + end,
+                out_start_sec=segment.out_start_sec + at,
+            ),
+            {
+                "scale": float(keyframe.get("scale", 0.83)),
+                "center": list(keyframe.get("center", [0.5, 0.5])),
+            },
+        ))
+    return pieces
+
+
 def _directory_mb(path: Path) -> float:
     try:
         return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file()) / 1e6
@@ -795,8 +855,34 @@ class Renderer:
             seg_path = stage / f"seg_{i:05d}.mp4"
             sendcmd = None
             visual, audio = _effects_for_piece(cut, segment, pieces)
-            if visual.get("type") == "zoom" and visual.get("keyframes") and settings.zoom_strategy == "sendcmd":
-                sendcmd = str(sendcmd_file(visual["keyframes"], stage / f"seg_{i:05d}.cmd"))
+            keyframes = visual.get("keyframes") if visual.get("type") == "zoom" else None
+            if keyframes and settings.zoom_strategy == "sendcmd":
+                sendcmd = str(sendcmd_file(keyframes, stage / f"seg_{i:05d}.cmd"))
+            elif keyframes:
+                # Strategy (a) of 10.4-1: one fixed crop per keyframe, joined.
+                # Without this branch the keyframes were dropped in silence and
+                # the camera stood still.
+                zoomed = zoom_pieces(segment, keyframes)
+                if zoomed:
+                    for part, (piece, framing) in enumerate(zoomed):
+                        piece_path = stage / f"seg_{i:05d}_{part:03d}.mp4"
+                        piece_visual = dict(visual)
+                        piece_visual.pop("keyframes", None)
+                        piece_visual.update(framing)
+                        if part:
+                            # The sound effect and the graphic belong to the
+                            # cut, and it is one cut still: repeating them once
+                            # per framing step would restage them mid-camera-move.
+                            piece_visual.pop("graphic", None)
+                        run(build_segment_command(
+                            plan.source_path, piece, str(piece_path), settings,
+                            visual_effect=piece_visual,
+                            audio_effect=audio if not part else
+                            {k: v for k, v in audio.items() if k != "sfx"},
+                            audio_streams=audio_streams,
+                        ))
+                        segment_paths.append(piece_path)
+                    continue
             run(build_segment_command(
                 plan.source_path, segment, str(seg_path), settings,
                 visual_effect=visual,

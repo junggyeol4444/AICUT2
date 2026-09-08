@@ -275,3 +275,80 @@ class FiltersActuallyRunTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ZoomSegmentPiecesTests(unittest.TestCase):
+    """10.4-1 (a): 줌 구간을 세그먼트로 분리하고 세그먼트별 고정 crop 적용 후 concat.
+
+    Before this, keyframes were read only by the sendcmd path. Under
+    ``segment_crop`` a plan carrying a moving zoom rendered as one static crop
+    and nothing said the movement had been dropped.
+    """
+
+    def _segment(self, start=10.0, end=16.0):
+        from aicut.render.timeline import Segment
+
+        return Segment(cut_index=0, sequence_order=0, source_start_sec=start,
+                       source_end_sec=end, out_start_sec=0.0)
+
+    def test_each_keyframe_becomes_a_piece_holding_its_own_framing(self):
+        from aicut.render.ffmpeg import zoom_pieces
+
+        pieces = zoom_pieces(self._segment(), [
+            {"at_sec": 0.0, "scale": 1.0, "center": [0.2, 0.5]},
+            {"at_sec": 2.0, "scale": 0.75, "center": [0.5, 0.5]},
+            {"at_sec": 4.0, "scale": 0.5, "center": [0.8, 0.5]},
+        ])
+
+        self.assertEqual(
+            [(p.source_start_sec, p.source_end_sec) for p, _ in pieces],
+            [(10.0, 12.0), (12.0, 14.0), (14.0, 16.0)],
+        )
+        self.assertEqual([f["scale"] for _, f in pieces], [1.0, 0.75, 0.5])
+
+    def test_the_pieces_cover_the_segment_with_no_gap_and_nothing_added(self):
+        """A dropped head or an overrun would change the cut the plan asked for."""
+        from aicut.render.ffmpeg import zoom_pieces
+
+        segment = self._segment()
+        pieces = [p for p, _ in zoom_pieces(segment, [
+            {"at_sec": 1.5, "scale": 1.0}, {"at_sec": 3.0, "scale": 0.8},
+        ])]
+
+        self.assertEqual(pieces[0].source_start_sec, segment.source_start_sec)
+        self.assertEqual(pieces[-1].source_end_sec, segment.source_end_sec)
+        for earlier, later in zip(pieces, pieces[1:]):
+            self.assertEqual(earlier.source_end_sec, later.source_start_sec)
+        self.assertAlmostEqual(sum(p.duration for p in pieces), segment.duration)
+
+    def test_one_keyframe_is_not_a_camera_move(self):
+        from aicut.render.ffmpeg import zoom_pieces
+
+        self.assertEqual(zoom_pieces(self._segment(), [{"at_sec": 0.0, "scale": 0.8}]), [])
+        self.assertEqual(zoom_pieces(self._segment(), []), [])
+
+    def test_keyframes_closer_than_the_minimum_do_not_become_pieces(self):
+        """A quarter-second piece costs a seek and a join and reads as a glitch."""
+        from aicut.render.ffmpeg import MIN_ZOOM_PIECE_SEC, zoom_pieces
+
+        pieces = zoom_pieces(self._segment(), [
+            {"at_sec": 0.0, "scale": 1.0},
+            {"at_sec": 0.05, "scale": 0.9},
+            {"at_sec": 3.0, "scale": 0.5},
+        ])
+
+        self.assertEqual(len(pieces), 2)
+        for piece, _ in pieces:
+            self.assertGreaterEqual(piece.duration, MIN_ZOOM_PIECE_SEC)
+
+    def test_a_keyframe_past_the_segment_end_cannot_lengthen_it(self):
+        from aicut.render.ffmpeg import zoom_pieces
+
+        segment = self._segment(10.0, 16.0)
+        pieces = [p for p, _ in zoom_pieces(segment, [
+            {"at_sec": 0.0, "scale": 1.0}, {"at_sec": 2.0, "scale": 0.7},
+            {"at_sec": 99.0, "scale": 0.4},
+        ])]
+
+        self.assertEqual(pieces[-1].source_end_sec, 16.0)
+        self.assertTrue(all(p.source_end_sec <= 16.0 for p in pieces))
