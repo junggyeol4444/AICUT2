@@ -358,6 +358,7 @@ class UnconfiguredYouTubeClient:
         raise UploadError("YouTube OAuth 클라이언트가 설정되지 않았습니다.")
 
 
-def client_from_environment() -> UploadClient:
-    token = os.environ.get("YOUTUBE_ACCESS_TOKEN", "").strip()
+def client_from_environment(environment=None) -> UploadClient:
+    env = os.environ if environment is None else environment
+    token = env.get("YOUTUBE_ACCESS_TOKEN", "").strip()
     return YouTubeResumableClient(token) if token else UnconfiguredYouTubeClient()
