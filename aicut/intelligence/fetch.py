@@ -87,36 +87,3 @@ def fetch_video(video_id: str, into: str | Path, *, quality: str = "best[height<
         raise RuntimeError(f"yt-dlp reported success but wrote nothing for {video_id}")
     return str(playable[0])
 
-
-_ID_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
-
-
-def video_id_from(text: str) -> str:
-    """The YouTube id in a link, or "" if this is not a YouTube link.
-
-    The operator supplies references two ways: a link, or a file they already
-    have. A file has no id, and a broadcast whose VOD is gone has no link
-    either, so "" is an ordinary answer here and not a failure.
-    """
-    import urllib.parse as parse
-
-    candidate = text.strip()
-    if not candidate:
-        return ""
-    parsed = parse.urlparse(candidate)
-    if parsed.scheme in ("http", "https"):
-        if parsed.netloc == "youtu.be":
-            return parsed.path.lstrip("/").split("/")[0]
-        if parsed.netloc in _ID_HOSTS:
-            if parsed.path == "/watch":
-                return parse.parse_qs(parsed.query).get("v", [""])[0]
-            for prefix in ("/shorts/", "/embed/", "/live/", "/v/"):
-                if parsed.path.startswith(prefix):
-                    return parsed.path[len(prefix):].split("/")[0]
-        return ""
-    if Path(candidate).exists():
-        return ""
-    # A bare id, as printed by yt-dlp and pasted back in.
-    if len(candidate) == 11 and all(c.isalnum() or c in "-_" for c in candidate):
-        return candidate
-    return ""

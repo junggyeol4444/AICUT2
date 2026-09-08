@@ -491,12 +491,38 @@ def _source_duration(store, args) -> float:
     explicit = getattr(args, "source_duration", None)
     if explicit:
         return float(explicit)
-    reference = getattr(args, "source_ref", None) or getattr(args, "source_transcript", "")
+    reference = getattr(args, "source_ref", None) or getattr(args, "source", "") or ""
     for project in store.list_projects():
         if project.file_path and Path(project.file_path).name == Path(str(reference)).name:
             if project.duration_sec:
                 return float(project.duration_sec)
     return 0.0
+
+
+def _listen(args, path: str, which: str):
+    """Transcribe one side of a 12.3 B pair. Returns the utterances and the length.
+
+    18장 lists STT 처리 under [프로그램이 담당]. The operator hands over videos;
+    turning them into words is this program's job, not theirs.
+
+    A transcript written earlier by `aicut transcribe` is reused when it sits
+    next to the video, because a 6-hour broadcast is not worth transcribing
+    twice.
+    """
+    from aicut.media.probe import probe
+    from aicut.media.stt import TranscriptFileTranscriber, write_transcript
+
+    media = probe(path)
+    media.validate(require_video=False)
+    cached = Path(path).with_suffix(".transcript.json")
+    if cached.exists():
+        print(f"{which}: reusing {cached.name}")
+        return TranscriptFileTranscriber(str(cached)).transcribe(), media.duration_sec
+    print(f"{which}: transcribing {path} ({media.duration_sec / 60:.1f} min) with {args.backend}")
+    utterances = _transcriber(args).transcribe(path, media)
+    write_transcript(utterances, cached)
+    print(f"  {len(utterances)} segments -> {cached.name}")
+    return utterances, media.duration_sec
 
 
 def _pair_frames(args, path, name: str) -> list[str]:
@@ -522,35 +548,21 @@ def cmd_learn(args) -> int:
     knowledge_path = Path(args.workspace) / "knowledge.json"
 
     if args.loop == "reference":
-        # Loop A, and it runs two ways because references arrive two ways.
-        #
-        #   --video LINK|PATH   the operator hands one over. A broadcast whose
-        #                       VOD is gone has no link, so a bare file has to
-        #                       work with no 4.2 metadata behind it.
-        #   otherwise           the system finds its own, per 4.1, and fetches
-        #                       them. --no-download stops at metadata.
+        # Loop A (4장). The system finds its own references in the neighbourhood
+        # 4.1 names, fetches them, and analyses how they were made. What it can
+        # see is a finished video - the broadcast behind it is not on YouTube,
+        # so nothing here can say what was cut. That is loop B's question, and
+        # loop B is the one the operator feeds.
         #
         # 4.6 leaves the media policy to the operator and they settled it:
         # what is fetched is kept.
-        if args.video:
-            client = _youtube(args, store) if args.metadata else None
-            references, files = reference_mod.references_from_inputs(args.video, client=client)
-            if not references:
-                print("no usable reference in --video", file=sys.stderr)
-                return 1
-            print(f"{len(references)} reference(s) from you; reading")
-            watched = reference_mod.watch_all(
-                references, _profile(args), args.workspace,
-                files=files, download=args.download,
-            )
-        else:
-            client = _youtube(args, store)
-            queries = args.query or reference_mod.DEFAULT_QUERIES
-            references = reference_mod.collect_references(client, queries, per_query=args.per_query)
-            print(f"found {len(references)} references; reading")
-            watched = reference_mod.watch_all(
-                references, _profile(args), args.workspace, download=args.download,
-            )
+        client = _youtube(args, store)
+        queries = args.query or reference_mod.DEFAULT_QUERIES
+        references = reference_mod.collect_references(client, queries, per_query=args.per_query)
+        print(f"found {len(references)} references; reading")
+        watched = reference_mod.watch_all(
+            references, _profile(args), args.workspace, download=args.download,
+        )
         for video_id, seen in watched.items():
             print(f"  {video_id}: {len(seen.get('frames', []))} frames"
                   f"{', thumbnail' if seen.get('thumbnail') else ''}")
@@ -562,28 +574,27 @@ def cmd_learn(args) -> int:
         return 0
 
     if args.loop == "pairs":
-        # Loop B, the differentiator: what a human actually kept, dropped, reordered.
+        # Loop B, the differentiator (12.3 B). The operator hands over the two
+        # videos - 원본 생방송 and the 완성본 made from it - and nothing else.
+        # 18장 puts STT 처리 under [프로그램이 담당], so it runs here.
         from aicut.intelligence.source_output import align_by_transcript, learn as learn_pair
-        from aicut.media.stt import TranscriptFileTranscriber
 
-        if not args.source_transcript or not args.output_transcript:
-            print("loop B needs --source-transcript and --output-transcript", file=sys.stderr)
+        if not args.source or not args.output:
+            print("loop B needs the two videos: --source <원본> --output <완성본>",
+                  file=sys.stderr)
             return 1
-        source = TranscriptFileTranscriber(args.source_transcript).transcribe()
-        output = TranscriptFileTranscriber(args.output_transcript).transcribe()
-        # The whole-broadcast figures of 12.3 B need the source's length. Use the
-        # stored project when this source has been run, then --source-duration,
-        # then the last word of the transcript as a floor.
-        duration = _source_duration(store, args)
+        source, source_duration = _listen(args, args.source, "원본")
+        output, _ = _listen(args, args.output, "완성본")
+        duration = _source_duration(store, args) or source_duration
         alignment = align_by_transcript(source, output, source_duration_sec=duration)
-        # 5.2: 화면과 소리를 분리하지 않고 같이 본다. The transcript alignment is
-        # one signal; the analysis also looks at both videos when they are given.
-        source_frames = _pair_frames(args, args.source_file, "pair_source")
-        output_frames = _pair_frames(args, args.output_file, "pair_output")
+        # 5.2: 화면과 소리를 분리하지 않고 같이 본다. Speech says which sentences
+        # survived; it cannot show a cut inside one, a caption or an effect.
+        source_frames = _pair_frames(args, args.source, "pair_source")
+        output_frames = _pair_frames(args, args.output, "pair_output")
         analysis = learn_pair(
             producer, store, alignment,
-            source_ref=args.source_ref or args.source_transcript,
-            output_ref=args.output_ref or args.output_transcript,
+            source_ref=args.source_ref or args.source,
+            output_ref=args.output_ref or args.output,
             source_frames=source_frames,
             output_frames=output_frames,
         )
@@ -1187,29 +1198,14 @@ def build_parser() -> argparse.ArgumentParser:
     learn.add_argument("--query", action="append", help="reference search query (loop A, repeatable)")
     learn.add_argument("--per-query", type=int, default=25)
     learn.add_argument(
-        "--video", action="append", metavar="LINK|PATH",
-        help="loop A: a reference you supply - a YouTube link, an id, or a file "
-             "already on disk. Repeatable. Without it the system finds its own (4.1)",
-    )
-    learn.add_argument(
         "--download", action=argparse.BooleanOptionalAction, default=True,
-        help="loop A: fetch the video with yt-dlp when no file was supplied (default: on)",
+        help="loop A: fetch each reference video with yt-dlp (default: on)",
     )
-    learn.add_argument(
-        "--metadata", action=argparse.BooleanOptionalAction, default=True,
-        help="loop A: look up 4.2 public metrics for supplied links (default: on)",
-    )
-    learn.add_argument("--source-transcript", help="loop B: transcript of the source broadcast")
-    learn.add_argument("--output-transcript", help="loop B: transcript of the human-made video")
+    learn.add_argument("--source", help="loop B: the source broadcast, 원본 (video file)")
+    learn.add_argument("--output", help="loop B: the finished video made from it, 완성본")
     learn.add_argument(
         "--source-duration", type=float, default=None, metavar="SEC",
         help="loop B: length of the source broadcast, when it has not been run here",
-    )
-    learn.add_argument(
-        "--source-file", help="loop B: the source broadcast video, so the analysis sees it (5.2)",
-    )
-    learn.add_argument(
-        "--output-file", help="loop B: the human-made finished video, so the analysis sees it (5.2)",
     )
     learn.add_argument("--source-ref")
     learn.add_argument("--output-ref")

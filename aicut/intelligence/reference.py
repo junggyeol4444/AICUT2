@@ -68,69 +68,6 @@ def collect_references(
     return references
 
 
-def references_from_inputs(
-    inputs: Sequence[str],
-    *,
-    client: YouTubeClient | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Turn what the operator handed over into reference records (4.2).
-
-    Two shapes arrive here and both are ordinary:
-
-    * a YouTube link or id - the public metrics of 4.2 are fetched for it, and
-      the video itself still has to be downloaded or supplied;
-    * a file already on disk - a broadcast whose VOD is gone has no link at all,
-      so there is nothing to fetch and the record carries only what the file
-      itself can say. 4.2's metadata is simply absent, and the analysis says so.
-
-    Returns the records, and a map from video_id to the local file where one was
-    given, which is what :func:`watch_all` takes as ``files``.
-    """
-    from aicut.intelligence import fetch as fetch_mod
-
-    wanted: list[str] = []
-    files: dict[str, str] = {}
-    records: list[dict[str, Any]] = []
-    for raw in inputs:
-        video_id = fetch_mod.video_id_from(raw)
-        if video_id:
-            wanted.append(video_id)
-            continue
-        path = Path(raw)
-        if not path.exists():
-            log.warning("not a YouTube link and not a file on disk: %s", raw)
-            continue
-        # A local file gets an id derived from its name so the rest of the loop,
-        # which is keyed by video_id, does not need a second code path.
-        local_id = f"local:{path.stem}"
-        files[local_id] = str(path)
-        records.append({
-            "video_id": local_id,
-            "channel_id": "",
-            "title": path.stem,
-            "description": "",
-            "tags": [],
-            "duration": "",
-            "published_at": "",
-            "thumbnails": {},
-            "public_metrics": {},
-            "found_by": "operator supplied file",
-        })
-    if wanted:
-        if client is None:
-            log.warning("no YouTube client, so %d link(s) get no 4.2 metadata", len(wanted))
-            records.extend({
-                "video_id": vid, "channel_id": "", "title": "", "description": "",
-                "tags": [], "duration": "", "published_at": "", "thumbnails": {},
-                "public_metrics": {}, "found_by": "operator supplied link",
-            } for vid in wanted)
-        else:
-            for record in client.public_metrics(wanted):
-                record["found_by"] = "operator supplied link"
-                records.append(record)
-    return records, files
-
-
 def watch(
     path: str,
     profile: CalibrationProfile,

@@ -2,6 +2,7 @@
 
 import io
 import json
+import subprocess
 import tempfile
 import contextlib
 import unittest
@@ -11,6 +12,7 @@ from pathlib import Path
 
 from aicut.cli import main
 from aicut.db.store import Store
+from aicut.media.ffmpeg_util import have_ffmpeg
 
 
 def run(*argv: str) -> tuple[int, str]:
@@ -68,23 +70,37 @@ class CliTests(unittest.TestCase):
         self.assertIn("result_first", out)
         self.assertIn("00:30:00-00:30:40", out)
 
-    def test_learn_pairs_runs_loop_b_offline(self):
-        """12.3 B: the loop that needs no network, only a source and a finished cut."""
-        source = self.workspace / "source.json"
-        output = self.workspace / "output.json"
-        source.write_text(json.dumps({"segments": [
+    @unittest.skipUnless(have_ffmpeg(), "ffmpeg is not installed")
+    def test_learn_pairs_takes_two_videos_and_transcribes_them_itself(self):
+        """12.3 B: the operator hands over 원본 and 완성본. Nothing else.
+
+        18장 lists STT 처리 under [프로그램이 담당], so the operator is never asked
+        for a transcript. A transcript already made by `aicut transcribe` sits
+        next to the video and is reused; that is what this exercises, because a
+        real STT run needs a GPU and a model download.
+        """
+        source = self.workspace / "source.mp4"
+        output = self.workspace / "output.mp4"
+        for path, seconds in ((source, 20), (output, 9)):
+            subprocess.run([
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-f", "lavfi", "-i", f"testsrc2=size=160x90:rate=10:duration={seconds}",
+                "-f", "lavfi", "-i", f"sine=frequency=300:duration={seconds}",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(path),
+            ], check=True, capture_output=True)
+        source.with_suffix(".transcript.json").write_text(json.dumps({"segments": [
             {"start": 0, "end": 4, "text": "hello everyone welcome to the stream"},
-            {"start": 60, "end": 64, "text": "this boss keeps killing me"},
-            {"start": 600, "end": 604, "text": "i finally beat the boss"},
+            {"start": 6, "end": 10, "text": "this boss keeps killing me"},
+            {"start": 14, "end": 18, "text": "i finally beat the boss"},
         ]}), encoding="utf-8")
-        output.write_text(json.dumps({"segments": [
+        output.with_suffix(".transcript.json").write_text(json.dumps({"segments": [
             {"start": 0, "end": 4, "text": "i finally beat the boss"},
             {"start": 5, "end": 9, "text": "this boss keeps killing me"},
         ]}), encoding="utf-8")
 
         code, out = run(
             "--workspace", str(self.workspace), "learn", "pairs",
-            "--source-transcript", str(source), "--output-transcript", str(output),
+            "--source", str(source), "--output", str(output),
         )
         self.assertEqual(code, 0)
         self.assertIn("dropped 1", out)
@@ -95,9 +111,18 @@ class CliTests(unittest.TestCase):
         store.close()
         self.assertTrue((self.workspace / "knowledge.json").exists())
 
-    def test_learn_pairs_without_transcripts_is_refused(self):
+    def test_learn_pairs_without_the_two_videos_is_refused(self):
         code, _ = run("--workspace", str(self.workspace), "learn", "pairs")
         self.assertEqual(code, 1)
+
+    def test_learn_pairs_never_asks_for_a_transcript(self):
+        """No clause in either spec asks the operator for one. 18장 says the
+        program does STT. The flags that demanded one were invented here."""
+        from aicut.cli import build_parser
+
+        flags = {a for action in build_parser()._actions for a in action.option_strings}
+        self.assertNotIn("--source-transcript", flags)
+        self.assertNotIn("--output-transcript", flags)
 
     def test_calibrate_init_measures_from_a_run_and_records_the_profile(self):
         """17.4 step 1, and 13장: the measured profile lands in the database too."""
