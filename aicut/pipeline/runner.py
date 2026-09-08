@@ -355,6 +355,10 @@ def build_report(ctx: RunContext, state: State, episodes: list[Episode]) -> dict
         # 11.2's package as written, measured against what YouTube will accept
         # and against the payload the model was given. Reported, never fixed.
         "packaging_warnings": ctx.report.get("packaging_warnings", {}),
+        # A beat the plan asked for that the video will not contain, and a
+        # candidate that was decided PRODUCE and then found no scene at all.
+        "beats_unfilled": ctx.report.get("beats_unfilled", []),
+        "episodes_not_produced": ctx.report.get("episodes_not_produced", []),
         # Which of 12.1's nine a performance collection did not get. Empty on a
         # normal run - loop C is its own command - but the field exists so a
         # report never silently omits it.
@@ -380,6 +384,11 @@ def build_report(ctx: RunContext, state: State, episodes: list[Episode]) -> dict
                 "the package of an episode would not survive contact with YouTube "
                 "as written - see packaging_warnings"
                 if ctx.report.get("packaging_warnings") else ""
+            ),
+            (
+                "a candidate decided PRODUCE found no scene and was not made - "
+                "see episodes_not_produced"
+                if ctx.report.get("episodes_not_produced") else ""
             ),
         ) if part),
     }

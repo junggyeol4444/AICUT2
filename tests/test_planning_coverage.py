@@ -176,3 +176,138 @@ def _flat_tension():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DroppedBeatsAreReportedTests(unittest.TestCase):
+    """8.2: a person must be able to read the plan and know what the result is.
+
+    A structure of five beats that renders as three is a different video from
+    the one the plan describes. Both ways a beat can vanish used to leave only a
+    log line, and a candidate decided PRODUCE could disappear entirely with the
+    report showing nothing but a smaller episode count.
+    """
+
+    def _context(self, tmp):
+        from pathlib import Path
+
+        from aicut.config import CalibrationProfile
+        from aicut.db.store import Store
+        from aicut.llm import get_producer
+        from aicut.models import Project
+        from aicut.pipeline.context import RunContext
+
+        store = Store(str(Path(tmp) / "aicut.db"))
+        project = store.create_project(Project(
+            project_id="p1", file_path="/nowhere.mkv", duration_sec=600.0,
+        ))
+        return RunContext(project=project, store=store, profile=CalibrationProfile.load(),
+                          producer=get_producer("mock"), workspace=Path(tmp))
+
+    def test_a_beat_that_retrieved_nothing_says_so_with_its_query(self):
+        import tempfile
+
+        from aicut.pipeline.planning import _lay_out_cuts
+        from aicut.pipeline.retrieval import SceneIndex
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            ctx = self._context(tmp)
+            try:
+                empty = SceneIndex([])
+                cuts = _lay_out_cuts(
+                    ctx,
+                    {"beats": [{"role": "결과", "query": "결과가 발생한 장면"}]},
+                    empty, episode_id="ep1",
+                )
+            finally:
+                ctx.store.close()
+
+        self.assertEqual(cuts, [])
+        dropped = ctx.report["beats_unfilled"]
+        self.assertEqual(len(dropped), 1)
+        self.assertEqual(dropped[0]["role"], "결과")
+        self.assertEqual(dropped[0]["query"], "결과가 발생한 장면")
+        self.assertIn("retrieved nothing", dropped[0]["why"])
+
+    def test_the_two_reasons_a_beat_vanishes_are_told_apart(self):
+        """Nothing retrieved means the broadcast has no such scene; every scene
+        rejected means retrieval found the wrong ones. Different problems."""
+        import tempfile
+        from unittest import mock
+
+        from aicut.pipeline.planning import _lay_out_cuts
+        from aicut.pipeline.retrieval import Scene, SceneIndex, ScoredScene
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            ctx = self._context(tmp)
+            scene = Scene(start_sec=10.0, end_sec=20.0, text="말", speaker="A")
+            index = SceneIndex([scene])
+            with mock.patch.object(
+                SceneIndex, "search", return_value=[ScoredScene(scene=scene, score=1.0)]
+            ), mock.patch.object(
+                type(ctx.producer), "select_scene", return_value={"chosen_index": None}
+            ):
+                try:
+                    cuts = _lay_out_cuts(
+                        ctx, {"beats": [{"role": "배경", "query": "사건의 배경"}]},
+                        index, episode_id="ep1",
+                    )
+                finally:
+                    ctx.store.close()
+
+        self.assertEqual(cuts, [])
+        self.assertIn("rejected all 1", ctx.report["beats_unfilled"][0]["why"])
+
+    def test_an_episode_that_found_no_scene_at_all_is_named_in_the_report(self):
+        import tempfile
+        from unittest import mock
+
+        from aicut.models import ContentCandidate, Event, EventMention
+        from aicut.pipeline import planning
+        from aicut.pipeline.retrieval import SceneIndex
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            ctx = self._context(tmp)
+            candidate = ContentCandidate(candidate_id="c1", project_id="p1",
+                                         core_summary="싸움", related_event_ids=["e1"])
+            event = Event(event_id="e1", project_id="p1", summary="싸움",
+                          mentions=[EventMention(event_id="e1", source_start_sec=10.0,
+                                                 source_end_sec=20.0)])
+            with mock.patch.object(
+                type(ctx.producer), "plan_structure",
+                return_value={"structure_name": "결과 먼저", "beats": [
+                    {"role": "결과", "query": "결과"}, {"role": "원인", "query": "원인"}]},
+            ):
+                try:
+                    episode = planning.plan_episode(
+                        ctx, [candidate], {"e1": event}, SceneIndex([]), [],
+                    )
+                finally:
+                    ctx.store.close()
+
+        self.assertIsNone(episode)
+        entry = ctx.report["episodes_not_produced"][0]
+        self.assertEqual(entry["candidate_ids"], ["c1"])
+        self.assertEqual(entry["beats"], 2)
+        self.assertIn("does not contain", entry["detail"])
+
+    def test_a_candidate_whose_events_do_not_resolve_is_named_too(self):
+        """The other way a PRODUCE candidate vanishes without a video."""
+        import tempfile
+
+        from aicut.models import ContentCandidate
+        from aicut.pipeline import planning
+        from aicut.pipeline.retrieval import SceneIndex
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            ctx = self._context(tmp)
+            candidate = ContentCandidate(candidate_id="c9", project_id="p1",
+                                         core_summary="사건", related_event_ids=["gone"])
+            try:
+                episode = planning.plan_episode(ctx, [candidate], {}, SceneIndex([]), [])
+            finally:
+                ctx.store.close()
+
+        self.assertIsNone(episode)
+        entry = ctx.report["episodes_not_produced"][0]
+        self.assertEqual(entry["candidate_ids"], ["c9"])
+        self.assertIn("resolve", entry["detail"])

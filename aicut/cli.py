@@ -138,6 +138,13 @@ def _print_report_warnings(report: dict) -> None:
     for entry in report.get("render_failures", []):
         print(f"\n  RENDER FAILED for {entry['episode_id']}: {entry['error']}")
         print(f"      {entry['note']}")
+    for entry in report.get("episodes_not_produced", []):
+        print(f"\n  NOT PRODUCED ({entry['episode_id'][:8]}): {entry['detail']}")
+    for entry in report.get("beats_unfilled", []):
+        print(
+            f"\n  BEAT DROPPED ({entry['episode_id'][:8]} #{entry['beat']}"
+            f" {entry['role'] or '?'}): {entry['why']} - {entry['query']}"
+        )
     for episode_id, problems in (report.get("packaging_warnings") or {}).items():
         for problem in problems:
             print(f"\n  PACKAGE ({episode_id[:8]}): {problem}")

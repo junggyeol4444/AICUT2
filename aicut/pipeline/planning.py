@@ -76,7 +76,24 @@ def plan_episode(
 ) -> Episode | None:
     group_events = [events[eid] for c in group for eid in c.related_event_ids if eid in events]
     if not group_events:
+        # The other way a PRODUCE candidate vanishes without a video: its
+        # related_event_ids point at nothing the store holds. Same 2.6
+        # obligation as an empty retrieval - the report must name it.
         log.warning("candidate group has no resolvable events; skipping")
+        wanted = [eid for c in group for eid in c.related_event_ids]
+        ctx.report.setdefault("episodes_not_produced", []).append({
+            "episode_id": "",
+            "candidate_ids": [c.candidate_id for c in group],
+            "structure": "",
+            "beats": 0,
+            "detail": (
+                f"none of the {len(wanted)} related event id(s) resolve to a stored"
+                " event, so there was nothing to plan a structure around (7장)"
+                if wanted else
+                "the candidate names no related event, so there was nothing to plan"
+                " a structure around (6.1 관련 사건, 7장)"
+            ),
+        })
         return None
 
     structure = ctx.producer.plan_structure({
@@ -120,9 +137,24 @@ def plan_episode(
         planned_structure=structure,
         target_type=structure.get("target_type", ""),
     )
-    episode.timeline = _lay_out_cuts(ctx, structure, index)
+    episode.timeline = _lay_out_cuts(ctx, structure, index, episode_id=episode.episode_id)
     if not episode.timeline:
+        # A candidate the evaluation decided to PRODUCE has just vanished, and
+        # without this the only trace is one log line: the report shows fewer
+        # episodes than candidates and says nothing about why. 2.6 asks for the
+        # departure to be reported, and 16장 for it to be visible.
         log.warning("no scene survived retrieval for episode %s; not producing it", episode.episode_id)
+        ctx.report.setdefault("episodes_not_produced", []).append({
+            "episode_id": episode.episode_id,
+            "candidate_ids": [c.candidate_id for c in group],
+            "structure": structure.get("structure_name", ""),
+            "beats": len(structure.get("beats", []) or []),
+            "detail": (
+                f"{len(structure.get('beats', []) or [])} beat(s) planned and not one"
+                " found a scene it would take; the structure asked for something this"
+                " broadcast does not contain (8.1)"
+            ),
+        })
         return None
 
     _apply_pacing(ctx, episode)
@@ -139,8 +171,30 @@ def plan_episode(
     return episode
 
 
+def _note_unfilled_beat(
+    ctx: RunContext, episode_id: str, order: int, beat: dict, why: str,
+) -> None:
+    """A beat the plan asked for that the finished video will not contain.
+
+    8.2 says a person must be able to read the plan and know what the result
+    will be. A structure of five beats that renders as three is a different
+    video from the one the plan describes, and the two reasons a beat can be
+    dropped mean different things: nothing retrieved says the broadcast has no
+    such scene, every scene rejected says retrieval found the wrong ones.
+    """
+    ctx.report.setdefault("beats_unfilled", []).append({
+        "episode_id": episode_id,
+        "beat": order,
+        "role": beat.get("role", ""),
+        "query": (beat.get("query", "") or beat.get("intent", ""))[:120],
+        "why": why,
+    })
+
+
 # ---------------------------------------------------------------------------
-def _lay_out_cuts(ctx: RunContext, structure: dict, index: SceneIndex) -> list[Cut]:
+def _lay_out_cuts(
+    ctx: RunContext, structure: dict, index: SceneIndex, *, episode_id: str = "",
+) -> list[Cut]:
     """Turn the planned beats into cuts, in the structure's order (2.4, 8.2)."""
     head_pad = ctx.profile.get_float("retrieval.cut_padding_head_sec")
     tail_pad = ctx.profile.get_float("retrieval.cut_padding_tail_sec")
@@ -158,6 +212,7 @@ def _lay_out_cuts(ctx: RunContext, structure: dict, index: SceneIndex) -> list[C
         )
         if not results:
             log.info("beat %r retrieved nothing", beat.get("role", order))
+            _note_unfilled_beat(ctx, episode_id, order, beat, "retrieved nothing")
             continue
 
         chosen = ctx.producer.select_scene({
@@ -189,6 +244,10 @@ def _lay_out_cuts(ctx: RunContext, structure: dict, index: SceneIndex) -> list[C
         picked = chosen.get("chosen_index")
         if picked is None or not (0 <= int(picked) < len(results)):
             log.info("beat %r rejected every retrieved scene", beat.get("role", order))
+            _note_unfilled_beat(
+                ctx, episode_id, order, beat,
+                f"rejected all {len(results)} retrieved scenes",
+            )
             continue
 
         scene = results[int(picked)].scene
