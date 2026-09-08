@@ -277,25 +277,25 @@ class EditingDecisionDetailTests(unittest.TestCase):
         self.assertFalse(any(s.order_changed for s in alignment.kept_spans))
         self.assertFalse(alignment.reordered())
 
-    def test_a_moment_given_more_room_reads_as_held(self):
+    def test_a_moment_given_more_room_is_measured_not_labelled(self):
+        """18장 gives 편집 의도 to the AI. Code reports the ratio, nothing more."""
         span = AlignedSpan(100, 110, output_start_sec=0, output_end_sec=14, kept=True)
-        self.assertIn("held", span.emphasis())
+        self.assertAlmostEqual(span.compression, 1.4, places=3)
+        self.assertFalse(hasattr(span, "emphasis"),
+                         "code is deciding 강조 again; 12.3 B asks the analysis")
 
-    def test_a_trimmed_moment_is_not_emphasis(self):
+    def test_a_trimmed_moment_reports_a_ratio_below_one(self):
         span = AlignedSpan(100, 110, output_start_sec=0, output_end_sec=6, kept=True)
-        self.assertEqual(span.emphasis(), [])
+        self.assertAlmostEqual(span.compression, 0.6, places=3)
 
-    def test_an_untouched_moment_is_not_emphasis(self):
-        """Within the margin, same length is same length — not a hold."""
-        span = AlignedSpan(100, 110, output_start_sec=0, output_end_sec=10.2, kept=True)
-        self.assertEqual(span.emphasis(), [])
+    def test_a_dropped_span_has_no_output_length(self):
+        self.assertEqual(AlignedSpan(100, 110, kept=False, repeated=3).compression, 0.0)
 
-    def test_repetition_counts_as_emphasis(self):
-        span = AlignedSpan(100, 110, output_start_sec=0, output_end_sec=10, kept=True, repeated=2)
-        self.assertIn("repeated", span.emphasis())
-
-    def test_a_dropped_span_is_never_emphasis(self):
-        self.assertEqual(AlignedSpan(100, 110, kept=False, repeated=3).emphasis(), [])
+    def test_the_repeat_count_reaches_the_payload_uninterpreted(self):
+        source = [Utterance(0, 10, "같은 말")]
+        output = [Utterance(0, 10, "같은 말"), Utterance(20, 30, "같은 말")]
+        span = align_by_transcript(source, output).kept_spans[0]
+        self.assertEqual(span.repeated, 2)
 
     def test_the_counts_reach_the_measured_block(self):
         from aicut.db.store import Store
@@ -310,4 +310,5 @@ class EditingDecisionDetailTests(unittest.TestCase):
         finally:
             store.close()
         self.assertEqual(measured["moved_spans"], 1)
-        self.assertIn("emphasised_spans", measured)
+        self.assertNotIn("emphasised_spans", measured,
+                         "강조 is the analysis's answer (12.3 B), not a count code made")

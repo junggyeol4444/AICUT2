@@ -502,10 +502,10 @@ def _source_duration(store, args) -> float:
 def _watch_reference_files(args, references) -> dict:
     """Read the reference files the operator supplied, and match them by id (4.3).
 
-    A title and a view count cannot say how a video was cut. `--file ID=PATH`
-    hands over material the operator is entitled to analyse; the file is read
-    here and the frames are deleted by `reference.analyze` once the answer is
-    back, because 4.6 keeps the patterns and not the media.
+    4.2 collects 영상 first, and every item 4.3 asks about is on the screen.
+    `--file ID=PATH` hands over material the operator is entitled to analyse;
+    the frames are deleted by `reference.analyze` once the answer is back,
+    because 4.6 keeps the patterns and not the media.
     """
     from aicut.intelligence import reference as reference_mod
 
@@ -527,8 +527,21 @@ def _watch_reference_files(args, references) -> dict:
         frames_dir = frames_root / video_id
         frames_dir.mkdir(parents=True, exist_ok=True)
         watched[video_id] = reference_mod.watch(path, profile, frames_dir=frames_dir)
-        print(f"watched {video_id}: {watched[video_id]['editing']['cut_count']} cuts")
+        print(f"watched {video_id}: {len(watched[video_id]['frames'])} frames")
     return watched
+
+
+def _pair_frames(args, path, name: str) -> list[str]:
+    """Sample frames from one side of a 12.3 B pair, or nothing if no file."""
+    if not path:
+        return []
+    from aicut.intelligence import reference as reference_mod
+
+    frames_dir = Path(args.workspace) / name
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    watched = reference_mod.watch(path, _profile(args), frames_dir=frames_dir)
+    print(f"{name}: {len(watched['frames'])} frames from {path}")
+    return watched["frames"]
 
 
 def cmd_learn(args) -> int:
@@ -568,11 +581,20 @@ def cmd_learn(args) -> int:
         # then the last word of the transcript as a floor.
         duration = _source_duration(store, args)
         alignment = align_by_transcript(source, output, source_duration_sec=duration)
-        analysis = learn_pair(
-            producer, store, alignment,
-            source_ref=args.source_ref or args.source_transcript,
-            output_ref=args.output_ref or args.output_transcript,
-        )
+        # 5.2: 화면과 소리를 분리하지 않고 같이 본다. The transcript alignment is
+        # one signal; the analysis also looks at both videos when they are given.
+        source_frames = _pair_frames(args, args.source_file, "pair_source")
+        output_frames = _pair_frames(args, args.output_file, "pair_output")
+        try:
+            analysis = learn_pair(
+                producer, store, alignment,
+                source_ref=args.source_ref or args.source_transcript,
+                output_ref=args.output_ref or args.output_transcript,
+                source_frames=source_frames,
+                output_frames=output_frames,
+            )
+        finally:
+            reference_mod._discard(source_frames + output_frames)
         measured = analysis["measured"]
         print(
             f"kept {measured['kept_spans']} spans, dropped {measured['dropped_spans']},"
@@ -1181,6 +1203,12 @@ def build_parser() -> argparse.ArgumentParser:
     learn.add_argument(
         "--source-duration", type=float, default=None, metavar="SEC",
         help="loop B: length of the source broadcast, when it has not been run here",
+    )
+    learn.add_argument(
+        "--source-file", help="loop B: the source broadcast video, so the analysis sees it (5.2)",
+    )
+    learn.add_argument(
+        "--output-file", help="loop B: the human-made finished video, so the analysis sees it (5.2)",
     )
     learn.add_argument("--source-ref")
     learn.add_argument("--output-ref")

@@ -44,7 +44,16 @@
 | **18장** | AI가 담당: 콘텐츠 경계·개수·종류·제작 여부·장면 선택·순서·구조·길이·편집 의도·**호흡 판정**·제목/썸네일 방향·제작 전략 | ✅ `llm/base.py: Producer` + `anthropic_provider.py` + `prompts.py`. `--producer anthropic`으로 실제 실행 | ❌ **0건** | `grep -rE "anthropic\|openai\|llm" legacy/backend/ legacy/src/` → 0 |
 | **4장 전체** | YouTube Content Intelligence — 공개 지표 수집, 제작 패턴 추출, `TB_YT_REFERENCE` | ✅ `intelligence/reference.py`, `knowledge.py` | ❌ 없음 | `grep -rlE "public_metrics" legacy/backend/` → 0 |
 | **5.3** | 상황 라벨 (단독토크 / 게임 / 다인원 / 자리비움) | ✅ `models.SituationLabel`, `analysis/signals.py` | ❌ 없음 | `grep -rlE "situation" legacy/backend/` → 0 |
-| **17.2** | 캘리브레이션 데이터셋 구축 — 이 프로젝트의 병목 | ✅ `aicut dataset` + `calibration/dataset.py` (`derive-silences` 포함) | ❌ 없음 | `grep -rlE "dataset" legacy/backend/` → 0 |
+| **17.2** | 캘리브레이션 데이터셋 구축 — 이 프로젝트의 병목 | ✅ `aicut dataset` + `calibration/dataset.py` (`derive-silences` 포함) | ⚠️ 부분 — 17.2(c) 구간 대응 계산은 있으나 데이터셋 관리 명령은 없음 | `legacy/backend/learning.py:54 analyze_source_output()` |
+
+> **정정.** 이 행은 원래 AICUT2 쪽을 "❌ 없음"으로 적고 근거를 
+> `grep -rlE "dataset" legacy/backend/` → 0 으로 달았다. **틀린 판정이다.**
+> `legacy/backend/learning.py`에 `analyze_source_output()`이 있고,
+> `merge_intervals()`/`complement()`로 원본 대비 선택·제거 구간을 계산한다.
+> 12.3 B와 17.2(c)에 해당하는 코드다. 파일명·식별자에 "dataset"이라는 단어가
+> 안 쓰였을 뿐이었고, grep 한 번으로 기능의 부재를 선언한 것이 잘못이었다.
+> `aicut/intelligence/source_output.py`의 `merge_intervals`/`complement`는
+> 이 코드를 가져온 것이다.
 | **17.4** | 파라미터 스윕 후 17.3 지표로 평가 | ✅ `calibration/sweep.py`, `harness.py`, `metrics.py` | ❌ `calibrate_pacing()`은 F1 계산만, 스윕 없음 | |
 | **17.5** | 미측정 값은 확정값이 아님 — "임시" 표기 유지 | ✅ `provisional` / `measured` 마킹, 리포트 기록, `--strict`는 실행 거부 | ❌ **0건** | `grep -rlE "provisional" legacy/backend/` → 0 |
 | **10.4-1** | 얼굴 추적 줌 — (a)segment_crop / (b)sendcmd / (c)프레임 합성 중 택1 | ✅ `render/ffmpeg.py: zoom_filter()`, `sendcmd_file()` 둘 다 구현, 선택은 프로파일 | ❌ 화면 중앙 고정 crop (`render.py:111`). 얼굴 추적이 아님 | |

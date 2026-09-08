@@ -65,33 +65,31 @@ def watch(
     *,
     frames_dir: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Read one finished video: how it is cut, and frames to look at (4.3).
+    """Read one reference video so the analysis can look at it (4.2, 4.3).
 
-    4.3 asks what the editing is — 컷, 평균 장면 길이, 화면 전환, 자막, 강조,
-    효과 — and none of that is in a title or a view count. The program measures
-    the countable half here; the frames go to the judgement, which is the only
-    thing that can say what is on them (18장).
+    4.2 lists 영상 first among the things collected, and every item 4.3 asks
+    about — 컷, 평균 장면 길이, 화면 전환, 자막, 강조, 효과 — is on the screen,
+    not in the title.
 
-    4.6 governs the file: it is read and the analysis is kept, the media is not.
-    Nothing in this function writes the video anywhere, and `analyze` deletes
-    the frames it was given once the answer is back.
+    18장 decides what happens here. 영상 디코딩 and 파일 관리 are the program's,
+    so this decodes the file and samples frames across it. 편집 의도 is the AI's,
+    so nothing here counts a cut or scores a scene; the frames go to the
+    analysis and it says what the editing is.
+
+    4.6 governs the file: `analyze` deletes the frames once the answer is back.
     """
-    from aicut.analysis import editing
     from aicut.media import probe as probe_mod
     from aicut.media import vision as vision_mod
 
     media = probe_mod.probe(path)
     interval = profile.get_float("scan.pass1_frame_interval_sec")
-    curve = vision_mod.motion_curve(path, interval_sec=interval)
-    print_ = editing.fingerprint(curve, media.duration_sec, profile)
-
     frames: list[str] = []
     if frames_dir is not None:
         samples = vision_mod.sample_frames(
             path, Path(frames_dir), interval_sec=interval, prefix="ref",
         )
         frames = [f.path for f in samples]
-    return {"editing": print_.to_dict(), "frames": frames, "duration_sec": media.duration_sec}
+    return {"frames": frames, "duration_sec": media.duration_sec}
 
 
 def analyze(
@@ -108,11 +106,9 @@ def analyze(
     analyse (their own transcript of a video, notes on its edit). It is passed to
     the analysis and never written to the database - 4.6.
 
-    ``watched`` carries what :func:`watch` measured for a video the operator
-    supplied the file for: the cut rhythm, and frames for the judgement to look
-    at. The measurements are stored as part of the analysis; the frames are
-    shown to the model and then deleted, because 4.6 keeps the patterns and not
-    the media.
+    ``watched`` carries the frames :func:`watch` sampled from a video the
+    operator supplied the file for. They are shown to the analysis and then
+    deleted: 4.6 keeps the patterns and not the media.
     """
     analyses: list[dict[str, Any]] = []
     for reference in references:
@@ -130,10 +126,12 @@ def analyze(
         }
         seen = (watched or {}).get(reference.get("video_id", ""), {})
         frames = list(seen.get("frames", []))
-        if seen:
-            payload["editing"] = seen.get("editing", {})
-            payload["note"] += ("; the editing block is measured from the file, and the images"
-                                " are frames from it (4.3)")
+        if frames:
+            payload["watched"] = {"duration_sec": seen.get("duration_sec", 0.0),
+                                  "frame_count": len(frames)}
+            payload["note"] += ("; the images are frames sampled across this video, in order."
+                                " 4.3 asks what its editing is - 컷, 평균 장면 길이, 화면 전환,"
+                                " 자막, 강조, 효과 - and 4.4 asks why it was cut that way")
         try:
             analysis = producer.analyze_reference(payload, images=frames)
         except Exception as exc:
@@ -142,8 +140,6 @@ def analyze(
         finally:
             # 4.6: the analysis is kept, the media is not.
             _discard(frames)
-        if seen.get("editing"):
-            analysis.setdefault("measured_editing", seen["editing"])
         store.save_reference(
             reference.get("video_id", ""),
             reference.get("channel_id", ""),

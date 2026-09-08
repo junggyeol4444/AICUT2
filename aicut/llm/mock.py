@@ -29,6 +29,8 @@ class MockProducer(Producer):
     def __init__(self) -> None:
         #: Frames each task was handed, per task. See complete_json.
         self.seen_images: dict[str, list[str]] = {}
+        #: The last payload each task was handed. Same reason as seen_images.
+        self.seen_payloads: dict[str, dict[str, Any]] = {}
 
     def complete_json(
         self, task: str, system: str, payload: dict[str, Any],
@@ -38,6 +40,7 @@ class MockProducer(Producer):
         # actually hand frames down; a mock that silently dropped them would let
         # that wiring rot without a single test going red.
         self.seen_images.setdefault(task, []).extend(images)
+        self.seen_payloads[task] = payload
         handler = getattr(self, f"_task_{task}", None)
         if handler is None:
             return {}

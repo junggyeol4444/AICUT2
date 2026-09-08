@@ -98,23 +98,10 @@ class AlignedSpan:
             return 0.0
         return (self.output_end_sec - self.output_start_sec) / self.source_duration
 
-    def emphasis(self, *, hold_margin: float = 0.05) -> list[str]:
-        """Why this span reads as emphasised, from timing alone.
-
-        12.3 B asks what the editor emphasised. Two of its answers are in the
-        timing and need nothing else: a moment used more than once, and a moment
-        the editor gave more room in the finished video than it occupied in the
-        source. The rest of that question - added captions, effects - is not in
-        a speech transcript, and is not guessed here.
-        """
-        if not self.kept:
-            return []
-        reasons = []
-        if self.repeated > 1:
-            reasons.append("repeated")
-        if self.compression > 1.0 + hold_margin:
-            reasons.append("held")
-        return reasons
+    # 강조 was here, decided by code from `compression` and `repeated` against a
+    # margin written into the source. 18장 gives 편집 의도 to the AI, and 12.3 B
+    # asks it what was 선택/제거/재배치/반복/강조 - so the measurements go into
+    # the payload and the answer comes back from the analysis, not from here.
 
 
 @dataclass
@@ -266,8 +253,17 @@ def learn(
     source_ref: str,
     output_ref: str,
     context: dict[str, Any] | None = None,
+    source_frames: Sequence[str] = (),
+    output_frames: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Turn one alignment into stated editing rules and store the pair."""
+    """Turn one alignment into stated editing rules and store the pair.
+
+    ``source_frames`` and ``output_frames`` are frames sampled across the two
+    videos. 5.2 says the passes do not separate 화면 from 소리, and 12.3 B asks
+    what was 선택/제거/재배치/반복/강조 - 강조 in particular is a caption, a zoom
+    or an effect, none of which reach a transcript. The alignment below is one
+    signal in the payload; the answer comes from the analysis looking at both.
+    """
     payload = {
         "source_ref": source_ref,
         "output_ref": output_ref,
@@ -280,7 +276,6 @@ def learn(
                 "compression": round(s.compression, 3),
                 "repeated": s.repeated,
                 "order_changed": s.order_changed,
-                "emphasis": s.emphasis(),
                 "text": s.text[:200],
             }
             for s in alignment.kept_spans
@@ -302,14 +297,20 @@ def learn(
         ],
         "context": context or {},
     }
-    analysis = producer.compare_source_output(payload)
+    frames = list(source_frames) + list(output_frames)
+    if frames:
+        payload["frames"] = {
+            "source": len(source_frames),
+            "output": len(output_frames),
+            "order": "the source frames come first, in time order, then the output frames",
+        }
+    analysis = producer.compare_source_output(payload, images=frames)
     analysis["measured"] = {
         "keep_ratio": payload["keep_ratio"],
         "reordered": payload["reordered"],
         "kept_spans": len(alignment.kept_spans),
         "dropped_spans": len(alignment.spans) - len(alignment.kept_spans),
         "moved_spans": sum(1 for s in alignment.kept_spans if s.order_changed),
-        "emphasised_spans": sum(1 for s in alignment.kept_spans if s.emphasis()),
         "source_duration_sec": alignment.source_duration_sec,
         "selection_ratio": payload["selection_ratio"],
         "removed_segments": len(payload["removed_segments"]),

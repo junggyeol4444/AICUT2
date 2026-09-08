@@ -104,9 +104,17 @@ class Producer(ABC):
         """Loop A: why was this reference video made the way it was (4.4)."""
         return self._object("analyze_reference", payload, images=images)
 
-    def compare_source_output(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Loop B: what a human kept, dropped, reordered, repeated, emphasised (12.3 B)."""
-        return self._object("compare_source_output", payload)
+    def compare_source_output(
+        self, payload: dict[str, Any], *, images: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        """Loop B: what a human kept, dropped, reordered, repeated, emphasised (12.3 B).
+
+        ``images`` are frames from the two videos, the source first and then the
+        output. A transcript says which sentences survived; it cannot show a cut
+        inside a sentence, a caption, an effect or a zoom, and 1.2 names relying
+        on speech alone as the third failure of the tools this replaces.
+        """
+        return self._object("compare_source_output", payload, images=images)
 
     def learn_from_performance(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Loop C: turn viewer response into changes to production strategy (12.2)."""
