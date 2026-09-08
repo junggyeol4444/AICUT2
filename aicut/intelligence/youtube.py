@@ -76,6 +76,8 @@ class YouTubeClient:
                 out.append({
                     "video_id": item["id"],
                     "channel_id": snippet.get("channelId", ""),
+                    "channel_title": snippet.get("channelTitle", ""),
+                    "category_id": snippet.get("categoryId", ""),
                     "title": snippet.get("title", ""),
                     "description": snippet.get("description", ""),
                     "published_at": snippet.get("publishedAt", ""),

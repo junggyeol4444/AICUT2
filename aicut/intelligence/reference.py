@@ -3,12 +3,16 @@
 Scope is deliberately narrow at the start (4.1): the neighbourhood the channel
 actually competes in, not YouTube at large.
 
-The data policy of 4.6 is enforced by construction. This module reads metadata
-and public metrics through the API, sends *that* to the analysis step, and stores
-only the resulting patterns. It never downloads a reference video, and the
-reference table has no column to keep one in. Anything an analysis needs beyond
-metadata has to be supplied by the operator for material they are entitled to
-analyse, and is discarded after the analysis returns.
+4.6 says the media policy has to be settled before MVP 1 starts, and leaves the
+decision to the operator. It is settled: **the media is kept.** The operator
+supplies the reference material or has the system fetch it, holds the legal
+question themselves, and nothing here deletes a file after reading it. What 4.6
+rules out is still ruled out - reproducing one video. That is 4.5's job and it
+consolidates across references.
+
+So this module fetches metadata and public metrics, reads the video and its
+thumbnail when they are available, hands all of it to the analysis, and keeps
+what it downloaded under the workspace.
 """
 
 from __future__ import annotations
@@ -26,13 +30,18 @@ from aicut.llm import Producer
 
 log = logging.getLogger(__name__)
 
-# 4.1: start narrow, widen later if it earns it.
+# 4.1 names the neighbourhood to start in, and these are its terms, not a set
+# invented here. The original spec (6.1) adds 스트리머 콘텐츠 to the same list.
 DEFAULT_QUERIES = [
-    "게임 스트리머 편집 영상",
-    "생방송 하이라이트 편집",
-    "합방 하이라이트",
-    "스트리머 리액션 모음",
-    "게임 방송 다시보기 편집",
+    "게임 스트리머",
+    "인터넷 방송",
+    "생방송 편집 영상",
+    "게임 하이라이트",
+    "합방",
+    "리액션",
+    "토크",
+    "예능형 콘텐츠",
+    "스트리머 콘텐츠",
 ]
 
 
@@ -57,6 +66,69 @@ def collect_references(
             record["found_by"] = query
             references.append(record)
     return references
+
+
+def references_from_inputs(
+    inputs: Sequence[str],
+    *,
+    client: YouTubeClient | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Turn what the operator handed over into reference records (4.2).
+
+    Two shapes arrive here and both are ordinary:
+
+    * a YouTube link or id - the public metrics of 4.2 are fetched for it, and
+      the video itself still has to be downloaded or supplied;
+    * a file already on disk - a broadcast whose VOD is gone has no link at all,
+      so there is nothing to fetch and the record carries only what the file
+      itself can say. 4.2's metadata is simply absent, and the analysis says so.
+
+    Returns the records, and a map from video_id to the local file where one was
+    given, which is what :func:`watch_all` takes as ``files``.
+    """
+    from aicut.intelligence import fetch as fetch_mod
+
+    wanted: list[str] = []
+    files: dict[str, str] = {}
+    records: list[dict[str, Any]] = []
+    for raw in inputs:
+        video_id = fetch_mod.video_id_from(raw)
+        if video_id:
+            wanted.append(video_id)
+            continue
+        path = Path(raw)
+        if not path.exists():
+            log.warning("not a YouTube link and not a file on disk: %s", raw)
+            continue
+        # A local file gets an id derived from its name so the rest of the loop,
+        # which is keyed by video_id, does not need a second code path.
+        local_id = f"local:{path.stem}"
+        files[local_id] = str(path)
+        records.append({
+            "video_id": local_id,
+            "channel_id": "",
+            "title": path.stem,
+            "description": "",
+            "tags": [],
+            "duration": "",
+            "published_at": "",
+            "thumbnails": {},
+            "public_metrics": {},
+            "found_by": "operator supplied file",
+        })
+    if wanted:
+        if client is None:
+            log.warning("no YouTube client, so %d link(s) get no 4.2 metadata", len(wanted))
+            records.extend({
+                "video_id": vid, "channel_id": "", "title": "", "description": "",
+                "tags": [], "duration": "", "published_at": "", "thumbnails": {},
+                "public_metrics": {}, "found_by": "operator supplied link",
+            } for vid in wanted)
+        else:
+            for record in client.public_metrics(wanted):
+                record["found_by"] = "operator supplied link"
+                records.append(record)
+    return records, files
 
 
 def watch(
@@ -92,6 +164,58 @@ def watch(
     return {"frames": frames, "duration_sec": media.duration_sec}
 
 
+def watch_all(
+    references: Sequence[dict[str, Any]],
+    profile: CalibrationProfile,
+    workspace: str | Path,
+    *,
+    files: dict[str, str] | None = None,
+    download: bool = False,
+    thumbnails: bool = True,
+) -> dict[str, dict[str, Any]]:
+    """Get hold of what 4.2 collects for each reference, and read it.
+
+    The operator settled 4.6 both ways: they hand over files, and the system
+    fetches the rest. ``files`` is what they handed over, ``download`` turns the
+    fetcher on for everything else. Neither is required - a reference with no
+    video still gets analysed from its metadata, which is all 4.2 guarantees for
+    another channel's video anyway.
+    """
+    from aicut.intelligence import fetch as fetch_mod
+
+    supplied = dict(files or {})
+    root = Path(workspace) / "references"
+    watched: dict[str, dict[str, Any]] = {}
+    for reference in references:
+        video_id = reference.get("video_id", "")
+        if not video_id:
+            continue
+        seen: dict[str, Any] = {}
+        if thumbnails:
+            # 4.5 asks for a 썸네일 패턴, and that needs the picture.
+            shot = fetch_mod.fetch_thumbnail(
+                reference.get("thumbnails", {}), root / video_id, video_id=video_id,
+            )
+            if shot:
+                seen["thumbnail"] = shot
+        path = supplied.get(video_id)
+        if path is None and download:
+            try:
+                path = fetch_mod.fetch_video(video_id, root / video_id)
+            except Exception as exc:
+                log.warning("could not fetch %s: %s", video_id, exc)
+                path = None
+        if path:
+            try:
+                seen.update(watch(path, profile, frames_dir=root / video_id / "frames"))
+                seen["video_path"] = path
+            except Exception as exc:
+                log.warning("could not read %s: %s", path, exc)
+        if seen:
+            watched[video_id] = seen
+    return watched
+
+
 def analyze(
     producer: Producer,
     store: Store,
@@ -106,9 +230,10 @@ def analyze(
     analyse (their own transcript of a video, notes on its edit). It is passed to
     the analysis and never written to the database - 4.6.
 
-    ``watched`` carries the frames :func:`watch` sampled from a video the
-    operator supplied the file for. They are shown to the analysis and then
-    deleted: 4.6 keeps the patterns and not the media.
+    ``watched`` carries what :func:`watch` read from a video the operator
+    supplied or had fetched: frames from the video, and the thumbnail. Both are
+    shown to the analysis and both stay on disk afterwards - see the module
+    docstring for the 4.6 decision.
     """
     analyses: list[dict[str, Any]] = []
     for reference in references:
@@ -120,26 +245,41 @@ def analyze(
                 "duration": reference.get("duration", ""),
                 "published_at": reference.get("published_at", ""),
             },
+            "channel": {
+                "channel_id": reference.get("channel_id", ""),
+                "channel_title": reference.get("channel_title", ""),
+            },
+            "category_id": reference.get("category_id", ""),
             "public_metrics": reference.get("public_metrics", {}),
             "context": (extra_context or {}).get(reference.get("video_id", ""), {}),
             "note": "public metrics only; retention and CTR are unavailable for other channels (4.2)",
         }
         seen = (watched or {}).get(reference.get("video_id", ""), {})
+        # The thumbnail leads: 4.5 asks how it relates to the video behind it,
+        # which is a question about the order they are seen in.
+        thumbnail = seen.get("thumbnail", "")
         frames = list(seen.get("frames", []))
-        if frames:
-            payload["watched"] = {"duration_sec": seen.get("duration_sec", 0.0),
-                                  "frame_count": len(frames)}
-            payload["note"] += ("; the images are frames sampled across this video, in order."
-                                " 4.3 asks what its editing is - 컷, 평균 장면 길이, 화면 전환,"
-                                " 자막, 강조, 효과 - and 4.4 asks why it was cut that way")
+        images = ([thumbnail] if thumbnail else []) + frames
+        if images:
+            payload["watched"] = {
+                "duration_sec": seen.get("duration_sec", 0.0),
+                "thumbnail": bool(thumbnail),
+                "frame_count": len(frames),
+            }
+            payload["note"] += (
+                "; the images are this video's own material."
+                + (" The first is its thumbnail." if thumbnail else "")
+                + (f" The remaining {len(frames)} are frames sampled across the video,"
+                   " in time order." if frames else "")
+                + " 4.3 asks what its editing is - 컷, 평균 장면 길이, 확대, 크롭, 화면 전환,"
+                  " 자막, 강조, 효과, 효과음, BGM, 이미지, 밈, 리플레이 - and who the video"
+                  " is about. 4.4 asks why it was made that way"
+            )
         try:
-            analysis = producer.analyze_reference(payload, images=frames)
+            analysis = producer.analyze_reference(payload, images=images)
         except Exception as exc:
             log.warning("analysis failed for %s: %s", reference.get("video_id"), exc)
             continue
-        finally:
-            # 4.6: the analysis is kept, the media is not.
-            _discard(frames)
         store.save_reference(
             reference.get("video_id", ""),
             reference.get("channel_id", ""),
@@ -148,15 +288,6 @@ def analyze(
         )
         analyses.append(analysis)
     return analyses
-
-
-def _discard(frames: Iterable[str]) -> None:
-    """Delete the frames a reference was read from (4.6)."""
-    for path in frames:
-        try:
-            Path(path).unlink(missing_ok=True)
-        except OSError as exc:
-            log.warning("could not discard reference frame %s: %s", path, exc)
 
 
 def build_knowledge(store: Store) -> ProductionKnowledge:

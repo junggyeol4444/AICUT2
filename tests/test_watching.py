@@ -51,30 +51,14 @@ class ReferenceWatchingTests(unittest.TestCase):
         self.assertEqual(self.producer.seen_images.get("analyze_reference"), frames,
                          "loop A analysed a video it never looked at")
 
-    def test_the_frames_are_deleted_once_the_answer_is_back(self):
-        """4.6: 원본 미디어는 분석 후 폐기."""
+    def test_the_media_is_kept(self):
+        """4.6 leaves the media policy to the operator, and they decided: keep it."""
         frames = touch(self.dir, "ref_000.jpg")
         reference_mod.analyze(
             self.producer, self.store, self._reference(),
             watched={"abc": {"frames": list(frames), "duration_sec": 600.0}},
         )
-        self.assertFalse(Path(frames[0]).exists(), "a reference frame survived the analysis")
-
-    def test_the_frames_are_deleted_even_when_the_analysis_fails(self):
-        frames = touch(self.dir, "ref_000.jpg")
-
-        class Failing(MockProducer):
-            def analyze_reference(self, payload, *, images=()):
-                raise RuntimeError("no")
-
-        reference_mod.analyze(
-            Failing(), self.store, self._reference(),
-            watched={"abc": {"frames": list(frames), "duration_sec": 600.0}},
-        )
-        self.assertFalse(Path(frames[0]).exists())
-
-    def test_discarding_a_frame_that_is_already_gone_is_not_an_error(self):
-        reference_mod._discard([str(self.dir / "never_existed.jpg")])
+        self.assertTrue(Path(frames[0]).exists(), "a reference frame was deleted")
 
     def test_a_reference_with_no_file_still_analyses_from_metadata(self):
         analyses = reference_mod.analyze(self.producer, self.store, self._reference())
@@ -84,7 +68,7 @@ class ReferenceWatchingTests(unittest.TestCase):
     def test_nothing_in_the_module_counts_cuts(self):
         """18장: 편집 의도 is the AI's. Code that scores scenes took it back."""
         source = Path(reference_mod.__file__).read_text()
-        for banned in ("cut_count", "detect_cuts", "fingerprint"):
+        for banned in ("cut_count", "detect_cuts", "fingerprint"):  # noqa: E501
             self.assertNotIn(banned, source, f"{banned} is code deciding the edit")
 
 

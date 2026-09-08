@@ -499,38 +499,6 @@ def _source_duration(store, args) -> float:
     return 0.0
 
 
-def _watch_reference_files(args, references) -> dict:
-    """Read the reference files the operator supplied, and match them by id (4.3).
-
-    4.2 collects 영상 first, and every item 4.3 asks about is on the screen.
-    `--file ID=PATH` hands over material the operator is entitled to analyse;
-    the frames are deleted by `reference.analyze` once the answer is back,
-    because 4.6 keeps the patterns and not the media.
-    """
-    from aicut.intelligence import reference as reference_mod
-
-    pairs = getattr(args, "file", None) or []
-    if not pairs:
-        return {}
-    known = {r.get("video_id", "") for r in references}
-    profile = _profile(args)
-    frames_root = Path(args.workspace) / "reference_frames"
-    watched: dict[str, dict] = {}
-    for pair in pairs:
-        video_id, _, path = pair.partition("=")
-        if not path:
-            print(f"--file wants ID=PATH, got {pair!r}", file=sys.stderr)
-            return {}
-        if video_id not in known:
-            print(f"--file {video_id} is not among the collected references", file=sys.stderr)
-            continue
-        frames_dir = frames_root / video_id
-        frames_dir.mkdir(parents=True, exist_ok=True)
-        watched[video_id] = reference_mod.watch(path, profile, frames_dir=frames_dir)
-        print(f"watched {video_id}: {len(watched[video_id]['frames'])} frames")
-    return watched
-
-
 def _pair_frames(args, path, name: str) -> list[str]:
     """Sample frames from one side of a 12.3 B pair, or nothing if no file."""
     if not path:
@@ -554,12 +522,39 @@ def cmd_learn(args) -> int:
     knowledge_path = Path(args.workspace) / "knowledge.json"
 
     if args.loop == "reference":
-        # Loop A. Only public metrics are fetched, and only patterns are kept (4.2, 4.6).
-        client = _youtube(args, store)
-        queries = args.query or reference_mod.DEFAULT_QUERIES
-        references = reference_mod.collect_references(client, queries, per_query=args.per_query)
-        print(f"collected {len(references)} references; analysing")
-        watched = _watch_reference_files(args, references)
+        # Loop A, and it runs two ways because references arrive two ways.
+        #
+        #   --video LINK|PATH   the operator hands one over. A broadcast whose
+        #                       VOD is gone has no link, so a bare file has to
+        #                       work with no 4.2 metadata behind it.
+        #   otherwise           the system finds its own, per 4.1, and fetches
+        #                       them. --no-download stops at metadata.
+        #
+        # 4.6 leaves the media policy to the operator and they settled it:
+        # what is fetched is kept.
+        if args.video:
+            client = _youtube(args, store) if args.metadata else None
+            references, files = reference_mod.references_from_inputs(args.video, client=client)
+            if not references:
+                print("no usable reference in --video", file=sys.stderr)
+                return 1
+            print(f"{len(references)} reference(s) from you; reading")
+            watched = reference_mod.watch_all(
+                references, _profile(args), args.workspace,
+                files=files, download=args.download,
+            )
+        else:
+            client = _youtube(args, store)
+            queries = args.query or reference_mod.DEFAULT_QUERIES
+            references = reference_mod.collect_references(client, queries, per_query=args.per_query)
+            print(f"found {len(references)} references; reading")
+            watched = reference_mod.watch_all(
+                references, _profile(args), args.workspace, download=args.download,
+            )
+        for video_id, seen in watched.items():
+            print(f"  {video_id}: {len(seen.get('frames', []))} frames"
+                  f"{', thumbnail' if seen.get('thumbnail') else ''}")
+        print(f"analysing {len(references)}")
         reference_mod.analyze(producer, store, references, watched=watched)
         knowledge = reference_mod.build_knowledge(store)
         knowledge.save(knowledge_path)
@@ -585,16 +580,13 @@ def cmd_learn(args) -> int:
         # one signal; the analysis also looks at both videos when they are given.
         source_frames = _pair_frames(args, args.source_file, "pair_source")
         output_frames = _pair_frames(args, args.output_file, "pair_output")
-        try:
-            analysis = learn_pair(
-                producer, store, alignment,
-                source_ref=args.source_ref or args.source_transcript,
-                output_ref=args.output_ref or args.output_transcript,
-                source_frames=source_frames,
-                output_frames=output_frames,
-            )
-        finally:
-            reference_mod._discard(source_frames + output_frames)
+        analysis = learn_pair(
+            producer, store, alignment,
+            source_ref=args.source_ref or args.source_transcript,
+            output_ref=args.output_ref or args.output_transcript,
+            source_frames=source_frames,
+            output_frames=output_frames,
+        )
         measured = analysis["measured"]
         print(
             f"kept {measured['kept_spans']} spans, dropped {measured['dropped_spans']},"
@@ -1195,8 +1187,17 @@ def build_parser() -> argparse.ArgumentParser:
     learn.add_argument("--query", action="append", help="reference search query (loop A, repeatable)")
     learn.add_argument("--per-query", type=int, default=25)
     learn.add_argument(
-        "--file", action="append", metavar="ID=PATH",
-        help="loop A: a reference video file to read (4.3); repeatable, discarded after analysis (4.6)",
+        "--video", action="append", metavar="LINK|PATH",
+        help="loop A: a reference you supply - a YouTube link, an id, or a file "
+             "already on disk. Repeatable. Without it the system finds its own (4.1)",
+    )
+    learn.add_argument(
+        "--download", action=argparse.BooleanOptionalAction, default=True,
+        help="loop A: fetch the video with yt-dlp when no file was supplied (default: on)",
+    )
+    learn.add_argument(
+        "--metadata", action=argparse.BooleanOptionalAction, default=True,
+        help="loop A: look up 4.2 public metrics for supplied links (default: on)",
     )
     learn.add_argument("--source-transcript", help="loop B: transcript of the source broadcast")
     learn.add_argument("--output-transcript", help="loop B: transcript of the human-made video")
