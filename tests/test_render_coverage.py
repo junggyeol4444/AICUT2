@@ -356,3 +356,108 @@ class ZoomSegmentPiecesTests(unittest.TestCase):
 
         self.assertEqual(pieces[-1].source_end_sec, 16.0)
         self.assertTrue(all(p.source_end_sec <= 16.0 for p in pieces))
+
+
+class SubtitleFontChecksTests(unittest.TestCase):
+    """20.2 makes 자막 폰트의 임베딩·상업 사용 허용 여부 확인 a pre-start item.
+
+    Two separate things could go wrong and neither was visible: a style profile
+    that records no licence for the font it names, and a font the machine does
+    not have. libass substitutes a missing font with no warning and exit code 0,
+    so the second is only discoverable by watching the finished video.
+    """
+
+    def _profile(self, data):
+        from aicut.render.subtitles import SubtitleStyleProfile
+
+        return SubtitleStyleProfile(data)
+
+    def test_libass_substitutes_a_missing_font_without_saying_so(self):
+        """The claim behind the check, made by ffmpeg rather than asserted."""
+        import subprocess
+
+        from aicut.media.ffmpeg_util import have_ffmpeg, has_filter
+
+        if not have_ffmpeg() or not has_filter("subtitles"):
+            self.skipTest("this ffmpeg cannot burn subtitles")
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            frames = []
+            for font in ("Nonexistent Font AAA", "Nonexistent Font ZZZ"):
+                ass = Path(tmp) / f"{font}.ass"
+                ass.write_text(
+                    "[Script Info]\nScriptType: v4.00+\nPlayResX: 320\nPlayResY: 180\n\n"
+                    "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour,"
+                    " Bold, Alignment, MarginV, Encoding\n"
+                    f"Style: Default,{font},36,&H00FFFFFF,0,2,20,1\n\n"
+                    "[Events]\nFormat: Layer, Start, End, Style, Text\n"
+                    "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,test\n",
+                    encoding="utf-8",
+                )
+                out = Path(tmp) / f"{font}.png"
+                done = subprocess.run(
+                    ["ffmpeg", "-v", "error", "-f", "lavfi",
+                     "-i", "color=c=black:s=320x180:d=1",
+                     "-vf", f"subtitles={ass}", "-frames:v", "1", "-y", str(out)],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(done.returncode, 0, done.stderr)
+                # Not a word about the font it could not find.
+                self.assertNotIn("not found", done.stderr.lower())
+                frames.append(out.read_bytes())
+
+        self.assertEqual(frames[0], frames[1],
+                         "two different missing fonts rendered differently")
+
+    def test_a_profile_with_no_recorded_licence_is_reported(self):
+        problems = self._profile({
+            "styles": {"default": {"fontname": "Some Display Font"}},
+        }).licence_problems()
+
+        self.assertTrue(any("font_licence" in p for p in problems), problems)
+
+    def test_the_shipped_profile_records_its_licence(self):
+        from aicut.render.subtitles import SubtitleStyleProfile
+
+        profile = SubtitleStyleProfile.load("default")
+
+        self.assertIn("Open Font License", profile.data["_meta"]["font_licence"])
+        self.assertNotIn(
+            "font_licence",
+            " ".join(p for p in profile.licence_problems() if "font_licence" in p),
+        )
+
+    def test_every_font_the_styles_name_is_checked_not_only_the_default(self):
+        profile = self._profile({
+            "_meta": {"font_licence": "SIL OFL 1.1"},
+            "styles": {
+                "default": {"fontname": "Font A"},
+                "emphasis": {"fontname": "Font B"},
+                "quiet": {"inherits": "default"},
+            },
+        })
+
+        self.assertEqual(profile.fonts, ["Font A", "Font B"])
+
+    def test_a_machine_without_fontconfig_is_not_told_a_font_is_missing(self):
+        """None means the question could not be asked. Reporting it as an
+        answer would send the operator installing what they may already have."""
+        from unittest import mock
+
+        from aicut.render import subtitles
+
+        with mock.patch.object(subtitles, "font_installed", return_value=None):
+            problems = self._profile({
+                "_meta": {"font_licence": "SIL OFL 1.1"},
+                "styles": {"default": {"fontname": "Font A"}},
+            }).licence_problems()
+
+        self.assertEqual(problems, [])
+
+    def test_fc_match_substituting_is_read_as_absent(self):
+        from aicut.render.subtitles import font_installed
+
+        import shutil
+
+        if not shutil.which("fc-match"):
+            self.skipTest("fontconfig is not installed here")
+        self.assertIs(font_installed("Definitely Not A Font 12345"), False)

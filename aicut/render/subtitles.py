@@ -55,6 +55,76 @@ class SubtitleStyleProfile:
     def effects(self) -> dict[str, Any]:
         return self.data.get("effects", {})
 
+    @property
+    def fonts(self) -> list[str]:
+        """Every font this profile names, in the order the styles are written."""
+        seen: list[str] = []
+        for name in self.styles:
+            font = str(self.resolved(name).get("fontname", "")).strip()
+            if font and font not in seen:
+                seen.append(font)
+        return seen
+
+    def licence_problems(self) -> list[str]:
+        """What 20.2 asks about this profile's fonts, and 10.3 requires of them.
+
+        20.2 makes 자막 폰트의 임베딩·상업 사용 허용 여부 확인 a pre-start item,
+        and 10.3 says only fonts whose licence permits both may be adopted. The
+        shipped profile records its licence in `_meta.font_licence`; a profile
+        written by the operator, or one that 4.5's subtitle-pattern analysis has
+        updated with a new font, may not.
+
+        This reports; it never refuses. Whether a font may be used is a fact
+        about a licence the operator holds and this code cannot read - what it
+        can say is that nothing in the file records the answer.
+        """
+        problems: list[str] = []
+        licence = str((self.data.get("_meta") or {}).get("font_licence", "")).strip()
+        fonts = self.fonts
+        if fonts and not licence:
+            problems.append(
+                f"no _meta.font_licence recorded for {', '.join(fonts)}. 10.3 admits"
+                " only fonts whose licence permits embedding and commercial use"
+                " (SIL OFL and similar); 20.2 makes checking it a pre-start item"
+            )
+        # `is False`, not falsy: None means fontconfig could not be asked, and
+        # reporting an unanswerable question as a missing font would send the
+        # operator installing something they may already have.
+        missing = [font for font in fonts if font_installed(font) is False]
+        if missing:
+            problems.append(
+                f"not installed on this machine: {', '.join(missing)}."
+                " libass substitutes silently, so the burned captions would not be"
+                " the style this profile describes (10.3)"
+            )
+        return problems
+
+
+def font_installed(name: str) -> bool | None:
+    """Whether a font is on this machine. None when it cannot be determined.
+
+    Asked through fontconfig, which is what libass uses to resolve a name - so
+    this is the same question the renderer will ask. `fc-match` always answers
+    with *something*, substituting when the request is unknown, so the family it
+    returns has to be compared with the family that was asked for.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("fc-match"):
+        return None
+    try:
+        done = subprocess.run(
+            ["fc-match", "--format=%{family}", name],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    families = {f.strip().casefold() for f in done.stdout.split(",") if f.strip()}
+    return name.strip().casefold() in families
+
 
 def _fmt(value: Any) -> str:
     if isinstance(value, float) and value.is_integer():

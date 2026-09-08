@@ -1442,6 +1442,33 @@ def _check_reasoning_backend(args) -> None:
             print("       the editor 1.2 rejects. Try llava, qwen2.5vl or gemma3.")
 
 
+def _check_subtitle_fonts(args) -> None:
+    """20.2's font question, asked of the profile that would actually be used.
+
+    20.2 lists 자막 폰트의 임베딩·상업 사용 허용 여부 확인 as a pre-start item and
+    10.3 admits only fonts that permit both. Separately, a font the machine does
+    not have is substituted by libass without a word, so the burned captions are
+    not the style the profile describes - and that is only visible by watching
+    the finished video.
+    """
+    from aicut.render.subtitles import SubtitleStyleProfile
+
+    # The profile the render would actually load (17.1 keeps the choice there),
+    # not a guess - checking a different profile from the one that will be used
+    # is worse than not checking.
+    name = _profile(args).get("render.subtitle_style_profile")
+    try:
+        profile = SubtitleStyleProfile.load(name)
+    except Exception as exc:
+        print(f"  [--] subtitle style '{name}' - {exc}")
+        return
+    problems = profile.licence_problems()
+    print(f"  [{'ok' if not problems else '--'}] subtitle fonts"
+          f" ({', '.join(profile.fonts) or 'none named'})")
+    for problem in problems:
+        print(f"       {problem}")
+
+
 def cmd_doctor(args) -> int:
     """Check the preconditions of 20.2 before a run rather than during one."""
     #: What to type when a check comes back missing. A report that says a thing
@@ -1466,6 +1493,7 @@ def cmd_doctor(args) -> int:
 
     _check_face_detector()
     _check_reasoning_backend(args)
+    _check_subtitle_fonts(args)
 
     # Having ffmpeg is not the same as having the ffmpeg this needs: the plain
     # Homebrew bottle links no libass, so `subtitles` is absent and captions

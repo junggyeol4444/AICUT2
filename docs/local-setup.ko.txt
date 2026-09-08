@@ -16,6 +16,19 @@ aicut --producer ollama --ollama-model qwen2.5vl:7b doctor
 
 없는 항목마다 설치 명령을 같이 찍는다.
 
+`aicut doctor`가 자막 폰트도 본다. 프로파일이 이름 붙인 폰트가 이 PC에 없으면
+libass가 **말없이** 다른 폰트로 바꿔 굽는다 (측정: 없는 폰트 두 개가 바이트까지
+같은 프레임을 냈다). 기본 프로파일은 `Noto Sans KR`을 쓴다:
+
+```bash
+sudo apt install fonts-noto-cjk        # Debian/Ubuntu
+brew install --cask font-noto-sans-cjk-kr   # macOS
+```
+
+10.3은 임베딩·상업 사용이 허용된 폰트만 쓰라고 한다. 다른 폰트로 바꾸면
+`aicut/resources/subtitle_styles/<이름>.json`의 `_meta.font_licence`에 라이선스를
+적어라 — 안 적으면 doctor가 지적한다.
+
 ---
 
 ## 1. 판단 모델 (Ollama)
