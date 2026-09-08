@@ -1,6 +1,7 @@
 import json
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import Future
 from pathlib import Path
@@ -11,6 +12,21 @@ from backend.pipeline import PipelineManager
 
 
 class PipelineTest(unittest.TestCase):
+    def test_completed_async_job_releases_in_memory_tracking(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv"})
+            manager = PipelineManager(database, probe=lambda _path: SimpleNamespace(to_dict=lambda: {
+                "duration_sec": 10, "width": 1920, "height": 1080, "audio_tracks": 0,
+            }))
+            self.assertTrue(manager.submit(project["project_id"]))
+            deadline = time.monotonic() + 2
+            while project["project_id"] in manager._jobs and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertNotIn(project["project_id"], manager._jobs)
+            self.assertNotIn(project["project_id"], manager._cancel)
+            manager.shutdown()
+
     def test_pipeline_persists_steps_and_reuses_checkpoints(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "pipeline.db")

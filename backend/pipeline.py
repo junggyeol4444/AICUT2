@@ -113,8 +113,19 @@ class PipelineManager:
                 return False
             cancel = threading.Event()
             self._cancel[project_id] = cancel
-            self._jobs[project_id] = self.executor.submit(self._run, project_id, configuration, resume, cancel)
+            future = self.executor.submit(self._run, project_id, configuration, resume, cancel)
+            self._jobs[project_id] = future
+            future.add_done_callback(
+                lambda completed, project_id=project_id: self._forget_job(project_id, completed)
+            )
             return True
+
+    def _forget_job(self, project_id: str, completed: Future) -> None:
+        """Release completed futures and cancellation events from the long-lived manager."""
+        with self._lock:
+            if self._jobs.get(project_id) is completed:
+                self._jobs.pop(project_id, None)
+                self._cancel.pop(project_id, None)
 
     def run_sync(
         self, project_id: str, manifest_path: str | None = None, *,
@@ -130,7 +141,11 @@ class PipelineManager:
                 raise RuntimeError("프로젝트가 이미 실행 중입니다.")
             cancel = threading.Event()
             self._cancel[project_id] = cancel
-        self._run(project_id, configuration, resume, cancel)
+        try:
+            self._run(project_id, configuration, resume, cancel)
+        finally:
+            with self._lock:
+                self._cancel.pop(project_id, None)
         state = self.state(project_id)
         state["done"] = True
         state["failed"] = self.database.get_project(project_id)["status"] == "FAILED"
@@ -150,12 +165,15 @@ class PipelineManager:
         with self._lock:
             future = self._jobs.get(project_id)
             cancelling = bool(self._cancel.get(project_id) and self._cancel[project_id].is_set())
+        running = bool(future and not future.done())
+        project = self.database.get_project(project_id)
+        steps = self.database.pipeline_steps(project_id)
         return {
-            "project_id": project_id, "running": bool(future and not future.done()),
-            "done": bool(future and future.done()),
-            "failed": bool(future and future.done() and future.exception()),
+            "project_id": project_id, "running": running,
+            "done": not running and bool(steps),
+            "failed": project["status"] == "FAILED",
             "cancelling": cancelling, "active_pids": self.processes.pids(project_id),
-            "steps": self.database.pipeline_steps(project_id),
+            "steps": steps,
         }
 
     def _run(self, project_id: str, options: dict[str, Any], resume: bool, cancel: threading.Event) -> None:

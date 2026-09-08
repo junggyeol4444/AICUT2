@@ -56,6 +56,7 @@ def write_ass_subtitles(
         dialogue.append(f"Dialogue: 0,{_time(start)},{_time(end)},Default,{speaker},0,0,0,,{text}")
     output = Path(output_path).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
+    dialogue_text = "\n".join(dialogue)
     content = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {int(width)}
@@ -67,7 +68,7 @@ Style: Default,{style.font_name},{style.font_size},{style.primary_color},{style.
 
 [Events]
 Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
-{"\n".join(dialogue)}
+{dialogue_text}
 """
     output.write_text(content, encoding="utf-8-sig")
     return str(output)

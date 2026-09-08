@@ -24,6 +24,8 @@
 
 ## 실행
 
+Python 코어는 **Python 3.10 이상**을 지원합니다. FFmpeg 및 선택한 STT·오디오·비전 모델 실행기는 별도로 준비해야 합니다.
+
 ```bash
 npm install
 npm start

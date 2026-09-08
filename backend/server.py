@@ -34,6 +34,7 @@ from .http_utils import read_json_object
 from .backup import DatabaseBackupManager
 from .health import runtime_readiness
 from .editor_export import export_editor_bundle
+from .static_files import StaticFileError, resolve_static_file
 from dataclasses import asdict
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -406,6 +407,12 @@ class ApiHandler(BaseHTTPRequestHandler):
             self.json({"error": "render_error", "message": str(error)}, HTTPStatus.UNPROCESSABLE_ENTITY)
         except KeyError as error:
             self.json({"error": "not_found", "id": str(error.args[0])}, HTTPStatus.NOT_FOUND)
+        except Exception as error:
+            self.log_error("Unhandled POST error: %s", error)
+            self.json(
+                {"error": "internal_error", "message": "요청을 처리하는 중 내부 오류가 발생했습니다."},
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
 
     def body(self) -> dict:
         return read_json_object(
@@ -442,13 +449,12 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def serve_static(self, request_path: str) -> None:
-        root = ROOT / ("dist" if (ROOT / "dist").exists() else "")
-        relative = request_path.lstrip("/") or "index.html"
-        target = (root / relative).resolve()
-        if root.resolve() not in target.parents and target != root.resolve():
+        try:
+            target = resolve_static_file(ROOT / "dist", request_path)
+        except StaticFileError:
             return self.json({"error": "invalid_path"}, HTTPStatus.BAD_REQUEST)
-        if not target.is_file():
-            target = root / "index.html"
+        except FileNotFoundError:
+            return self.json({"error": "frontend_not_built"}, HTTPStatus.NOT_FOUND)
         content = target.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", mimetypes.guess_type(target.name)[0] or "application/octet-stream")
