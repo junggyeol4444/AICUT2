@@ -120,6 +120,14 @@ Return: {"structure": {...}, "editing": {...}, "storytelling": {...},
 Compare a source broadcast with the finished video a human made from it (12.3 B).
 Report what was selected, dropped, reordered, repeated and emphasised, and what
 the editor's decision rule appears to have been.
+
+`kept` and `dropped` cover only stretches where somebody was speaking. Read them
+with `removed_segments` and `selection_ratio`, which cover the whole broadcast:
+most of what an editor removes is farming, walking and time away from the desk,
+where there is no speech to align at all, and a rule inferred from the talking
+alone will not describe the edit. `source_duration_sec` of 0 means the length
+was not supplied and those whole-broadcast fields are absent, not zero.
+
 Return: {"selected": [...], "dropped": [...], "reordered": [...], "repeated": [...],
 "emphasised": [...], "inferred_rules": [str]}
 """,

@@ -2,7 +2,7 @@ import unittest
 
 from aicut.db.store import Store
 from aicut.intelligence.knowledge import ProductionKnowledge, consolidate
-from aicut.intelligence.source_output import align_by_transcript, learn
+from aicut.intelligence.source_output import AlignedSpan, Alignment, align_by_transcript, learn
 from aicut.llm.mock import MockProducer
 from aicut.models import Utterance
 
@@ -172,3 +172,78 @@ class RepetitionCountingTests(unittest.TestCase):
         span = align_by_transcript(source, output).spans[0]
         self.assertEqual(span.repeated, 2)
         self.assertEqual(span.output_start_sec, 300)
+
+
+class WholeBroadcastRemovalTests(unittest.TestCase):
+    """12.3 B asks what the editor removed, and most of that has no speech in it."""
+
+    def setUp(self):
+        # A six-hour broadcast. Somebody talks three times; the rest is farming,
+        # walking and away-from-desk — exactly what an editor cuts and exactly
+        # what an alignment built from speech alone cannot see.
+        self.source = [
+            Utterance(600, 640, "this boss keeps killing me"),
+            Utterance(9000, 9040, "i finally beat the boss"),
+            Utterance(20000, 20040, "thanks for watching everyone"),
+        ]
+        self.output = [
+            Utterance(0, 40, "this boss keeps killing me"),
+            Utterance(40, 80, "i finally beat the boss"),
+        ]
+        self.duration = 21600.0
+
+    def _aligned(self):
+        return align_by_transcript(self.source, self.output, source_duration_sec=self.duration)
+
+    def test_speech_keep_ratio_and_whole_broadcast_ratio_are_different_numbers(self):
+        alignment = self._aligned()
+        self.assertAlmostEqual(alignment.keep_ratio, 2 / 3, places=3)
+        # 80 seconds of 21,600 actually reached the video.
+        self.assertAlmostEqual(alignment.selection_ratio, 80 / 21600, places=6)
+
+    def test_the_silent_hours_show_up_as_removed(self):
+        removed = self._aligned().removed_segments()
+        total = sum(i.duration for i in removed)
+        self.assertAlmostEqual(total, self.duration - 80, places=3)
+        self.assertEqual(removed[0].start_sec, 0.0)
+        self.assertEqual(removed[-1].end_sec, self.duration)
+
+    def test_selected_segments_are_the_kept_source_ranges(self):
+        selected = self._aligned().selected_segments()
+        self.assertEqual([(i.start_sec, i.end_sec) for i in selected],
+                         [(600.0, 640.0), (9000.0, 9040.0)])
+
+    def test_adjacent_and_overlapping_uses_fold_into_one_stretch(self):
+        alignment = Alignment(
+            source_ref="", output_ref="", source_duration_sec=100.0,
+            spans=[
+                AlignedSpan(10, 20, 0, 10, kept=True),
+                AlignedSpan(18, 30, 10, 22, kept=True),
+                AlignedSpan(30, 40, 22, 32, kept=True),
+            ],
+        )
+        self.assertEqual([(i.start_sec, i.end_sec) for i in alignment.selected_segments()],
+                         [(10.0, 40.0)])
+        self.assertEqual([(i.start_sec, i.end_sec) for i in alignment.removed_segments()],
+                         [(0.0, 10.0), (40.0, 100.0)])
+
+    def test_without_a_duration_the_figures_are_absent_not_guessed(self):
+        """17.5: a number nobody measured is not reported as one."""
+        alignment = align_by_transcript(self.source, self.output)
+        self.assertEqual(alignment.source_duration_sec, 0.0)
+        self.assertEqual(alignment.removed_segments(), [])
+        self.assertEqual(alignment.selection_ratio, 0.0)
+
+    def test_learn_carries_the_whole_broadcast_figures(self):
+        from aicut.db.store import Store
+
+        store = Store(":memory:")
+        try:
+            analysis = learn(MockProducer(), store, self._aligned(),
+                             source_ref="src.mkv", output_ref="out.mp4")
+        finally:
+            store.close()
+        measured = analysis["measured"]
+        self.assertEqual(measured["source_duration_sec"], self.duration)
+        self.assertAlmostEqual(measured["removed_sec"], self.duration - 80, places=1)
+        self.assertGreater(measured["removed_segments"], 0)

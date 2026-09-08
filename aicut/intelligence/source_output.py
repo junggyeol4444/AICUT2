@@ -24,6 +24,54 @@ from aicut.models import Utterance
 log = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class Interval:
+    """A stretch of the source, used for the set arithmetic below."""
+
+    start_sec: float
+    end_sec: float
+
+    @property
+    def duration(self) -> float:
+        return max(0.0, self.end_sec - self.start_sec)
+
+
+def merge_intervals(intervals: Sequence[Interval]) -> list[Interval]:
+    """Overlapping and touching stretches folded into one."""
+    merged: list[Interval] = []
+    for interval in sorted(intervals, key=lambda item: (item.start_sec, item.end_sec)):
+        if not merged or interval.start_sec > merged[-1].end_sec:
+            merged.append(interval)
+        else:
+            previous = merged[-1]
+            merged[-1] = Interval(previous.start_sec, max(previous.end_sec, interval.end_sec))
+    return merged
+
+
+def complement(intervals: Sequence[Interval], duration_sec: float) -> list[Interval]:
+    """What is left of the source once the given stretches are taken out.
+
+    This is the half of 12.3 B that the transcript alone cannot give. Speech
+    alignment only ever produces spans where somebody was talking, so a keep
+    ratio computed from those spans measures "of the talking, how much
+    survived" — while 12.3 B asks what the editor removed from the broadcast,
+    and most of what an editor removes is the farming, the walking and the
+    away-from-desk, where nobody says anything at all.
+
+    Taken from the Codex build's `learning.py`, which had this and the ratio
+    below right; the alignment that feeds it is this module's.
+    """
+    cursor = 0.0
+    removed: list[Interval] = []
+    for interval in merge_intervals(intervals):
+        if interval.start_sec > cursor:
+            removed.append(Interval(cursor, interval.start_sec))
+        cursor = max(cursor, interval.end_sec)
+    if cursor < duration_sec:
+        removed.append(Interval(cursor, duration_sec))
+    return removed
+
+
 @dataclass
 class AlignedSpan:
     """A source span and where it ended up in the human's finished video."""
@@ -58,6 +106,9 @@ class Alignment:
     source_ref: str
     output_ref: str
     spans: list[AlignedSpan] = field(default_factory=list)
+    #: Length of the source broadcast. Zero means it was not supplied, and the
+    #: whole-timeline figures below are then unavailable rather than guessed.
+    source_duration_sec: float = 0.0
 
     @property
     def kept_spans(self) -> list[AlignedSpan]:
@@ -65,9 +116,34 @@ class Alignment:
 
     @property
     def keep_ratio(self) -> float:
+        """Of the speech, how much survived. Not the same as `selection_ratio`."""
         total = sum(s.source_duration for s in self.spans)
         kept = sum(s.source_duration for s in self.kept_spans)
         return kept / total if total else 0.0
+
+    def selected_segments(self) -> list[Interval]:
+        """The stretches of source the editor used, overlaps folded together."""
+        return merge_intervals([
+            Interval(s.source_start_sec, s.source_end_sec) for s in self.kept_spans
+        ])
+
+    def removed_segments(self) -> list[Interval]:
+        """What the editor threw away, across the whole broadcast.
+
+        Includes every stretch with no speech in it, which is where most of a
+        six-hour broadcast goes and which the span list cannot see.
+        """
+        if self.source_duration_sec <= 0:
+            return []
+        return complement(self.selected_segments(), self.source_duration_sec)
+
+    @property
+    def selection_ratio(self) -> float:
+        """Of the whole broadcast, how much reached the finished video."""
+        if self.source_duration_sec <= 0:
+            return 0.0
+        used = sum(item.duration for item in self.selected_segments())
+        return used / self.source_duration_sec
 
     def reordered(self) -> bool:
         outputs = [s.output_start_sec for s in self.kept_spans if s.output_start_sec is not None]
@@ -81,6 +157,7 @@ def align_by_transcript(
     output_utterances: Sequence[Utterance],
     *,
     min_overlap: float = 0.6,
+    source_duration_sec: float = 0.0,
 ) -> Alignment:
     """Match the finished video's speech back to the source's speech.
 
@@ -133,7 +210,9 @@ def align_by_transcript(
                 text=source.text,
             ))
 
-    alignment = Alignment(source_ref="", output_ref="", spans=spans)
+    alignment = Alignment(
+        source_ref="", output_ref="", spans=spans, source_duration_sec=source_duration_sec,
+    )
     reordered = alignment.reordered()
     for span in alignment.kept_spans:
         span.order_changed = reordered
@@ -169,6 +248,17 @@ def learn(
             {"source": [s.source_start_sec, s.source_end_sec], "text": s.text[:200]}
             for s in alignment.spans if not s.kept
         ],
+        # 12.3 B asks what was removed, and most of what an editor removes has
+        # no speech in it. These are the whole-broadcast figures; the span lists
+        # above only ever cover the talking.
+        "source_duration_sec": alignment.source_duration_sec,
+        "selection_ratio": round(alignment.selection_ratio, 4),
+        "selected_segments": [
+            [round(i.start_sec, 2), round(i.end_sec, 2)] for i in alignment.selected_segments()
+        ],
+        "removed_segments": [
+            [round(i.start_sec, 2), round(i.end_sec, 2)] for i in alignment.removed_segments()
+        ],
         "context": context or {},
     }
     analysis = producer.compare_source_output(payload)
@@ -177,6 +267,12 @@ def learn(
         "reordered": payload["reordered"],
         "kept_spans": len(alignment.kept_spans),
         "dropped_spans": len(alignment.spans) - len(alignment.kept_spans),
+        "source_duration_sec": alignment.source_duration_sec,
+        "selection_ratio": payload["selection_ratio"],
+        "removed_segments": len(payload["removed_segments"]),
+        "removed_sec": round(
+            sum(i.duration for i in alignment.removed_segments()), 2,
+        ),
     }
     store.save_source_output_pair(source_ref, output_ref, analysis)
     return analysis

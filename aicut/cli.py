@@ -480,6 +480,25 @@ def cmd_profile(args) -> int:
     return 0
 
 
+def _source_duration(store, args) -> float:
+    """The source broadcast's length, for the whole-timeline half of 12.3 B.
+
+    A project that has been run knows it from ffprobe. Failing that the operator
+    can state it. Failing that the transcript's last word is a floor: it is not
+    the true length - the broadcast almost certainly continued past the last
+    word - so it is reported as such rather than passed off as measured (17.5).
+    """
+    explicit = getattr(args, "source_duration", None)
+    if explicit:
+        return float(explicit)
+    reference = getattr(args, "source_ref", None) or getattr(args, "source_transcript", "")
+    for project in store.list_projects():
+        if project.file_path and Path(project.file_path).name == Path(str(reference)).name:
+            if project.duration_sec:
+                return float(project.duration_sec)
+    return 0.0
+
+
 def cmd_learn(args) -> int:
     """Run one of the three learning loops (12.3)."""
     from aicut.intelligence import reference as reference_mod
@@ -511,7 +530,11 @@ def cmd_learn(args) -> int:
             return 1
         source = TranscriptFileTranscriber(args.source_transcript).transcribe()
         output = TranscriptFileTranscriber(args.output_transcript).transcribe()
-        alignment = align_by_transcript(source, output)
+        # The whole-broadcast figures of 12.3 B need the source's length. Use the
+        # stored project when this source has been run, then --source-duration,
+        # then the last word of the transcript as a floor.
+        duration = _source_duration(store, args)
+        alignment = align_by_transcript(source, output, source_duration_sec=duration)
         analysis = learn_pair(
             producer, store, alignment,
             source_ref=args.source_ref or args.source_transcript,
@@ -522,6 +545,12 @@ def cmd_learn(args) -> int:
             f"kept {measured['kept_spans']} spans, dropped {measured['dropped_spans']},"
             f" keep_ratio {measured['keep_ratio']}, reordered {measured['reordered']}"
         )
+        if measured["source_duration_sec"]:
+            print(
+                f"  of the whole broadcast: {measured['selection_ratio']:.1%} used,"
+                f" {measured['removed_sec']:.0f}s removed across"
+                f" {measured['removed_segments']} stretches"
+            )
         for rule in analysis.get("inferred_rules", []):
             print(f"  rule: {rule}")
         knowledge = ProductionKnowledge.load(knowledge_path)
@@ -815,6 +844,7 @@ def _derive_silences(args, dataset, path: Path) -> int:
     alignment = align_by_transcript(
         TranscriptFileTranscriber(dataset.transcript_path).transcribe(),
         TranscriptFileTranscriber(args.output_transcript).transcribe(),
+        source_duration_sec=project.duration_sec or 0.0,
     )
     verdicts = dataset.derive_silence_verdicts(signals.silences, alignment)
     dataset.save(path)
@@ -1111,6 +1141,10 @@ def build_parser() -> argparse.ArgumentParser:
     learn.add_argument("--per-query", type=int, default=25)
     learn.add_argument("--source-transcript", help="loop B: transcript of the source broadcast")
     learn.add_argument("--output-transcript", help="loop B: transcript of the human-made video")
+    learn.add_argument(
+        "--source-duration", type=float, default=None, metavar="SEC",
+        help="loop B: length of the source broadcast, when it has not been run here",
+    )
     learn.add_argument("--source-ref")
     learn.add_argument("--output-ref")
     learn.add_argument("--project", help="loop C: which project's published episodes")
