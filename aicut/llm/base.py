@@ -98,9 +98,11 @@ class Producer(ABC):
         return self._object("package_metadata", payload)
 
     # -- 12.3: learning loops ------------------------------------------------
-    def analyze_reference(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def analyze_reference(
+        self, payload: dict[str, Any], *, images: Sequence[str] = (),
+    ) -> dict[str, Any]:
         """Loop A: why was this reference video made the way it was (4.4)."""
-        return self._object("analyze_reference", payload)
+        return self._object("analyze_reference", payload, images=images)
 
     def compare_source_output(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Loop B: what a human kept, dropped, reordered, repeated, emphasised (12.3 B)."""

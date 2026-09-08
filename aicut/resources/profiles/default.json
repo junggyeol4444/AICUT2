@@ -19,7 +19,10 @@
       "tension",
       "thumbnail",
       "topic_shift",
-      "scan.frames_per_window"
+      "scan.frames_per_window",
+      "editing.cut_score_floor",
+      "editing.cut_local_ratio",
+      "editing.cut_local_window"
     ]
   },
   "scan": {
@@ -163,5 +166,10 @@
     "min_duration_sec": 0.8,
     "max_word_density": 0.7,
     "merge_gap_sec": 0.5
+  },
+  "editing": {
+    "cut_score_floor": 0.3,
+    "cut_local_ratio": 1.8,
+    "cut_local_window": 3
   }
 }
