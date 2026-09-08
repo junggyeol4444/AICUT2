@@ -561,7 +561,9 @@ def cmd_learn(args) -> int:
         references = reference_mod.collect_references(client, queries, per_query=args.per_query)
         print(f"found {len(references)} references; reading")
         watched = reference_mod.watch_all(
-            references, _profile(args), args.workspace, download=args.download,
+            references, _profile(args), args.workspace,
+            download=args.download,
+            comments=args.comments, comment_limit=args.comment_limit,
         )
         for video_id, seen in watched.items():
             print(f"  {video_id}: {len(seen.get('frames', []))} frames"
@@ -614,7 +616,24 @@ def cmd_learn(args) -> int:
         knowledge = ProductionKnowledge.load(knowledge_path)
         knowledge.source_output_rules.extend(analysis.get("inferred_rules", []))
         knowledge.save(knowledge_path)
-        print(f"this pair also serves as a 17.2 calibration dataset entry")
+
+        # 17.2: "(b)가 그대로 12.3 B의 학습 데이터가 된다. 따라서 이 작업은
+        # 캘리브레이션과 학습에 이중으로 쓰인다." So write the entry, rather than
+        # printing that one exists.
+        from aicut.calibration import dataset as dataset_mod
+
+        target = Path(args.dataset or
+                      Path(args.workspace) / "datasets" / f"{Path(args.source).stem}.json")
+        prior = dataset_mod.Dataset.load(target) if target.exists() else None
+        entry = dataset_mod.from_pair(
+            args.source, args.output, alignment,
+            transcript_path=str(Path(args.source).with_suffix(".transcript.json")),
+            existing=prior,
+        )
+        entry.save(target)
+        print(f"17.2 dataset: {len(entry.content_spans)} content spans -> {target}")
+        print("  run `aicut dataset derive-silences` on it once this source has been"
+              " processed, to add the 호흡 labels 17.3 scores against")
         return 0
 
     # Loop C.
@@ -1201,11 +1220,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--download", action=argparse.BooleanOptionalAction, default=True,
         help="loop A: fetch each reference video with yt-dlp (default: on)",
     )
+    learn.add_argument(
+        "--comments", action=argparse.BooleanOptionalAction, default=True,
+        help="loop A: read each reference's comments through a browser, not the "
+             "API, so it costs no quota (4.2). Default: on",
+    )
+    learn.add_argument(
+        "--comment-limit", type=int, default=None, metavar="N",
+        help="loop A: stop after N comments per video. Default: all of them",
+    )
     learn.add_argument("--source", help="loop B: the source broadcast, 원본 (video file)")
     learn.add_argument("--output", help="loop B: the finished video made from it, 완성본")
     learn.add_argument(
         "--source-duration", type=float, default=None, metavar="SEC",
         help="loop B: length of the source broadcast, when it has not been run here",
+    )
+    learn.add_argument(
+        "--dataset", help="loop B: where to write the 17.2 dataset entry "
+                          "(default: <workspace>/datasets/<source>.json)",
     )
     learn.add_argument("--source-ref")
     learn.add_argument("--output-ref")

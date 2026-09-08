@@ -125,3 +125,70 @@ class PairWatchingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CommentAndDatasetTests(unittest.TestCase):
+    """4.2 collects 댓글; 17.2 says a loop B run is also the labelling."""
+
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.producer = MockProducer()
+        self.store = Store(":memory:")
+        self.addCleanup(self.store.close)
+
+    def test_the_comments_reach_the_analysis(self):
+        """원본 8장 asks about 시청자 반응과 영상 구성의 관계, which needs the text."""
+        reference_mod.analyze(
+            self.producer, self.store,
+            [{"video_id": "abc", "channel_id": "c", "title": "t", "description": "",
+              "tags": [], "public_metrics": {"views": 10, "comments": 2}}],
+            watched={"abc": {"comments": [
+                {"text": "초반부터 몰입됨", "likes": "42"},
+                {"text": "이 장면 다시 봄", "likes": "7"},
+            ]}},
+        )
+        sent = self.producer.seen_payloads["analyze_reference"]
+        self.assertEqual(sent["comments"]["count_read"], 2)
+        self.assertEqual(sent["comments"]["comments"][0]["text"], "초반부터 몰입됨")
+
+    def test_a_reference_with_no_comments_carries_no_comment_block(self):
+        reference_mod.analyze(
+            self.producer, self.store,
+            [{"video_id": "abc", "channel_id": "c", "title": "t", "description": "",
+              "tags": [], "public_metrics": {}}],
+        )
+        self.assertNotIn("comments", self.producer.seen_payloads["analyze_reference"])
+
+    def test_a_pair_becomes_the_17_2_dataset_entry(self):
+        from aicut.calibration.dataset import from_pair
+
+        source = [Utterance(0, 10, "보스한테 계속 죽네"), Utterance(500, 510, "드디어 잡았다")]
+        output = [Utterance(0, 10, "드디어 잡았다")]
+        alignment = align_by_transcript(source, output, source_duration_sec=600.0)
+        dataset = from_pair("/x/source.mp4", "/x/output.mp4", alignment)
+        self.assertEqual(dataset.output_path, "/x/output.mp4")
+        self.assertTrue(dataset.content_spans, "the editor's own selection was not recorded")
+        self.assertEqual(
+            [(s.start_sec, s.end_sec) for s in dataset.content_spans], [(500.0, 510.0)],
+        )
+
+    def test_relabelling_the_same_pair_does_not_duplicate_spans(self):
+        from aicut.calibration.dataset import from_pair
+
+        source = [Utterance(0, 10, "한 마디"), Utterance(500, 510, "다른 마디")]
+        output = [Utterance(0, 10, "다른 마디")]
+        alignment = align_by_transcript(source, output, source_duration_sec=600.0)
+        first = from_pair("/x/s.mp4", "/x/o.mp4", alignment)
+        again = from_pair("/x/s.mp4", "/x/o.mp4", alignment, existing=first)
+        self.assertEqual(len(again.content_spans), 1)
+
+    def test_silence_verdicts_are_not_guessed_from_a_pair(self):
+        """17.5: an unmeasured value does not get written down as measured."""
+        from aicut.calibration.dataset import from_pair
+
+        alignment = align_by_transcript(
+            [Utterance(0, 10, "말")], [Utterance(0, 10, "말")], source_duration_sec=600.0,
+        )
+        self.assertEqual(from_pair("/x/s.mp4", "/x/o.mp4", alignment).silence_verdicts, [])

@@ -23,6 +23,11 @@ audio = ["librosa", "soundfile"]
 llm = ["anthropic"]
 youtube = ["google-api-python-client", "google-auth-oauthlib"]
 yaml = ["PyYAML"]
+# 4.2 collects the reference video and its comments. The download is yt-dlp;
+# the comments are read from the page rather than the Data API, so collecting
+# them costs none of the quota 11.4 has to ration.
+download = ["yt-dlp"]
+browser = ["playwright"]
 
 [project.scripts]
 aicut = "aicut.cli:main"

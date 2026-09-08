@@ -109,30 +109,87 @@ Return: {"titles": [str, str, str], "description": str, "tags": [str],
 "chapters": [{"at_sec": number, "label": str}]}
 """,
     "analyze_reference": """\
-Analyse how this reference video was made (4.3, 4.4). Go past "many subtitles, fast
-cuts" to why it was edited this way - what is revealed first, what is withheld,
-what is skipped, what is repeated, how scenes from different times are joined.
+Analyse how this reference video was made. 4.3 names four groups and every item
+in them; answer each one, and say so when the material does not show it.
+
+structure (영상 구조)
+  시작 방식 / 정보 공개 순서 / 사건 진행 / 장면 연결 / 결말 / 종료 방식
+editing (편집)
+  컷 / 평균 장면 길이 / 확대 / 크롭 / 화면 전환 / 자막 / 강조 / 효과 / 효과음 /
+  BGM / 이미지 / 밈 / 리플레이
+storytelling (스토리텔링)
+  어떤 정보를 먼저 보여주는가 / 어떤 정보를 늦게 공개하는가 /
+  어떤 장면을 생략하는가 / 어떤 장면을 반복하는가 /
+  서로 다른 시간대의 장면을 어떻게 연결하는가
+people (인물)
+  누가 중심 인물인가 / 누구의 반응이 중요한가 / 인물 간 관계가 어떻게 표현되는가
+
+Then 4.4: do not stop at "많은 자막, 빠른 컷". Say why it was edited this way, as
+one production pattern - for example 사건 발생 -> 결과 장면 먼저 -> 궁금증 유도 ->
+과거 장면 -> 원인 설명 -> 사건 진행 -> 결과.
+
+4.5 also asks what this video says about 영상 템포, 반응 강조 방식, 자막 사용 패턴,
+영상 길이와 구성의 관계, and this content type's own characteristics. The original
+spec (8장) adds 시청자 반응과 영상 구성의 관계, which the public metrics and any
+comments in the payload speak to.
+
+Keys hold objects whose fields are the Korean item names above.
 Return: {"structure": {...}, "editing": {...}, "storytelling": {...},
-"scene_selection": {...}, "title_pattern": str, "thumbnail_pattern": str,
+"people": {...}, "scene_selection": {...}, "pacing": {...}, "emphasis": {...},
+"subtitles": {...}, "length_and_structure": {...}, "content_type": {...},
+"response_and_structure": {...}, "title_pattern": str, "thumbnail_pattern": str,
 "production_logic": str}
 """,
     "compare_source_output": """\
-Compare a source broadcast with the finished video a human made from it (12.3 B).
-Report what was selected, dropped, reordered, repeated and emphasised, and what
-the editor's decision rule appears to have been.
+A human took a source broadcast and made a finished video out of it. Say what
+they did. The original spec's 9장 asks nine questions and this is all nine:
 
-`kept` and `dropped` cover only stretches where somebody was speaking. Read them
-with `removed_segments` and `selection_ratio`, which cover the whole broadcast:
-most of what an editor removes is farming, walking and time away from the desk,
-where there is no speech to align at all, and a rule inferred from the talking
-alone will not describe the edit. `source_duration_sec` of 0 means the length
-was not supplied and those whole-broadcast fields are absent, not zero.
+  selected      원본에서 어떤 장면이 선택되었는가
+  dropped       어떤 장면이 제거되었는가
+  joined        어떤 장면이 연결되었는가 - which moments were put next to each
+                other that were not next to each other in the source, and what
+                the join is doing
+  reordered     원본 시간 순서가 어떻게 변경되었는가
+  repeated      어떤 장면이 반복되었는가
+  emphasised    어떤 장면이 강조되었는가
+  subtitles     어떤 자막이 추가되었는가 - the source has none; every caption in
+                the output frames was put there by the editor
+  effects       어떤 효과가 사용되었는가 - zoom, crop, transition, sound effect,
+                BGM, image, meme, replay
+  retold        어떤 스토리로 재구성되었는가 - the shape the finished video has
+                that the broadcast did not
 
-Return: {"selected": [...], "dropped": [...], "reordered": [...], "repeated": [...],
-"emphasised": [...], "inferred_rules": [str]}
+Then inferred_rules: the editing decision the whole of it implies, which is what
+12.3 B is for.
+
+What is in the payload: `kept` and `dropped` are speech alignment, so they cover
+only stretches where somebody was talking. `removed_segments` and
+`selection_ratio` cover the whole broadcast - most of what an editor removes is
+farming, walking and time away from the desk, with no speech to align at all, and
+a rule read off the talking alone will not describe the edit. A
+`source_duration_sec` of 0 means the length was not supplied and those
+whole-broadcast fields are absent, not zero. `compression` is how much longer or
+shorter a moment got, and `repeated` is how many times it appears in the output;
+they are measurements, and what counts as 강조 is your answer, not theirs.
+
+The images, when present, are frames from both videos, the source first and then
+the output. Speech cannot show a cut inside a sentence, a caption, or an effect.
+The frames can.
+
+Return: {"selected": [...], "dropped": [...], "joined": [...], "reordered": [...],
+"repeated": [...], "emphasised": [...], "subtitles": [...], "effects": [...],
+"retold": str, "inferred_rules": [str]}
 """,
     "learn_from_performance": """\
-Turn measured viewer response into changes to production strategy (12.2).
+Turn measured viewer response into changes to production strategy (12.2, 27장).
+
+The metrics are 12.1's: 조회수 / 클릭률 / 평균 시청 지속 시간 / 시청자 유지율 /
+이탈 구간 / 재시청 구간 / 좋아요 / 댓글 / 공유. `retention_curve` is where the
+이탈 구간 and 재시청 구간 are - read it against the episode's own structure.
+
+27장 shows the shape of an answer: 초반 이탈률이 높다 -> "이 유형에서는 초반 정보
+전달 방식 개선 필요". Keep the hedge; a curve is evidence, not proof.
+
 Return: {"observations": [str], "strategy_updates": [{"applies_to": str, "change": str,
 "confidence": 0..1}]}
 """,

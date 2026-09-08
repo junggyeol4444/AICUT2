@@ -198,6 +198,39 @@ class Dataset:
         }
 
 
+def from_pair(
+    source_path: str,
+    output_path: str,
+    alignment,
+    *,
+    transcript_path: str | None = None,
+    existing: Dataset | None = None,
+) -> Dataset:
+    """Turn one 12.3 B pair into the labelled dataset 17.2 asks for.
+
+    17.2 says the finished video the human made is (b) of the dataset, and that
+    "(b)가 그대로 12.3 B의 학습 데이터가 된다 - 따라서 이 작업은 캘리브레이션과
+    학습에 이중으로 쓰인다". So running loop B on a pair is the labelling: the
+    stretches the editor kept are the content spans, already marked by the only
+    person qualified to mark them.
+
+    Silence verdicts are not derived here. Those need this broadcast's measured
+    silences, which come from running it (`aicut dataset derive-silences`);
+    guessing them would put an unmeasured number in a file 17.5 says must be
+    marked when it is a guess.
+    """
+    dataset = existing or Dataset(source_path=source_path)
+    dataset.source_path = source_path
+    dataset.output_path = output_path
+    if transcript_path:
+        dataset.transcript_path = transcript_path
+    kept = {(round(s.start_sec, 3), round(s.end_sec, 3)) for s in alignment.selected_segments()}
+    already = {(round(s.start_sec, 3), round(s.end_sec, 3)) for s in dataset.content_spans}
+    for start, end in sorted(kept - already):
+        dataset.add_content(start, end, note="kept by the editor (12.3 B)")
+    return dataset
+
+
 def _ready_for(dataset: Dataset) -> list[str]:
     """Which 17.3 metrics this dataset can actually score."""
     ready = []

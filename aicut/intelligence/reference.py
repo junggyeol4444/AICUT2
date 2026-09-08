@@ -109,6 +109,8 @@ def watch_all(
     files: dict[str, str] | None = None,
     download: bool = False,
     thumbnails: bool = True,
+    comments: bool = False,
+    comment_limit: int | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Get hold of what 4.2 collects for each reference, and read it.
 
@@ -135,6 +137,17 @@ def watch_all(
             )
             if shot:
                 seen["thumbnail"] = shot
+        if comments:
+            # 4.2 collects 댓글, and the original 6.2 widens that to 시청자 반응
+            # 데이터. Read through the browser, not the API, so this does not
+            # eat the quota 11.4 rations for search and upload.
+            from aicut.intelligence import comments as comments_mod
+            try:
+                said = comments_mod.fetch(video_id, limit=comment_limit)
+                if said:
+                    seen["comments"] = said
+            except Exception as exc:
+                log.warning("could not read comments for %s: %s", video_id, exc)
         path = supplied.get(video_id)
         if path is None and download:
             try:
@@ -194,6 +207,17 @@ def analyze(
         seen = (watched or {}).get(reference.get("video_id", ""), {})
         # The thumbnail leads: 4.5 asks how it relates to the video behind it,
         # which is a question about the order they are seen in.
+        said = seen.get("comments", [])
+        if said:
+            # 원본 8장 asks about 시청자 반응과 영상 구성의 관계, which needs what
+            # viewers actually said, not how many of them said something.
+            payload["comments"] = {
+                "count_read": len(said),
+                "comments": [
+                    {"text": c.get("text", "")[:600], "likes": c.get("likes", "")}
+                    for c in said
+                ],
+            }
         thumbnail = seen.get("thumbnail", "")
         frames = list(seen.get("frames", []))
         images = ([thumbnail] if thumbnail else []) + frames

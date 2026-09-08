@@ -20,15 +20,25 @@ from typing import Any
 class ProductionKnowledge:
     """Patterns observed across references, with how much support each has."""
 
-    structure_patterns: list[dict[str, Any]] = field(default_factory=list)
-    editing_patterns: list[dict[str, Any]] = field(default_factory=list)
-    storytelling_patterns: list[dict[str, Any]] = field(default_factory=list)
-    scene_selection_patterns: list[dict[str, Any]] = field(default_factory=list)
-    title_patterns: list[str] = field(default_factory=list)
-    thumbnail_patterns: list[str] = field(default_factory=list)
-    subtitle_patterns: list[dict[str, Any]] = field(default_factory=list)
-    performance_learning: list[dict[str, Any]] = field(default_factory=list)
-    source_output_rules: list[str] = field(default_factory=list)
+    # 4.5 lists what this store holds, and the original 8장 adds two more. Every
+    # item there has a field here; a missing field is a question nobody can ask
+    # the planner later.
+    structure_patterns: list[dict[str, Any]] = field(default_factory=list)      # 콘텐츠 구성 패턴
+    editing_patterns: list[dict[str, Any]] = field(default_factory=list)        # 편집 패턴
+    storytelling_patterns: list[dict[str, Any]] = field(default_factory=list)   # 스토리텔링 패턴
+    scene_selection_patterns: list[dict[str, Any]] = field(default_factory=list)  # 장면 선택 패턴
+    pacing_patterns: list[dict[str, Any]] = field(default_factory=list)         # 영상 템포
+    subtitle_patterns: list[dict[str, Any]] = field(default_factory=list)       # 자막 사용 패턴
+    emphasis_patterns: list[dict[str, Any]] = field(default_factory=list)       # 반응 강조 방식
+    people_patterns: list[dict[str, Any]] = field(default_factory=list)         # 4.3 인물
+    content_type_patterns: list[dict[str, Any]] = field(default_factory=list)   # 콘텐츠별 특징 (8장)
+    length_structure_patterns: list[dict[str, Any]] = field(default_factory=list)  # 영상 길이와 구성의 관계
+    response_structure_patterns: list[dict[str, Any]] = field(default_factory=list)  # 시청자 반응과 영상 구성의 관계 (8장)
+    title_patterns: list[str] = field(default_factory=list)                     # 제목 패턴
+    thumbnail_patterns: list[str] = field(default_factory=list)                 # 썸네일 패턴
+    production_logic: list[dict[str, Any]] = field(default_factory=list)        # 4.4 / 7장
+    performance_learning: list[dict[str, Any]] = field(default_factory=list)    # 12.2
+    source_output_rules: list[str] = field(default_factory=list)                # 12.3 B
     sample_size: int = 0
 
     def to_dict(self) -> dict[str, Any]:
@@ -60,6 +70,14 @@ class ProductionKnowledge:
             "storytelling": self.storytelling_patterns[:limit],
             "editing": self.editing_patterns[:limit],
             "scene_selection": self.scene_selection_patterns[:limit],
+            "pacing": self.pacing_patterns[:limit],
+            "subtitles": self.subtitle_patterns[:limit],
+            "emphasis": self.emphasis_patterns[:limit],
+            "people": self.people_patterns[:limit],
+            "content_type": self.content_type_patterns[:limit],
+            "length_and_structure": self.length_structure_patterns[:limit],
+            "response_and_structure": self.response_structure_patterns[:limit],
+            "production_logic": self.production_logic[:limit],
             "titles": self.title_patterns[:limit],
             "thumbnails": self.thumbnail_patterns[:limit],
             "learned_from_own_performance": self.performance_learning[:limit],
@@ -96,7 +114,14 @@ def consolidate(analyses: list[dict[str, Any]]) -> ProductionKnowledge:
     knowledge.editing_patterns = collect("editing")
     knowledge.storytelling_patterns = collect("storytelling")
     knowledge.scene_selection_patterns = collect("scene_selection")
+    knowledge.pacing_patterns = collect("pacing")
     knowledge.subtitle_patterns = collect("subtitles")
+    knowledge.emphasis_patterns = collect("emphasis")
+    knowledge.people_patterns = collect("people")
+    knowledge.content_type_patterns = collect("content_type")
+    knowledge.length_structure_patterns = collect("length_and_structure")
+    knowledge.response_structure_patterns = collect("response_and_structure")
+    knowledge.production_logic = collect("production_logic")
     knowledge.title_patterns = [p["pattern"] for p in collect("title_pattern")]
     knowledge.thumbnail_patterns = [p["pattern"] for p in collect("thumbnail_pattern")]
     return knowledge
