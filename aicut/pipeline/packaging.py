@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from typing import Sequence
 
 from aicut.analysis.tension import TensionCurve, build_tension_curve
 from aicut.media import audio as audio_mod
@@ -82,8 +84,88 @@ def package_episode(ctx: RunContext, episode: Episode, *, knowledge: dict | None
     # cannot do that from a file full of escapes.
     path.with_suffix(".txt").write_text(_as_text(episode), encoding="utf-8")
 
+    problems = check_package(episode, boundaries, timeline.duration)
+    if problems:
+        # 2.6: a departure from what the clause asked for is reported, not
+        # quietly corrected. The reviewer of 11.3 is the one who decides whether
+        # to send it up like this.
+        log.warning("episode %s package: %s", episode.episode_id, "; ".join(problems))
+        episode.notes = "; ".join(filter(None, [episode.notes, *problems]))
+        warnings = dict(ctx.report.get("packaging_warnings", {}))
+        warnings[episode.episode_id] = problems
+        ctx.note("packaging_warnings", warnings)
+
     ctx.store.save_episode(episode)
     return episode
+
+
+#: YouTube reads chapters out of the description, and it reads them all or none:
+#: unless the first timestamp is 0:00, there are at least three of them, and each
+#: one runs at least 10 seconds, the whole list is ignored and the video ships
+#: with no chapters at all. 11.2 asks for 챕터, and a list YouTube throws away is
+#: not one - so the run says so rather than letting it fail silently on upload.
+YOUTUBE_MIN_CHAPTERS = 3
+YOUTUBE_MIN_CHAPTER_SEC = 10.0
+
+#: A timestamp in a description, as YouTube parses them: m:ss or h:mm:ss.
+_TIMESTAMP = re.compile(r"(?<![\d:])\d{1,2}:[0-5]\d(?::[0-5]\d)?(?![\d:])")
+
+
+def check_package(
+    episode: Episode, boundaries: Sequence[float], duration_sec: float,
+) -> list[str]:
+    """What is wrong with this package, in the words of the clause it breaks.
+
+    Reports; never rewrites. 11.2 makes the metadata the model's to write and
+    18장 keeps it there - editing its answer here would be this code deciding
+    what the video is called. What this can honestly say is when the answer
+    cannot survive contact with YouTube, or contradicts the payload it was
+    given.
+    """
+    problems: list[str] = []
+    meta = episode.metadata or {}
+
+    chapters = sorted(
+        (c for c in meta.get("chapters", []) if isinstance(c, dict)),
+        key=lambda c: float(c.get("at_sec", 0.0)),
+    )
+    if chapters:
+        if float(chapters[0].get("at_sec", -1.0)) != 0.0:
+            problems.append(
+                f"chapter list starts at {float(chapters[0].get('at_sec', 0.0)):.0f}s,"
+                " not 0:00 - YouTube ignores the whole list (11.2)"
+            )
+        if len(chapters) < YOUTUBE_MIN_CHAPTERS:
+            problems.append(
+                f"{len(chapters)} chapter(s); YouTube needs at least"
+                f" {YOUTUBE_MIN_CHAPTERS} or it ignores the whole list (11.2)"
+            )
+        ends = [float(c.get("at_sec", 0.0)) for c in chapters[1:]] + [duration_sec]
+        for chapter, end in zip(chapters, ends):
+            at = float(chapter.get("at_sec", 0.0))
+            if at > duration_sec:
+                problems.append(
+                    f"chapter {at:.0f}s is past the end of a {duration_sec:.0f}s video"
+                )
+            elif end - at < YOUTUBE_MIN_CHAPTER_SEC:
+                problems.append(
+                    f"chapter at {at:.0f}s runs {end - at:.1f}s; YouTube needs"
+                    f" {YOUTUBE_MIN_CHAPTER_SEC:.0f}s or it ignores the whole list"
+                )
+        # The payload names where a chapter may sit, because those are the only
+        # places the finished video begins something. A mark anywhere else lands
+        # mid-scene.
+        starts = {round(b, 2) for b in boundaries}
+        adrift = [c for c in chapters if round(float(c.get("at_sec", 0.0)), 2) not in starts]
+        if adrift:
+            where = ", ".join(f"{float(c.get('at_sec', 0.0)):.0f}s" for c in adrift[:4])
+            problems.append(f"{len(adrift)} chapter(s) do not sit on a cut boundary ({where})")
+    # 11.2 spells the description out as 설명(타임스탬프 포함).
+    if not _TIMESTAMP.search(meta.get("description", "") or ""):
+        problems.append("the description carries no timestamp; 11.2 asks for 설명(타임스탬프 포함)")
+    if len(meta.get("titles", [])) < 3:
+        problems.append(f"{len(meta.get('titles', []))} title candidate(s); 11.2 asks for 제목 후보 3종")
+    return problems
 
 
 def _as_text(episode: Episode) -> str:

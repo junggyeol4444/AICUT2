@@ -138,6 +138,9 @@ def _print_report_warnings(report: dict) -> None:
     for entry in report.get("render_failures", []):
         print(f"\n  RENDER FAILED for {entry['episode_id']}: {entry['error']}")
         print(f"      {entry['note']}")
+    for episode_id, problems in (report.get("packaging_warnings") or {}).items():
+        for problem in problems:
+            print(f"\n  PACKAGE ({episode_id[:8]}): {problem}")
 
 
 def cmd_run(args) -> int:

@@ -352,6 +352,9 @@ def build_report(ctx: RunContext, state: State, episodes: list[Episode]) -> dict
         # gates was therefore impossible for the whole run, and nothing else
         # would have said so (17.4, 17.5).
         "threshold_never_reached": ctx.report.get("threshold_never_reached", []),
+        # 11.2's package as written, measured against what YouTube will accept
+        # and against the payload the model was given. Reported, never fixed.
+        "packaging_warnings": ctx.report.get("packaging_warnings", {}),
         "provisional_parameters_used": ctx.report.get("provisional_parameters_used", []),
         "warning": "; ".join(part for part in (
             (
@@ -368,6 +371,11 @@ def build_report(ctx: RunContext, state: State, episodes: list[Episode]) -> dict
                 "a judgement threshold was never reached in this broadcast, so the "
                 "label it gates could not occur - see threshold_never_reached"
                 if ctx.report.get("threshold_never_reached") else ""
+            ),
+            (
+                "the package of an episode would not survive contact with YouTube "
+                "as written - see packaging_warnings"
+                if ctx.report.get("packaging_warnings") else ""
             ),
         ) if part),
     }

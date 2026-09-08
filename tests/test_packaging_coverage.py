@@ -5,6 +5,7 @@ the reference patterns are a reference, not a template. The original 24장 adds
 업로드 정보. 11.3 keeps one decision away from all of it.
 """
 
+import json
 import unittest
 
 from aicut.config import CalibrationProfile
@@ -127,3 +128,99 @@ class UploadInfoTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PackageIsCheckedAgainstYouTubeTests(unittest.TestCase):
+    """11.2 asks for 챕터 and 설명(타임스탬프 포함).
+
+    YouTube reads chapters all-or-nothing: unless the first is 0:00, there are
+    at least three, and each runs at least 10 seconds, it ignores every one of
+    them and the video ships with no chapters. A list that gets thrown away is
+    not the 챕터 11.2 asked for, and nothing said so before the upload.
+    """
+
+    def _episode(self, **metadata):
+        from aicut.models import Episode
+
+        episode = Episode(episode_id="e1")
+        episode.metadata = {
+            "titles": ["a", "b", "c"],
+            "description": "0:00 시작\n1:30 사건",
+            "chapters": [{"at_sec": 0.0, "label": "시작"},
+                         {"at_sec": 60.0, "label": "사건"},
+                         {"at_sec": 120.0, "label": "결과"}],
+            **metadata,
+        }
+        return episode
+
+    def test_a_package_youtube_will_accept_reports_nothing(self):
+        from aicut.pipeline.packaging import check_package
+
+        self.assertEqual(
+            check_package(self._episode(), [0.0, 60.0, 120.0], 180.0), [],
+        )
+
+    def test_a_list_that_does_not_start_at_zero_is_reported(self):
+        from aicut.pipeline.packaging import check_package
+
+        episode = self._episode(chapters=[{"at_sec": 12.0, "label": "a"},
+                                          {"at_sec": 60.0, "label": "b"},
+                                          {"at_sec": 120.0, "label": "c"}])
+        problems = check_package(episode, [12.0, 60.0, 120.0], 180.0)
+
+        self.assertTrue(any("0:00" in p for p in problems), problems)
+
+    def test_too_few_chapters_and_a_chapter_that_is_too_short(self):
+        from aicut.pipeline.packaging import check_package
+
+        two = self._episode(chapters=[{"at_sec": 0.0, "label": "a"},
+                                      {"at_sec": 60.0, "label": "b"}])
+        self.assertTrue(any("at least 3" in p for p in check_package(two, [0.0, 60.0], 180.0)))
+
+        brief = self._episode(chapters=[{"at_sec": 0.0, "label": "a"},
+                                        {"at_sec": 4.0, "label": "b"},
+                                        {"at_sec": 60.0, "label": "c"}])
+        self.assertTrue(any("4.0s" in p for p in check_package(brief, [0.0, 4.0, 60.0], 180.0)))
+
+    def test_a_chapter_past_the_end_is_reported(self):
+        from aicut.pipeline.packaging import check_package
+
+        episode = self._episode(chapters=[{"at_sec": 0.0, "label": "a"},
+                                          {"at_sec": 60.0, "label": "b"},
+                                          {"at_sec": 900.0, "label": "c"}])
+        problems = check_package(episode, [0.0, 60.0, 900.0], 180.0)
+
+        self.assertTrue(any("past the end" in p for p in problems), problems)
+
+    def test_a_chapter_that_is_not_on_a_cut_boundary_is_reported(self):
+        """The payload names where a chapter may sit; anywhere else is mid-scene."""
+        from aicut.pipeline.packaging import check_package
+
+        problems = check_package(self._episode(), [0.0, 60.0, 119.0], 180.0)
+
+        self.assertTrue(any("cut boundary" in p for p in problems), problems)
+
+    def test_a_description_without_a_timestamp_is_reported(self):
+        from aicut.pipeline.packaging import check_package
+
+        episode = self._episode(description="오늘 방송에서 있었던 일")
+        problems = check_package(episode, [0.0, 60.0, 120.0], 180.0)
+
+        self.assertTrue(any("타임스탬프" in p for p in problems), problems)
+
+    def test_fewer_than_three_titles_is_reported(self):
+        from aicut.pipeline.packaging import check_package
+
+        problems = check_package(self._episode(titles=["only one"]), [0.0, 60.0, 120.0], 180.0)
+
+        self.assertTrue(any("3종" in p for p in problems), problems)
+
+    def test_the_check_reports_and_never_rewrites(self):
+        """11.2 makes the metadata the model's; 18장 keeps it there."""
+        from aicut.pipeline.packaging import check_package
+
+        episode = self._episode(chapters=[{"at_sec": 5.0, "label": "a"}])
+        before = json.dumps(episode.metadata, sort_keys=True, ensure_ascii=False)
+        check_package(episode, [0.0], 180.0)
+
+        self.assertEqual(json.dumps(episode.metadata, sort_keys=True, ensure_ascii=False), before)
