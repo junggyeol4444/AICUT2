@@ -113,7 +113,7 @@ class UploadEndpointTests(unittest.TestCase):
         from aicut.ui.server import UiServer
 
         source = inspect.getsource(UiServer.upload)
-        self.assertIn("publishing.publish_episode", source)
+        self.assertIn("publishing.publish_approved", source)
         self.assertNotIn("set_privacy", source)
 
 

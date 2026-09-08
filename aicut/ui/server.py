@@ -443,21 +443,19 @@ class UiServer:
 
         This uploads private and queues on a spent quota (11.4); it never makes
         anything public. Releasing an approved episode is a separate action, and
-        `publishing.publish_episode` is the one that refuses without a review.
+        `publishing.publish_approved` is the one that refuses without a review.
         """
         episode = self.store.get_episode(episode_id)
         if episode is None:
             raise KeyError(f"unknown episode {episode_id}")
         ctx = self.context(episode.project_id)
         client = self._youtube(ctx)
-        if body.get("action") == "publish":
-            from aicut.pipeline import publishing
-
-            updated = publishing.publish_episode(ctx, episode_id, client)
-            return {"episode_id": episode_id, "review_status": updated.review_status,
-                    "youtube": updated.metadata.get("youtube", {})}
         from aicut.pipeline import publishing
 
+        if body.get("action") == "publish":
+            updated = publishing.publish_approved(ctx, episode, client)
+            return {"episode_id": episode_id, "review_status": updated.review_status,
+                    "youtube": updated.metadata.get("youtube", {})}
         return publishing.upload_episode(ctx, episode, client)
 
     def _youtube(self, ctx: RunContext):
