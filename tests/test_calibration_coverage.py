@@ -165,7 +165,7 @@ class ProfileEnvironmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "p.json"
             profile.save(path)
-            self.assertIn("environment", json.loads(path.read_text())["_meta"])
+            self.assertIn("environment", json.loads(path.read_text(encoding="utf-8"))["_meta"])
             self.assertEqual(CalibrationProfile.load(path).environment, profile.environment)
 
     def test_an_override_keeps_the_measured_environment(self):

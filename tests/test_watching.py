@@ -67,7 +67,7 @@ class ReferenceWatchingTests(unittest.TestCase):
 
     def test_nothing_in_the_module_counts_cuts(self):
         """18장: 편집 의도 is the AI's. Code that scores scenes took it back."""
-        source = Path(reference_mod.__file__).read_text()
+        source = Path(reference_mod.__file__).read_text(encoding="utf-8")
         for banned in ("cut_count", "detect_cuts", "fingerprint"):  # noqa: E501
             self.assertNotIn(banned, source, f"{banned} is code deciding the edit")
 

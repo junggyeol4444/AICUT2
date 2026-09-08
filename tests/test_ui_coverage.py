@@ -14,7 +14,10 @@ from pathlib import Path
 from aicut.pipeline.states import PROGRESS_ORDER, State, progress
 from aicut.ui.jobs import Job
 
-PAGE = (Path(__file__).resolve().parents[1] / "aicut" / "ui" / "static" / "index.html").read_text()
+# encoding is explicit: the page is full of Korean, and Windows defaults
+# read_text() to cp1252, which cannot decode it. CI caught it there.
+PAGE = (Path(__file__).resolve().parents[1] / "aicut" / "ui" / "static"
+        / "index.html").read_text(encoding="utf-8")
 
 
 class ProgressTests(unittest.TestCase):

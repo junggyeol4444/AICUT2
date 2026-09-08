@@ -181,6 +181,64 @@ class StateMachineConsistencyTests(unittest.TestCase):
                 self.assertEqual({s for s in State if can_transition(state, s)}, set())
 
 
+class TextEncodingTests(unittest.TestCase):
+    """Every read_text/write_text names its encoding.
+
+    Python picks the platform default otherwise, which is UTF-8 on Linux and
+    macOS and cp1252 on Windows. This repo's sources, its schema and its UI page
+    all carry Korean, so an unqualified read_text() passes on two runners and
+    fails on the third — which is exactly how it reached CI:
+
+        UnicodeDecodeError: 'charmap' codec can't decode byte 0x90
+
+    Cheap to state, invisible to forget, and only the Windows job ever tells
+    you. So it is stated here instead.
+    """
+
+    def _sources(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        for directory in ("aicut", "tests", "plugin"):
+            for path in (root / directory).rglob("*.py"):
+                yield path
+
+    def test_no_text_io_relies_on_the_platform_default(self):
+        offenders = []
+        for path in self._sources():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = getattr(node.func, "attr", "")
+                if name not in ("read_text", "write_text"):
+                    continue
+                if any(k.arg == "encoding" for k in node.keywords):
+                    continue
+                offenders.append(f"{path.name}:{node.lineno} {name}()")
+        self.assertEqual(offenders, [], (
+            "these use the platform default encoding, which is cp1252 on the "
+            "Windows runner and cannot read this repo's Korean: " + ", ".join(offenders)
+        ))
+
+    def test_open_in_text_mode_names_its_encoding_too(self):
+        offenders = []
+        for path in self._sources():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "open"):
+                    continue
+                mode = next(
+                    (a.value for a in node.args[1:2] if isinstance(a, ast.Constant)), "r",
+                )
+                if "b" in str(mode):
+                    continue
+                if any(k.arg == "encoding" for k in node.keywords):
+                    continue
+                offenders.append(f"{path.name}:{node.lineno}")
+        self.assertEqual(offenders, [], (
+            "text-mode open() without an encoding, same failure: " + ", ".join(offenders)
+        ))
+
+
 class DeadCodeTests(unittest.TestCase):
     def test_no_public_helper_is_left_without_a_caller(self):
         """Dead code in a repository this size is a claim about capability that

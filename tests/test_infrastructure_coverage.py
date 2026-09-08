@@ -15,7 +15,7 @@ from aicut.pipeline.packaging import _as_text
 from aicut.pipeline.states import State, _NEXT
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA = (ROOT / "aicut" / "db" / "schema.sql").read_text()
+SCHEMA = (ROOT / "aicut" / "db" / "schema.sql").read_text(encoding="utf-8")
 TABLES = dict(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\);", SCHEMA, re.S))
 
 

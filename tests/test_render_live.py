@@ -258,7 +258,7 @@ class LiveRenderTests(unittest.TestCase):
              {"at_sec": 3, "scale": 0.45, "center": [0.8, 0.8]}],
             self.dir / "mixed.cmd",
         )
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         self.assertNotIn("crop w", text)
         self.assertNotIn("crop h", text)
         self.assertEqual(text.count("crop x"), 2)
