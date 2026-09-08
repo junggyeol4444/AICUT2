@@ -98,6 +98,24 @@ class AlignedSpan:
             return 0.0
         return (self.output_end_sec - self.output_start_sec) / self.source_duration
 
+    def emphasis(self, *, hold_margin: float = 0.05) -> list[str]:
+        """Why this span reads as emphasised, from timing alone.
+
+        12.3 B asks what the editor emphasised. Two of its answers are in the
+        timing and need nothing else: a moment used more than once, and a moment
+        the editor gave more room in the finished video than it occupied in the
+        source. The rest of that question - added captions, effects - is not in
+        a speech transcript, and is not guessed here.
+        """
+        if not self.kept:
+            return []
+        reasons = []
+        if self.repeated > 1:
+            reasons.append("repeated")
+        if self.compression > 1.0 + hold_margin:
+            reasons.append("held")
+        return reasons
+
 
 @dataclass
 class Alignment:
@@ -210,13 +228,34 @@ def align_by_transcript(
                 text=source.text,
             ))
 
-    alignment = Alignment(
+    # Per span, not one verdict copied onto all of them. This used to assign
+    # `alignment.reordered()` to every kept span, so a video with one backwards
+    # jump reported that every moment had moved — which is the whole-video
+    # question, already answered by `reordered()`, and it buries the decision
+    # 12.3 B is trying to learn.
+    _mark_order_changes(spans)
+    return Alignment(
         source_ref="", output_ref="", spans=spans, source_duration_sec=source_duration_sec,
     )
-    reordered = alignment.reordered()
-    for span in alignment.kept_spans:
-        span.order_changed = reordered
-    return alignment
+
+
+def _mark_order_changes(spans: Sequence[AlignedSpan]) -> None:
+    """Mark the spans the editor moved backwards in time (2.4).
+
+    `Alignment.reordered()` answers whether the edit is non-linear at all. 12.3 B
+    asks how the order was changed, which means knowing *which* moments jumped —
+    the 05:12 that the editor put before the 01:42 is the decision being learnt,
+    and a single boolean for the whole video does not carry it.
+    """
+    placed = sorted(
+        (s for s in spans if s.kept and s.output_start_sec is not None),
+        key=lambda s: s.output_start_sec,
+    )
+    furthest = None
+    for span in placed:
+        if furthest is not None and span.source_start_sec < furthest:
+            span.order_changed = True
+        furthest = span.source_start_sec if furthest is None else max(furthest, span.source_start_sec)
 
 
 def learn(
@@ -240,6 +279,8 @@ def learn(
                 "output": [s.output_start_sec, s.output_end_sec],
                 "compression": round(s.compression, 3),
                 "repeated": s.repeated,
+                "order_changed": s.order_changed,
+                "emphasis": s.emphasis(),
                 "text": s.text[:200],
             }
             for s in alignment.kept_spans
@@ -267,6 +308,8 @@ def learn(
         "reordered": payload["reordered"],
         "kept_spans": len(alignment.kept_spans),
         "dropped_spans": len(alignment.spans) - len(alignment.kept_spans),
+        "moved_spans": sum(1 for s in alignment.kept_spans if s.order_changed),
+        "emphasised_spans": sum(1 for s in alignment.kept_spans if s.emphasis()),
         "source_duration_sec": alignment.source_duration_sec,
         "selection_ratio": payload["selection_ratio"],
         "removed_segments": len(payload["removed_segments"]),

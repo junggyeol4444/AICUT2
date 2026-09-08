@@ -247,3 +247,67 @@ class WholeBroadcastRemovalTests(unittest.TestCase):
         self.assertEqual(measured["source_duration_sec"], self.duration)
         self.assertAlmostEqual(measured["removed_sec"], self.duration - 80, places=1)
         self.assertGreater(measured["removed_segments"], 0)
+
+
+class EditingDecisionDetailTests(unittest.TestCase):
+    """12.3 B asks *how* the order changed and *what* was emphasised."""
+
+    def test_the_moment_that_jumped_backwards_is_the_one_marked(self):
+        """05:12 placed before 01:42 is the decision; a whole-video flag is not."""
+        source = [
+            Utterance(100, 140, "보스한테 계속 죽네"),
+            Utterance(9000, 9040, "드디어 잡았다"),
+            Utterance(9100, 9140, "끝나고 얘기하자"),
+        ]
+        output = [
+            Utterance(0, 40, "드디어 잡았다"),        # 결과 먼저
+            Utterance(40, 80, "보스한테 계속 죽네"),   # 과거로 점프
+            Utterance(80, 120, "끝나고 얘기하자"),
+        ]
+        spans = {s.text: s for s in align_by_transcript(source, output).kept_spans}
+        self.assertFalse(spans["드디어 잡았다"].order_changed)
+        self.assertTrue(spans["보스한테 계속 죽네"].order_changed,
+                        "the span that went backwards is not marked")
+        self.assertFalse(spans["끝나고 얘기하자"].order_changed)
+
+    def test_a_straight_edit_moves_nothing(self):
+        source = [Utterance(0, 10, "첫번째"), Utterance(100, 110, "두번째")]
+        output = [Utterance(0, 10, "첫번째"), Utterance(10, 20, "두번째")]
+        alignment = align_by_transcript(source, output)
+        self.assertFalse(any(s.order_changed for s in alignment.kept_spans))
+        self.assertFalse(alignment.reordered())
+
+    def test_a_moment_given_more_room_reads_as_held(self):
+        span = AlignedSpan(100, 110, output_start_sec=0, output_end_sec=14, kept=True)
+        self.assertIn("held", span.emphasis())
+
+    def test_a_trimmed_moment_is_not_emphasis(self):
+        span = AlignedSpan(100, 110, output_start_sec=0, output_end_sec=6, kept=True)
+        self.assertEqual(span.emphasis(), [])
+
+    def test_an_untouched_moment_is_not_emphasis(self):
+        """Within the margin, same length is same length — not a hold."""
+        span = AlignedSpan(100, 110, output_start_sec=0, output_end_sec=10.2, kept=True)
+        self.assertEqual(span.emphasis(), [])
+
+    def test_repetition_counts_as_emphasis(self):
+        span = AlignedSpan(100, 110, output_start_sec=0, output_end_sec=10, kept=True, repeated=2)
+        self.assertIn("repeated", span.emphasis())
+
+    def test_a_dropped_span_is_never_emphasis(self):
+        self.assertEqual(AlignedSpan(100, 110, kept=False, repeated=3).emphasis(), [])
+
+    def test_the_counts_reach_the_measured_block(self):
+        from aicut.db.store import Store
+
+        source = [Utterance(100, 140, "나중 발언"), Utterance(9000, 9040, "먼저 보여줄 것")]
+        output = [Utterance(0, 40, "먼저 보여줄 것"), Utterance(40, 80, "나중 발언")]
+        alignment = align_by_transcript(source, output, source_duration_sec=10000.0)
+        store = Store(":memory:")
+        try:
+            measured = learn(MockProducer(), store, alignment,
+                             source_ref="s", output_ref="o")["measured"]
+        finally:
+            store.close()
+        self.assertEqual(measured["moved_spans"], 1)
+        self.assertIn("emphasised_spans", measured)
