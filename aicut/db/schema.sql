@@ -57,6 +57,10 @@ CREATE TABLE IF NOT EXISTS tb_window_summary (
     people         TEXT NOT NULL DEFAULT '[]',
     topics         TEXT NOT NULL DEFAULT '[]',
     screen         TEXT NOT NULL DEFAULT '',
+    -- 5.5: three branches of the semantic structure the passes build.
+    conversations  TEXT NOT NULL DEFAULT '[]',
+    changes        TEXT NOT NULL DEFAULT '[]',
+    temporal_links TEXT NOT NULL DEFAULT '[]',
     notable        INTEGER NOT NULL DEFAULT 0,
     notable_reason TEXT NOT NULL DEFAULT '',
     tension_peak   REAL NOT NULL DEFAULT 0,

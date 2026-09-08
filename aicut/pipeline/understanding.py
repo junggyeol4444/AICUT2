@@ -27,7 +27,11 @@ from aicut.pipeline.context import RunContext
 
 log = logging.getLogger(__name__)
 
-MEMORY_WINDOWS = 6          # how many earlier window summaries travel with the pass
+MEMORY_WINDOWS = 6
+#: 5.4 keeps the whole broadcast's callbacks and changes in view, not just the
+#: recent windows - a payoff can be hours after its setup. Capped so a 10-hour
+#: source does not push the window's own content out of the payload.
+MEMORY_LINKS = 40          # how many earlier window summaries travel with the pass
 
 
 def run(ctx: RunContext, *, sample_frames: bool = False) -> RunContext:
@@ -186,6 +190,9 @@ def _first_pass(
             people=answer.get("people", []) or [],
             topics=answer.get("topics", []) or [],
             screen=answer.get("screen", situation),
+            conversations=answer.get("conversations", []) or [],
+            changes=answer.get("changes", []) or [],
+            temporal_links=answer.get("temporal_links", []) or [],
             notable=bool(answer.get("notable", False)),
             notable_reason=answer.get("notable_reason", ""),
             tension_peak=payload["tension_peak"],
@@ -280,6 +287,12 @@ def _events_from(ctx: RunContext, windows: list[WindowSummary], details: list[De
             {
                 "start_sec": w.start_sec, "end_sec": w.end_sec, "summary": w.summary, "people": w.people,
                 "topics": w.topics, "screen": w.screen, "notable": w.notable, "markers": w.markers,
+                # 5.5's Conversations / Changes / Temporal Links. The links are
+                # what makes 5.4 possible at all: an event first mentioned at
+                # 00:32 and paid off at 03:41 is one event, and the pass that
+                # saw 03:41 is the one that noticed it pointed backwards.
+                "conversations": w.conversations, "changes": w.changes,
+                "temporal_links": w.temporal_links,
             }
             for w in windows
         ],
@@ -389,14 +402,28 @@ def _memory(summaries: list[WindowSummary]) -> dict:
     for w in summaries:
         people.update(w.people)
         topics.update(w.topics)
+    # 5.4: the passes are not independent fragments. 03:41 only reads as pointing
+    # at 00:32 if what happened at 00:32 is still in front of the reader - so the
+    # links and the changes carry forward too, not just the last few summaries.
+    links = [
+        {"at_sec": w.start_sec, **link}
+        for w in summaries for link in w.temporal_links
+    ]
+    changes = [
+        {"at_sec": w.start_sec, **change}
+        for w in summaries for change in w.changes
+    ]
     return {
         "recent_windows": [
-            {"start_sec": w.start_sec, "end_sec": w.end_sec, "summary": w.summary, "markers": w.markers}
+            {"start_sec": w.start_sec, "end_sec": w.end_sec, "summary": w.summary,
+             "markers": w.markers, "conversations": w.conversations}
             for w in recent
         ],
         "known_people": sorted(people),
         "known_topics": sorted(topics)[:60],
         "open_threads": [w.notable_reason for w in summaries if w.notable][-MEMORY_WINDOWS:],
+        "callbacks_so_far": links[-MEMORY_LINKS:],
+        "changes_so_far": changes[-MEMORY_LINKS:],
     }
 
 

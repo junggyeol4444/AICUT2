@@ -90,6 +90,12 @@ class WindowSummary:
     people: list[str] = field(default_factory=list)
     topics: list[str] = field(default_factory=list)
     screen: str = ""
+    # 5.5's semantic structure is built by the passes, not declared up front.
+    # People, Topics and Situations are above; these are the three branches that
+    # only a pass reading windows in order can fill.
+    conversations: list[dict] = field(default_factory=list)   # Conversations
+    changes: list[dict] = field(default_factory=list)         # Changes
+    temporal_links: list[dict] = field(default_factory=list)  # Temporal Links
     notable: bool = False
     notable_reason: str = ""
     tension_peak: float = 0.0

@@ -72,7 +72,23 @@ class Store:
 
     def migrate(self) -> None:
         self.conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        self._add_missing_columns()
         self.conn.commit()
+
+    #: Columns added after a release. CREATE TABLE IF NOT EXISTS leaves an older
+    #: database on its old shape, so a workspace that has already run a
+    #: broadcast would fail on the next one with "no such column".
+    _ADDED_COLUMNS = (
+        ("tb_window_summary", "conversations", "TEXT NOT NULL DEFAULT '[]'"),
+        ("tb_window_summary", "changes", "TEXT NOT NULL DEFAULT '[]'"),
+        ("tb_window_summary", "temporal_links", "TEXT NOT NULL DEFAULT '[]'"),
+    )
+
+    def _add_missing_columns(self) -> None:
+        for table, column, definition in self._ADDED_COLUMNS:
+            present = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            if column not in present:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def close(self) -> None:
         self.conn.close()
@@ -199,10 +215,12 @@ class Store:
         self.conn.execute("DELETE FROM tb_window_summary WHERE project_id=?", (project_id,))
         self.conn.executemany(
             "INSERT INTO tb_window_summary (project_id, start_sec, end_sec, summary, people, topics, screen,"
-            " notable, notable_reason, tension_peak, markers) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " conversations, changes, temporal_links,"
+            " notable, notable_reason, tension_peak, markers) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 (
                     project_id, w.start_sec, w.end_sec, w.summary, _j(w.people), _j(w.topics), w.screen,
+                    _j(w.conversations), _j(w.changes), _j(w.temporal_links),
                     int(w.notable), w.notable_reason, w.tension_peak, _j(w.markers),
                 )
                 for w in windows
@@ -215,6 +233,8 @@ class Store:
             WindowSummary(
                 start_sec=r["start_sec"], end_sec=r["end_sec"], summary=r["summary"],
                 people=_u(r["people"], []), topics=_u(r["topics"], []), screen=r["screen"],
+                conversations=_u(r["conversations"], []), changes=_u(r["changes"], []),
+                temporal_links=_u(r["temporal_links"], []),
                 notable=bool(r["notable"]), notable_reason=r["notable_reason"],
                 tension_peak=r["tension_peak"], markers=_u(r["markers"], []),
             )

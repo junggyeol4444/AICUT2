@@ -25,26 +25,81 @@ Answer with JSON only - no prose, no code fence.
 
 _TASKS: dict[str, str] = {
     "summarize_window": """\
-First pass over one window of the broadcast (5.1). You see every window in order,
-with what you already know about earlier ones, so read this window in that light.
-Describe what is happening, who is present, what is being said, what is happening
-on screen, and whether anything here deserves a closer second look.
+First pass over one window of the broadcast (5.1). Every window is read in order,
+with what you already know about the earlier ones, so read this one in that light.
+
+5.1 asks five things of this pass: 지금 무슨 상황인가 / 누가 있는가 / 무슨 얘기가
+오가는가 / 화면에서 무슨 일이 벌어지는가 / 어디가 다시 볼 만한가.
+
+5.2 says screen and sound are not read apart, and names what to read in each:
+
+  화면   인물 / 표정 / 동작 / 게임 상황 / 게임 결과 / 채팅·후원 / 화면 사건
+  음성   발화 내용 / 대화 흐름 / 말투 / 감정 / 중요 발언
+  오디오 웃음 / 비명 / 환호 / 침묵 / 효과음 / BGM 변화
+
+The images are frames from this window, in time order — that is where 화면 is.
+`utterances` is 음성 with timestamps and, on a multi-track source, per-speaker.
+`signal_markers` and `tension_peak` are measured 오디오 hints, not conclusions:
+say what you hear, and say nothing where there is nothing.
+
+5.5 asks for a semantic structure the analysis builds and revises as it goes,
+not a fixed set of categories. Four of its branches are this window's to fill:
+
+  conversations   who is talking with whom, about what
+  changes         what is different from earlier — mood, situation, a
+                  relationship, a game state. Empty in the first window
+  temporal_links  this window pointing back at an earlier moment: a callback,
+                  a payoff, a promise being kept. Give the earlier time in
+                  seconds when you can
+
+Everything carries a timestamp (5.2).
+
 Return: {"summary": str, "people": [str], "topics": [str], "screen": str,
+"screen_detail": {...}, "voice": {...}, "audio": {...},
+"conversations": [{"who": [str], "about": str}],
+"changes": [{"what": str, "from": str, "to": str}],
+"temporal_links": [{"refers_to_sec": number|null, "what": str}],
 "notable": bool, "notable_reason": str, "markers": [str]}
-"markers" name what kind of moment this is in your own words (e.g. "reaction",
-"result", "argument"); do not force them into a fixed vocabulary.
+
+"screen_detail", "voice" and "audio" hold the 5.2 items above, keyed by the
+Korean names. "markers" name what kind of moment this is in your own words
+(e.g. "reaction", "result", "argument"); do not force a fixed vocabulary.
 """,
     "detail_window": """\
-Second pass over a window the first pass marked (5.1). Work finely: exactly when
-the moment starts and ends, the timing of lines and reactions, facial expression
-and movement, anything an editor would need.
+Second pass over a window the first pass marked (5.1). The first pass was wide
+and sparse; this one is narrow and close. 5.1 asks four things of it:
+
+  정확히 언제 시작하고 끝나는가
+  대사와 반응의 정확한 타이밍
+  표정과 동작
+  편집에 필요한 세부 정보
+
+5.2 still holds here — screen and sound together. The frames are denser than the
+first pass saw. 인물 / 표정 / 동작 / 게임 상황 / 게임 결과 / 채팅·후원 / 화면 사건
+are on them; 말투 / 감정 / 중요 발언 are in the speech; 웃음 / 비명 / 환호 / 침묵 /
+효과음 / BGM 변화 are in the audio around it.
+
+A beat is one thing happening at one moment. Put the reaction on its own beat
+when it lands after the line that caused it — the gap between them is what an
+editor is deciding about (9장).
+
 Return: {"exact_start_sec": number|null, "exact_end_sec": number|null,
-"beats": [{"at_sec": number, "what": str, "who": str}], "notes": str}
+"beats": [{"at_sec": number, "what": str, "who": str, "expression": str,
+"action": str}], "notes": str}
 """,
     "build_events": """\
 Fold the passes into events (5.4). An event is a thing that happened; its moments
 may be scattered across hours. Link a later callback to the earlier event it
 refers to instead of creating a second event.
+
+Each window carries `temporal_links` — where the pass that read it noticed it
+pointing back at an earlier moment — and `changes`, where something turned. Those
+are the seams to fold along. 5.4's example is the shape: 처음 언급 00:32:11 /
+관련 대화 01:14:22 / 재언급 03:41:11 / 갈등 04:21:09 / 결과 05:12:44 — one event,
+five moments, five hours apart.
+
+An event that spans distant times is what makes 2.4 possible, so do not split one
+because its moments are far apart, and do not merge two because theirs are close.
 Return: [{"summary": str, "people": [str], "mentions": [{"source_start_sec": number,
 "source_end_sec": number, "role": str, "quote": str}],
 "relations": [{"event_index": int, "kind": str}]}]
