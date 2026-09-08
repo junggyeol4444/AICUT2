@@ -63,13 +63,20 @@ def _fmt(value: Any) -> str:
 
 
 def _timestamp(seconds: float) -> str:
-    seconds = max(0.0, seconds)
-    hours, rem = divmod(seconds, 3600)
+    """H:MM:SS.cc, the ASS time format.
+
+    Rounded to whole centiseconds *first*, then decomposed. Rounding after the
+    split carried into the seconds field without carrying on into minutes and
+    hours, so 59.999 came out as `0:00:60.00` and 3599.999 as `0:59:60.00` -
+    times a renderer either rejects or reads as something else, which loses or
+    misplaces every caption landing on a minute boundary.
+    """
+    total = max(0, int(round(max(0.0, seconds) * 100)))
+    centis = total % 100
+    whole = total // 100
+    hours, rem = divmod(whole, 3600)
     minutes, secs = divmod(rem, 60)
-    centis = int(round((secs - int(secs)) * 100))
-    if centis == 100:                     # rounding carried into the next second
-        secs, centis = int(secs) + 1, 0
-    return f"{int(hours)}:{int(minutes):02d}:{int(secs):02d}.{centis:02d}"
+    return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
 
 
 def _escape(text: str) -> str:

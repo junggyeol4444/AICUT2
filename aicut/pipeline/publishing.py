@@ -18,6 +18,7 @@ from aicut.intelligence.quota import QuotaLedger
 from aicut.intelligence.youtube import YouTubeClient
 from aicut.models import Episode
 from aicut.pipeline.context import RunContext
+from aicut.pipeline.states import State
 
 log = logging.getLogger(__name__)
 
@@ -140,7 +141,42 @@ def publish_approved(ctx: RunContext, episode: Episode, client: YouTubeClient) -
     episode.metadata["youtube"] = {**youtube, "privacy_status": "public"}
     episode.review_status = "published"
     ctx.store.save_episode(episode)
+    _advance_project_if_settled(ctx)
     return episode
+
+
+#: Review outcomes that mean nobody is waiting on this episode any more. A
+#: rejected episode is finished too - it is not going out, and holding the
+#: project open for it would leave a project that can never close.
+_SETTLED = {"published", "rejected"}
+
+
+def _advance_project_if_settled(ctx: RunContext) -> None:
+    """Move the project to PUBLISHED once every episode has been dealt with.
+
+    14장 lists PUBLISHED as the end of the walk, and nothing ever set it: the
+    episode's own review_status changed and `tb_project` stayed REVIEW_PENDING
+    for good. `aicut status`, the project list and the UI therefore showed
+    finished work as still awaiting review, and the terminal state was
+    unreachable.
+
+    Only when *every* episode is settled: a project with two episodes, one
+    published and one still pending, is still waiting on a person.
+    """
+    episodes = ctx.store.episodes(ctx.project.project_id)
+    if not episodes:
+        return
+    if any(e.review_status not in _SETTLED for e in episodes):
+        return
+    if not any(e.review_status == "published" for e in episodes):
+        # Everything was rejected. That is a finished project, but calling it
+        # PUBLISHED would say something untrue about what is on the channel.
+        return
+    ctx.store.set_status(
+        ctx.project.project_id, State.PUBLISHED.value,
+        f"{sum(1 for e in episodes if e.review_status == 'published')} of "
+        f"{len(episodes)} episodes published",
+    )
 
 
 def process_retry_queue(ctx: RunContext, client: YouTubeClient, ledger: QuotaLedger) -> list[str]:
@@ -149,13 +185,18 @@ def process_retry_queue(ctx: RunContext, client: YouTubeClient, ledger: QuotaLed
 
     now = ledger.pt_now()
     done: list[str] = []
-    for row in ctx.store.upload_queue():
+    # This context carries one project's profile, and upload_episode reads it
+    # for privacy, language and category. Draining the whole queue through it
+    # would publish other projects' episodes under this project's settings.
+    for row in ctx.store.upload_queue(project_id=ctx.project.project_id):
         retry_after = row.get("retry_after")
         if retry_after and datetime.fromisoformat(retry_after) > now:
             continue
         episode = ctx.store.get_episode(row["episode_id"])
         if episode is None:
             ctx.store.set_queue_state(row["queue_id"], "abandoned", "episode no longer exists")
+            continue
+        if episode.project_id != ctx.project.project_id:   # belt and braces
             continue
         try:
             upload_episode(ctx, episode, client)

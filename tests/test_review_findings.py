@@ -208,3 +208,218 @@ class UiSpeechTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CutPieceEffectTests(unittest.TestCase):
+    """8.2's intent belongs to the cut. Pacing splits the cut, not the intent."""
+
+    def _split_cut(self):
+        from aicut.models import Cut
+
+        return Cut(
+            sequence_order=0, source_start_sec=0, source_end_sec=30,
+            visual_effect={"transition": "fade",
+                           "graphic": {"path": "/x.png", "start": 1.0, "end": 3.0},
+                           "crop": "9:16"},
+            audio_effect={"sfx": {"path": "/d.wav", "at": 14.0}, "gain_db": -3},
+            remove_spans=[[10, 12], [20, 22]],
+        )
+
+    def _placed(self):
+        from aicut.render.ffmpeg import _effects_for_piece, _pieces_per_cut
+        from aicut.render.timeline import Timeline
+
+        cut = self._split_cut()
+        timeline = Timeline.from_cuts([cut])
+        pieces = _pieces_per_cut(timeline.segments)
+        return [(_effects_for_piece(cut, s, pieces)) for s in timeline.segments]
+
+    def test_a_split_cut_really_does_become_several_segments(self):
+        self.assertEqual(len(self._placed()), 3)
+
+    def test_the_transition_fades_the_ends_of_the_cut_not_every_piece(self):
+        placed = self._placed()
+        self.assertEqual(placed[0][0]["transition"], {"in": "fade"})
+        self.assertNotIn("transition", placed[1][0])
+        self.assertEqual(placed[2][0]["transition"], {"out": "fade"})
+
+    def test_a_graphic_appears_once_on_the_piece_that_holds_its_time(self):
+        placed = self._placed()
+        self.assertIn("graphic", placed[0][0])
+        self.assertNotIn("graphic", placed[1][0])
+        self.assertNotIn("graphic", placed[2][0])
+
+    def test_a_sound_effect_is_rebased_onto_its_own_piece(self):
+        """14s into the cut is 4s into the second piece once 10-12 is removed."""
+        placed = self._placed()
+        self.assertNotIn("sfx", placed[0][1])
+        self.assertEqual(placed[1][1]["sfx"]["at"], 4.0)
+        self.assertNotIn("sfx", placed[2][1])
+
+    def test_framing_and_level_stay_on_every_piece(self):
+        for visual, audio in self._placed():
+            self.assertEqual(visual["crop"], "9:16")
+            self.assertEqual(audio["gain_db"], -3)
+
+    def test_an_unsplit_cut_keeps_everything_it_was_given(self):
+        from aicut.models import Cut
+        from aicut.render.ffmpeg import _effects_for_piece, _pieces_per_cut
+        from aicut.render.timeline import Timeline
+
+        cut = Cut(sequence_order=0, source_start_sec=0, source_end_sec=10,
+                  visual_effect={"transition": "fade"},
+                  audio_effect={"sfx": {"path": "/d.wav", "at": 5.0}})
+        timeline = Timeline.from_cuts([cut])
+        visual, audio = _effects_for_piece(
+            cut, timeline.segments[0], _pieces_per_cut(timeline.segments),
+        )
+        self.assertEqual(visual["transition"], "fade")
+        self.assertEqual(audio["sfx"]["at"], 5.0)
+
+
+class LoudnessOverTheBedTests(unittest.TestCase):
+    """10.4-3 measures then corrects. Both have to be the same audio."""
+
+    def test_the_render_and_the_measurement_build_the_same_mix(self):
+        from aicut.render.ffmpeg import _bed_mix_chains
+
+        bed = {"path": "/b.mp3", "gain_db": -18.0, "fade": 1.0, "loop": True}
+        rendered = _bed_mix_chains(bed, "loudnorm=I=-14,aresample=48000")
+        measured = _bed_mix_chains(bed, "loudnorm=I=-14:print_format=json")
+        self.assertEqual(rendered[0], measured[0], "the bed is levelled differently")
+        self.assertIn("amix=inputs=2:normalize=0:duration=first", rendered[1])
+        self.assertIn("amix=inputs=2:normalize=0:duration=first", measured[1])
+
+    def test_without_a_bed_the_measurement_is_the_plain_one(self):
+        import inspect
+
+        from aicut.render.ffmpeg import measure_loudness_with_bed
+
+        source = inspect.getsource(measure_loudness_with_bed)
+        self.assertIn("return measure_loudness(joined_path, profile)", source)
+
+    def test_the_renderer_measures_with_the_bed_it_will_add(self):
+        import inspect
+
+        from aicut.render.ffmpeg import Renderer
+
+        source = inspect.getsource(Renderer.render)
+        self.assertIn("measure_loudness_with_bed", source)
+        self.assertIn('plan.structure.get("bgm")', source)
+
+
+class SubtitleTimestampTests(unittest.TestCase):
+    """A malformed ASS time loses or misplaces the caption."""
+
+    def test_rounding_carries_past_the_minute_and_the_hour(self):
+        from aicut.render.subtitles import _timestamp
+
+        self.assertEqual(_timestamp(59.999), "0:01:00.00")
+        self.assertEqual(_timestamp(3599.999), "1:00:00.00")
+
+    def test_no_field_can_reach_sixty(self):
+        from aicut.render.subtitles import _timestamp
+
+        for tenth in range(0, 40000):
+            stamp = _timestamp(tenth / 10)
+            _, minutes, rest = stamp.split(":")
+            secs = rest.split(".")[0]
+            self.assertLess(int(minutes), 60, stamp)
+            self.assertLess(int(secs), 60, stamp)
+
+    def test_ordinary_times_are_unchanged(self):
+        from aicut.render.subtitles import _timestamp
+
+        self.assertEqual(_timestamp(0.0), "0:00:00.00")
+        self.assertEqual(_timestamp(0.5), "0:00:00.50")
+        self.assertEqual(_timestamp(61.2), "0:01:01.20")
+        self.assertEqual(_timestamp(3661.004), "1:01:01.00")
+
+    def test_a_negative_time_is_clamped_rather_than_formatted(self):
+        from aicut.render.subtitles import _timestamp
+
+        self.assertEqual(_timestamp(-1.0), "0:00:00.00")
+
+
+class RetryQueueScopeTests(unittest.TestCase):
+    """11.4's queue is per project, because the profile that uploads it is."""
+
+    def _store_with_two_projects(self):
+        from aicut.db.store import Store
+        from aicut.models import Episode, Project
+
+        store = Store(":memory:")
+        for pid in ("p1", "p2"):
+            store.create_project(Project(project_id=pid, file_path=f"/x/{pid}.mp4",
+                                         duration_sec=10.0))
+            store.save_episode(Episode(episode_id=f"e-{pid}", project_id=pid))
+            store.enqueue_upload(f"e-{pid}", retry_after=None, error="quota")
+        return store
+
+    def test_the_queue_can_be_read_for_one_project_only(self):
+        store = self._store_with_two_projects()
+        try:
+            self.assertEqual(len(store.upload_queue()), 2)
+            mine = store.upload_queue(project_id="p1")
+            self.assertEqual([r["episode_id"] for r in mine], ["e-p1"])
+        finally:
+            store.close()
+
+    def test_the_retry_drains_only_its_own_project(self):
+        import inspect
+
+        from aicut.pipeline import publishing
+
+        source = inspect.getsource(publishing.process_retry_queue)
+        self.assertIn("project_id=ctx.project.project_id", source)
+
+
+class ProjectCompletionTests(unittest.TestCase):
+    """14장 lists PUBLISHED as the end of the walk; nothing ever set it."""
+
+    def _context(self, statuses):
+        from aicut.db.store import Store
+        from aicut.models import Episode, Project
+
+        store = Store(":memory:")
+        project = Project(project_id="p1", file_path="/x/b.mp4", duration_sec=10.0)
+        store.create_project(project)
+        for i, status in enumerate(statuses):
+            episode = Episode(episode_id=f"e{i}", project_id="p1")
+            episode.review_status = status
+            store.save_episode(episode)
+
+        class Ctx:
+            pass
+
+        ctx = Ctx()
+        ctx.store, ctx.project = store, project
+        return ctx
+
+    def _advance(self, statuses):
+        from aicut.pipeline.publishing import _advance_project_if_settled
+
+        ctx = self._context(statuses)
+        try:
+            _advance_project_if_settled(ctx)
+            return ctx.store.get_project("p1").status
+        finally:
+            ctx.store.close()
+
+    def test_a_fully_published_project_reaches_published(self):
+        self.assertEqual(self._advance(["published"]), "PUBLISHED")
+        self.assertEqual(self._advance(["published", "published"]), "PUBLISHED")
+
+    def test_one_episode_still_pending_holds_the_project_open(self):
+        self.assertNotEqual(self._advance(["published", "pending"]), "PUBLISHED")
+
+    def test_a_rejected_episode_does_not_hold_the_project_open(self):
+        self.assertEqual(self._advance(["published", "rejected"]), "PUBLISHED")
+
+    def test_a_project_where_everything_was_rejected_is_not_called_published(self):
+        """Nothing went out; saying PUBLISHED would describe the channel wrongly."""
+        self.assertNotEqual(self._advance(["rejected", "rejected"]), "PUBLISHED")
+
+
+if __name__ == "__main__":
+    unittest.main()

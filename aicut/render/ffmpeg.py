@@ -32,7 +32,7 @@ from typing import Any, Sequence
 
 from aicut.config import CalibrationProfile
 from aicut.errors import RenderError
-from aicut.media.audio import LoudnessStats, measure_loudness
+from aicut.media.audio import LoudnessStats, measure_loudness, parse_loudnorm_json
 from aicut.media.ffmpeg_util import LIBASS_HINT, require_ffmpeg, require_filter, run
 from aicut.render.editplan import EditPlan
 from aicut.render.timeline import Segment, Timeline
@@ -555,9 +555,7 @@ def build_final_command(
     bed = _bgm_input(bgm)
     cmd = ["ffmpeg", "-hide_banner", "-nostats", "-y", "-i", joined_path]
     if bed:
-        # -stream_loop before the input it applies to; -1 loops a short bed under
-        # a long timeline. duration=first below stops it running past the video.
-        cmd += ["-stream_loop", "-1" if bed["loop"] else "0", "-i", bed["path"]]
+        cmd += _bed_input_args(bed)
     if video_filters:
         cmd += ["-vf", ",".join(video_filters), "-c:v", settings.video_codec,
                 "-preset", settings.preset, "-crf", str(settings.crf), "-pix_fmt", settings.pix_fmt]
@@ -565,13 +563,12 @@ def build_final_command(
         cmd += ["-c:v", "copy"]
     audio_chain = f"{loudnorm},aresample={settings.sample_rate}"
     if bed:
-        # The bed is levelled and faded before the mix, then the loudness
-        # correction is measured and applied to the result - which is the
-        # timeline a viewer actually hears (10.4-3).
-        cmd += ["-filter_complex", ";".join([
-            f"[1:a]volume={bed['gain_db']}dB,afade=t=in:st=0:d={bed['fade']:.3f}[bed]",
-            f"[0:a][bed]amix=inputs=2:normalize=0:duration=first,{audio_chain}[a]",
-        ]), "-map", "0:v:0", "-map", "[a]"]
+        # The bed is levelled and faded, mixed under the dialogue, and only then
+        # corrected - so loudnorm sees the timeline a viewer actually hears.
+        # measure_loudness_with_bed() below builds the same mix, so the
+        # measurement describes this filter's real input (10.4-3).
+        cmd += ["-filter_complex", ";".join(_bed_mix_chains(bed, audio_chain)),
+                "-map", "0:v:0", "-map", "[a]"]
     else:
         cmd += ["-af", audio_chain]
     cmd += [
@@ -580,6 +577,59 @@ def build_final_command(
         out_path,
     ]
     return cmd
+
+
+def _bed_input_args(bed: dict[str, Any]) -> list[str]:
+    """The BGM file as a second input.
+
+    -stream_loop goes before the input it applies to; -1 loops a short bed under
+    a long timeline, and duration=first in the mix stops it outrunning the video.
+    """
+    return ["-stream_loop", "-1" if bed["loop"] else "0", "-i", bed["path"]]
+
+
+def _bed_mix_chains(bed: dict[str, Any], tail: str) -> list[str]:
+    """The filter graph that lays the bed under the dialogue, ending in [a].
+
+    One function, two callers: the render pass and the loudness measurement.
+    They have to agree exactly - a measurement of a different mix is worse than
+    no measurement, because it is applied as though it were right.
+    """
+    return [
+        f"[1:a]volume={bed['gain_db']}dB,afade=t=in:st=0:d={bed['fade']:.3f}[bed]",
+        f"[0:a][bed]amix=inputs=2:normalize=0:duration=first{',' + tail if tail else ''}[a]",
+    ]
+
+
+def measure_loudness_with_bed(
+    joined_path: str, settings: RenderSettings, profile: CalibrationProfile,
+    bgm: dict[str, Any] | None,
+) -> LoudnessStats | None:
+    """First pass of 10.4-3, over the mix the second pass will actually correct.
+
+    Without a bed this is `measure_loudness` unchanged. With one, the bed is
+    mixed in first: measuring the bare dialogue and then correcting a timeline
+    that has music under it means the advertised two-pass normalisation misses
+    its LUFS target and can clip on a loud bed.
+    """
+    bed = _bgm_input(bgm)
+    if bed is None:
+        return measure_loudness(joined_path, profile)
+
+    require_ffmpeg()
+    target_i = profile.get_float("render.audio.loudness.integrated_lufs")
+    target_tp = profile.get_float("render.audio.loudness.true_peak_dbtp")
+    target_lra = profile.get_float("render.audio.loudness.loudness_range")
+    loudnorm = (
+        f"loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}:print_format=json"
+    )
+    output = run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-i", joined_path]
+        + _bed_input_args(bed)
+        + ["-filter_complex", ";".join(_bed_mix_chains(bed, loudnorm)),
+           "-map", "[a]", "-f", "null", "-"]
+    )
+    return parse_loudnorm_json(output)
 
 
 def _bgm_input(bgm: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -609,6 +659,84 @@ def _bgm_input(bgm: dict[str, Any] | None) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 # orchestration
 # ---------------------------------------------------------------------------
+def _pieces_per_cut(segments: Sequence[Segment]) -> dict[int, list[Segment]]:
+    """The segments each cut was split into, in output order."""
+    grouped: dict[int, list[Segment]] = {}
+    for segment in segments:
+        grouped.setdefault(segment.sequence_order, []).append(segment)
+    for pieces in grouped.values():
+        pieces.sort(key=lambda s: s.source_start_sec)
+    return grouped
+
+
+def _effects_for_piece(
+    cut, segment: Segment, pieces: dict[int, list[Segment]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """One cut's 8.2 intent, scoped to the piece of it being rendered.
+
+    An uncut cut is one piece and gets everything. A cut pacing has split is
+    several, and the intent has to be placed rather than copied:
+
+    * a transition belongs to the join, so its ``in`` goes on the first piece
+      and its ``out`` on the last - a fade at every internal removal is not
+      what the plan asked for;
+    * a graphic and a sound effect happen once, at a time measured from the
+      start of the cut, so they go on the piece that actually contains that
+      time, with the offset rebased onto that piece;
+    * zoom and crop describe the framing of the whole cut, so every piece keeps
+      them.
+    """
+    visual = dict(cut.visual_effect or {}) if cut else {}
+    audio = dict(cut.audio_effect or {}) if cut else {}
+    group = pieces.get(segment.sequence_order, [segment])
+    if len(group) < 2:
+        return visual, audio
+
+    first, last = group[0], group[-1]
+    transition = visual.get("transition")
+    if transition:
+        if isinstance(transition, str):
+            transition = {"in": transition, "out": transition}
+        else:
+            transition = dict(transition)
+        if segment is not first:
+            transition.pop("in", None)
+        if segment is not last:
+            transition.pop("out", None)
+        if any(transition.get(edge) for edge in ("in", "out")):
+            visual["transition"] = transition
+        else:
+            visual.pop("transition", None)
+
+    # Where this piece begins on the cut's own clock, once the removed spans
+    # before it are taken out.
+    elapsed = sum(p.duration for p in group[:group.index(segment)])
+    span = (elapsed, elapsed + segment.duration)
+
+    graphic = visual.get("graphic")
+    if graphic:
+        spec = {"path": graphic} if isinstance(graphic, str) else dict(graphic)
+        start = float(spec.get("start", 0.0))
+        end = float(spec.get("end", elapsed + segment.duration))
+        if end <= span[0] or start >= span[1]:
+            visual.pop("graphic", None)
+        else:
+            spec["start"] = max(0.0, start - elapsed)
+            spec["end"] = min(segment.duration, end - elapsed)
+            visual["graphic"] = spec
+
+    sfx = audio.get("sfx")
+    if sfx:
+        spec = {"path": sfx} if isinstance(sfx, str) else dict(sfx)
+        at = float(spec.get("at", 0.0))
+        if span[0] <= at < span[1]:
+            spec["at"] = at - elapsed
+            audio["sfx"] = spec
+        else:
+            audio.pop("sfx", None)
+    return visual, audio
+
+
 def _directory_mb(path: Path) -> float:
     try:
         return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file()) / 1e6
@@ -654,18 +782,25 @@ class Renderer:
         stage.mkdir(parents=True, exist_ok=True)
         cuts_by_order = {c.sequence_order: c for c in plan.cuts}
 
+        # Pacing splits one cut into several segments when it removes a span
+        # from inside it, and a cut's editing intent (8.2) belongs to the cut,
+        # not to each piece. Giving every piece the full intent made a
+        # transition fade at every internal silence removal and restarted the
+        # graphic and the sound effect on each surviving piece.
+        pieces = _pieces_per_cut(timeline.segments)
+
         segment_paths: list[Path] = []
         for i, segment in enumerate(timeline.segments):
             cut = cuts_by_order.get(segment.sequence_order)
             seg_path = stage / f"seg_{i:05d}.mp4"
             sendcmd = None
-            effect = cut.visual_effect if cut else {}
-            if effect.get("type") == "zoom" and effect.get("keyframes") and settings.zoom_strategy == "sendcmd":
-                sendcmd = str(sendcmd_file(effect["keyframes"], stage / f"seg_{i:05d}.cmd"))
+            visual, audio = _effects_for_piece(cut, segment, pieces)
+            if visual.get("type") == "zoom" and visual.get("keyframes") and settings.zoom_strategy == "sendcmd":
+                sendcmd = str(sendcmd_file(visual["keyframes"], stage / f"seg_{i:05d}.cmd"))
             run(build_segment_command(
                 plan.source_path, segment, str(seg_path), settings,
-                visual_effect=effect,
-                audio_effect=cut.audio_effect if cut else {},
+                visual_effect=visual,
+                audio_effect=audio,
                 sendcmd_path=sendcmd,
                 audio_streams=audio_streams,
             ))
@@ -680,7 +815,9 @@ class Renderer:
 
         loudness = None
         if settings.two_pass_loudness:
-            loudness = measure_loudness(str(joined), self.profile)
+            loudness = measure_loudness_with_bed(
+                str(joined), settings, self.profile, plan.structure.get("bgm"),
+            )
 
         target = Path(out_path)
         target.parent.mkdir(parents=True, exist_ok=True)

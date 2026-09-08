@@ -572,12 +572,29 @@ class Store:
         )
         self.conn.commit()
 
-    def upload_queue(self, state: str = "RETRY_QUEUED") -> list[dict[str, Any]]:
-        return [
-            dict(r) for r in self.conn.execute(
+    def upload_queue(
+        self, state: str = "RETRY_QUEUED", *, project_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Queued uploads, optionally only one project's.
+
+        The queue itself has no project column, so the filter joins through the
+        episode. Without it a retry ran every queued episode from every project
+        against whichever RunContext the caller happened to hold, uploading
+        another channel's work under this channel's privacy, language and
+        category defaults.
+        """
+        if project_id is None:
+            rows = self.conn.execute(
                 "SELECT * FROM tb_upload_queue WHERE state=? ORDER BY queue_id", (state,)
             )
-        ]
+        else:
+            rows = self.conn.execute(
+                "SELECT q.* FROM tb_upload_queue q"
+                " JOIN tb_episode e ON e.episode_id = q.episode_id"
+                " WHERE q.state=? AND e.project_id=? ORDER BY q.queue_id",
+                (state, project_id),
+            )
+        return [dict(r) for r in rows]
 
     def set_queue_state(self, queue_id: int, state: str, error: str = "") -> None:
         self.conn.execute(
