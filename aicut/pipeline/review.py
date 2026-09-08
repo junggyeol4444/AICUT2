@@ -99,6 +99,74 @@ def record_candidate_verdict(ctx: RunContext, candidate_id: str, verdict: str, n
     ctx.store.set_human_verdict(candidate_id, verdict if not note else f"{verdict}: {note}")
 
 
+#: 원본 32장 lists what a person evaluates about each candidate, and 19장 puts
+#: the same four under MVP 3 as 항목별 평가. They are four different questions -
+#: a candidate can find the right scenes and still fail to connect two times of
+#: day - so one agree/disagree cannot stand in for them. Keys are the clause's
+#: own words; nothing here interprets them.
+ASSESSMENT_ITEMS = (
+    "관련 장면을 제대로 찾는가",
+    "서로 다른 시간대의 장면을 연결하는가",
+    "사건의 시작과 결과를 이해하는가",
+    "불필요한 장면을 제외하는가",
+)
+
+#: What a person may answer. 원본 32장 asks a question, not for a score, and an
+#: item a reviewer could not judge is not a failure - it is unanswered, and the
+#: rate below leaves it out rather than counting it either way.
+ASSESSMENT_VERDICTS = ("yes", "no", "unclear")
+
+
+def record_candidate_assessment(
+    ctx: RunContext, candidate_id: str, assessment: dict[str, str],
+) -> None:
+    """19장 MVP 3: score one candidate on the four items of 원본 32장.
+
+    Partial answers are allowed - a reviewer works through the items one at a
+    time, and refusing a partial answer would mean losing the ones they gave.
+    """
+    unknown = [key for key in assessment if key not in ASSESSMENT_ITEMS]
+    if unknown:
+        raise ValueError(
+            f"unknown assessment item(s) {unknown}; 원본 32장 names "
+            + ", ".join(ASSESSMENT_ITEMS)
+        )
+    bad = {k: v for k, v in assessment.items() if v not in ASSESSMENT_VERDICTS}
+    if bad:
+        raise ValueError(
+            f"assessment answers must be one of {', '.join(ASSESSMENT_VERDICTS)}; got {bad}"
+        )
+    ctx.store.set_human_assessment(candidate_id, assessment)
+
+
+def assessment_rates(ctx: RunContext) -> dict[str, Any]:
+    """The MVP 3 gate, item by item.
+
+    Reported separately per item because that is how 원본 32장 asks it. The
+    numbers are the reviewers' answers counted - nothing here decides whether
+    the gate passed; 19장 leaves that to the person reading it.
+    """
+    candidates = ctx.store.candidates(ctx.project.project_id)
+    answered = [c for c in candidates if c.human_assessment]
+    items: dict[str, Any] = {}
+    for item in ASSESSMENT_ITEMS:
+        given = [c.human_assessment.get(item) for c in answered]
+        given = [g for g in given if g in ASSESSMENT_VERDICTS]
+        judged = [g for g in given if g != "unclear"]
+        items[item] = {
+            "answered": len(given),
+            "unclear": len(given) - len(judged),
+            "yes": sum(1 for g in judged if g == "yes"),
+            "no": sum(1 for g in judged if g == "no"),
+            "rate": round(sum(1 for g in judged if g == "yes") / len(judged), 3) if judged else None,
+        }
+    return {
+        "candidates": len(candidates),
+        "assessed": len(answered),
+        "items": items,
+    }
+
+
 def candidate_review(ctx: RunContext) -> list[dict[str, Any]]:
     """The 15.4 screen: every candidate, the decision, and why."""
     return [
@@ -123,6 +191,9 @@ def candidate_review(ctx: RunContext) -> list[dict[str, Any]]:
             "has_resolution": c.has_resolution,
             "required_context": c.required_context,
             "human_verdict": c.human_verdict,
+            # 19장 MVP 3 asks four questions per candidate; the screen shows
+            # which of them this candidate has been answered on.
+            "human_assessment": c.human_assessment,
             "events": c.related_event_ids,
         }
         for c in ctx.store.candidates(ctx.project.project_id)

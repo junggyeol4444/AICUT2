@@ -120,7 +120,8 @@ CREATE TABLE IF NOT EXISTS tb_content_candidate (
     decision             TEXT NOT NULL DEFAULT 'hold',
     decision_reason      TEXT NOT NULL DEFAULT '',
     combine_with         TEXT NOT NULL DEFAULT '[]',
-    human_verdict        TEXT
+    human_verdict        TEXT,
+    human_assessment     TEXT NOT NULL DEFAULT '{}'
 );
 
 -- 7-10장: episodes and their timelines --------------------------------------

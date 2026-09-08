@@ -245,12 +245,33 @@ def cmd_status(args) -> int:
 
 def cmd_candidates(args) -> int:
     """15.4: the candidate review screen, with the reasoning behind each decision."""
+    if getattr(args, "assess_items", False):
+        print("원본 32장 / 19장 MVP 3 - each candidate is evaluated on these:")
+        for index, item in enumerate(review_mod.ASSESSMENT_ITEMS, start=1):
+            print(f"  {index}. {item}")
+        print("answers: " + ", ".join(review_mod.ASSESSMENT_VERDICTS))
+        return 0
     store = _store(args)
     project = store.get_project(args.project)
     if project is None:
         print(f"unknown project {args.project}", file=sys.stderr)
         return 1
     ctx = _context(args, project)
+    if args.assess:
+        try:
+            assessment = _parse_assessment(args.assess)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        if not args.candidate:
+            print("--assess needs --candidate: 원본 32장 evaluates each candidate,"
+                  " not the run", file=sys.stderr)
+            return 1
+        review_mod.record_candidate_assessment(ctx, args.candidate, assessment)
+        for item, answer in assessment.items():
+            print(f"recorded '{answer}' for {args.candidate[:8]} - {item}")
+        _print(review_mod.assessment_rates(ctx))
+        return 0
     if args.verdict:
         review_mod.record_candidate_verdict(ctx, args.candidate, args.verdict, args.note or "")
         print(f"recorded '{args.verdict}' for {args.candidate}")
@@ -283,7 +304,146 @@ def cmd_candidates(args) -> int:
             f" resolution={'yes' if row['has_resolution'] else 'no'}"
             + (f" human={row['human_verdict']}" if row["human_verdict"] else "")
         )
+        assessed = row.get("human_assessment") or {}
+        if assessed:
+            # Shown by index against the printed list, so four long sentences do
+            # not push the decision they belong to off the screen.
+            marks = " ".join(
+                f"{index}={assessed[item]}"
+                for index, item in enumerate(review_mod.ASSESSMENT_ITEMS, start=1)
+                if item in assessed
+            )
+            print(f"    항목별 평가: {marks}")
     _print(review_mod.agreement_rate(ctx))
+    # 19장 scores MVP 3 on the four items of 원본 32장, one at a time. An overall
+    # agreement rate cannot say which of the four is failing, so both are shown.
+    _print(review_mod.assessment_rates(ctx))
+    return 0
+
+
+def _parse_assessment(pairs: list[str]) -> dict[str, str]:
+    """Turn `--assess 2=no` into the item 원본 32장 names.
+
+    The items are long Korean sentences. Typing one exactly at a shell prompt is
+    a transcription test, so the index works too - but the index is only ever a
+    way to name the clause's item, never a different set.
+    """
+    items = review_mod.ASSESSMENT_ITEMS
+    out: dict[str, str] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise ValueError(f"--assess wants N=ANSWER, got {pair!r}")
+        key, _, answer = pair.partition("=")
+        key, answer = key.strip(), answer.strip()
+        if key.isdigit():
+            index = int(key)
+            if not 1 <= index <= len(items):
+                raise ValueError(
+                    f"--assess index must be 1-{len(items)}, got {index}"
+                    " (aicut candidates <project> --assess-items lists them)"
+                )
+            item = items[index - 1]
+        elif key in items:
+            item = key
+        else:
+            raise ValueError(
+                f"unknown assessment item {key!r};"
+                " see aicut candidates <project> --assess-items"
+            )
+        if answer not in review_mod.ASSESSMENT_VERDICTS:
+            raise ValueError(
+                f"answer must be one of {', '.join(review_mod.ASSESSMENT_VERDICTS)}, got {answer!r}"
+            )
+        out[item] = answer
+    return out
+
+
+def cmd_gate(args) -> int:
+    """19장's gates, measured on a real broadcast rather than assumed.
+
+    19장 says each MVP must pass its success criterion before the next one is
+    worth building, and MVP 2 names a 실측 항목 outright: 1차 통과 밀도별 사건
+    검출률과 처리 시간. Neither number exists unless something measures it.
+    """
+    from aicut.calibration import mvp2 as mvp2_mod
+    from aicut.pipeline import understanding
+    from aicut.pipeline.context import SignalBundle
+
+    store = _store(args)
+    project = store.get_project(args.project)
+    if project is None:
+        print(f"unknown project {args.project}", file=sys.stderr)
+        return 1
+
+    signals_path = Path(args.workspace) / project.project_id / "signals.json"
+    if not signals_path.exists():
+        # Re-decoding the source per density would make the timing a measurement
+        # of ffmpeg, not of the pass 19장 asks about.
+        print(
+            f"{args.project} has no cached signals at {signals_path}.\n"
+            "  aicut run <source> --no-render     reads the broadcast once and caches them",
+            file=sys.stderr,
+        )
+        return 1
+    if not store.utterances(project.project_id):
+        print(f"{args.project} has no stored utterances; the pass would read it as silent",
+              file=sys.stderr)
+        return 1
+
+    remembered: list = []
+    if args.remembered:
+        remembered = mvp2_mod.load_remembered(args.remembered)
+        print(f"{len(remembered)} 주요 사건 remembered by a person"
+              f" (±{args.tolerance:.0f}s)")
+    else:
+        # 19장's success criterion for MVP 2 is whether the events a person
+        # remembers are all caught. Without their list only half the 실측 항목
+        # can be measured, and saying so is better than reporting the half.
+        print("no remembered-events file: 처리 시간 will be measured, 사건 검출률 will not.")
+        print("  19장 MVP 2 - 사람이 기억하는 주요 사건을 누락 없이 잡아내는가")
+        print('  write them as [{"at_sec": 2450, "what": "..."}] and pass --remembered')
+
+    ctx = _context(args, project)
+    ctx.signals = SignalBundle.load(signals_path)
+    densities = [float(d) for d in args.density.split(",") if d.strip()]
+    print(f"\nsource {project.duration_sec / 60:.1f} min,"
+          f" densities {', '.join(f'{d:g}s' for d in densities)}")
+
+    rows = mvp2_mod.measure_densities(
+        ctx, densities,
+        understand=lambda c: understanding.run(c, sample_frames=args.frames),
+        remembered=remembered,
+        tolerance_sec=args.tolerance,
+    )
+
+    print(f"\n  {'pass1_window':>12}  {'events':>6}  {'seconds':>8}  {'xRT':>6}  검출률")
+    for row in rows:
+        data = row.as_dict()
+        rate = data.get("detection_rate")
+        found = f"{rate * 100:.0f}% ({data['found']}/{len(remembered)})" if rate is not None else "-"
+        factor = data["realtime_factor"] or 0.0
+        print(
+            f"  {data['pass1_window_sec']:>11g}s  {data['events']:>6}  {data['seconds']:>8.1f}"
+            f"  {factor:>5.1f}x  {found}"
+        )
+        for miss in data.get("missed", []):
+            print(f"      놓친 사건: {miss}")
+        widest = data.get("widest_match_ratio")
+        if widest is not None and widest >= 0.5:
+            # A rate of 100% earned by one event that spans the broadcast is
+            # not detection, and the rate alone cannot say so.
+            print(f"      주의: 가장 넓은 매칭 사건이 방송의 {widest * 100:.0f}%를 덮는다."
+                  " 검출률이 높은 이유가 이것일 수 있다")
+
+    out = Path(args.workspace) / project.project_id / "mvp2_density.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        json.dumps([r.as_dict() for r in rows], indent=2, ensure_ascii=False), encoding="utf-8",
+    )
+    print(f"\nwritten to {out}")
+    # 19장 leaves the pass/fail to a person: it says the criterion, not a number
+    # that meets it. Printing a verdict here would invent one.
+    print("19장 leaves the verdict to you: 사람이 기억하는 주요 사건을 누락 없이 잡아내는가.")
     return 0
 
 
@@ -1235,6 +1395,13 @@ def cmd_doctor(args) -> int:
     return 0
 
 
+def mvp2_module():
+    """Imported lazily so `aicut --help` does not pay for the calibration package."""
+    from aicut.calibration import mvp2
+
+    return mvp2
+
+
 def _importable(name: str) -> bool:
     from importlib import util
 
@@ -1321,7 +1488,27 @@ def build_parser() -> argparse.ArgumentParser:
     candidates.add_argument("--candidate")
     candidates.add_argument("--verdict", choices=["agree", "disagree"])
     candidates.add_argument("--note")
+    candidates.add_argument(
+        "--assess", action="append", metavar="N=ANSWER",
+        help="19장 MVP 3 항목별 평가 on --candidate. N is 1-4 (or the item's own "
+             "words), ANSWER is yes, no or unclear. Repeatable",
+    )
+    candidates.add_argument("--assess-items", action="store_true",
+                            help="print the four items 원본 32장 evaluates and stop")
     candidates.set_defaults(func=cmd_candidates)
+
+    gate = _sub("gate", help="measure a 19장 MVP gate on a processed project")
+    gate.add_argument("project")
+    gate.add_argument("--density", default="60,120,240", metavar="SEC,SEC",
+                      help="scan.pass1_window_sec values to measure (19장 MVP 2 실측 항목)")
+    gate.add_argument("--remembered", metavar="JSON",
+                      help="the 주요 사건 a person remembers, for the 검출률 half")
+    gate.add_argument("--tolerance", type=float,
+                      default=mvp2_module().DEFAULT_TOLERANCE_SEC, metavar="SEC",
+                      help="how far a detected event may sit from the remembered moment")
+    gate.add_argument("--frames", action="store_true",
+                      help="sample frames for the pass (5.2 reads 화면 and 소리 together)")
+    gate.set_defaults(func=cmd_gate)
 
     plan = _sub("plan", help="print an edit plan in human form")
     plan.add_argument("plan")

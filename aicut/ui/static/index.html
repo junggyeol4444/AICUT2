@@ -146,6 +146,8 @@
         <button class="small" id="cand-load">불러오기</button>
       </div>
       <div class="muted" id="agreement" style="margin-top:10px"></div>
+      <!-- 19장 MVP 3 관문: 네 항목이 각각 어디까지 왔는지. -->
+      <div class="muted" id="assessment" style="margin-top:4px"></div>
     </div>
     <div id="cand-list"></div>
   </section>
@@ -295,11 +297,28 @@ function reportSummary(r) {
     ${r.warning ? `<div class="warn">${esc(r.warning)}</div>` : ""}`;
 }
 
+// 19장 MVP 3은 항목별로 채점된다. 항목마다 몇 건 답했고 그 중 몇 %가 yes인지
+// 그대로 적는다 - 통과 여부는 19장이 사람에게 맡긴 판단이라 여기서 정하지 않는다.
+const describeAssessment = (a, items) => {
+  if (!a || !a.assessed) return items.length
+    ? `항목별 평가 0/${a ? a.candidates : 0}건 — 19장 MVP 3 관문은 아직 측정되지 않았다`
+    : "";
+  return `항목별 평가 ${a.assessed}/${a.candidates}건 · ` + items.map((item, i) => {
+    const row = a.items[item] || {};
+    return row.rate == null
+      ? `${i + 1} 미답`
+      : `${i + 1} ${(row.rate * 100).toFixed(0)}% (${row.answered}건${row.unclear ? `, 판단보류 ${row.unclear}` : ""})`;
+  }).join(" · ");
+};
+
 el("cand-load").onclick = async () => {
   const pid = el("cand-project").value;
   if (!pid) return;
   const data = await api(`/api/projects/${pid}/candidates`);
   const a = data.agreement;
+  const items = data.assessment_items || [];
+  const verdicts = data.assessment_verdicts || [];
+  el("assessment").textContent = describeAssessment(data.assessment, items);
   el("agreement").textContent = a.reviewed
     ? `검토 ${a.reviewed}건 · 동의율 ${(a.agreement * 100).toFixed(0)}% · 오탐율 ${(a.false_positive_rate * 100).toFixed(0)}%`
     : "아직 사람의 판단이 입력되지 않았다 — 동의/반대는 12.3 B 학습 데이터가 된다";
@@ -334,9 +353,26 @@ el("cand-load").onclick = async () => {
         <button class="small" data-v="disagree" data-c="${esc(c.candidate_id)}">반대</button>
         <span class="muted">${c.human_verdict ? esc(c.human_verdict) : ""}</span>
       </div>
+      <!-- 19장 MVP 3 / 원본 32장: 후보 하나를 네 항목으로 평가한다. 동의/반대
+           하나로는 어느 항목이 틀렸는지 알 수 없다. -->
+      <table class="summary" style="margin-top:8px">
+        ${items.map((item, i) => `<tr><th>${esc(item)}</th><td>${
+            verdicts.map((v) => `<button class="small" data-item="${i}" data-a="${esc(v)}"
+              data-c="${esc(c.candidate_id)}"${
+              (c.human_assessment || {})[item] === v ? ' aria-pressed="true"' : ""
+            }>${esc(v)}</button>`).join(" ")
+          }</td></tr>`).join("")}
+      </table>
     </div>`).join("") || `<div class="card muted">후보가 없다. 이 방송에는 만들 것이 없다는 판단일 수 있다 (정상).</div>`;
   el("cand-list").querySelectorAll("button[data-v]").forEach((b) => b.onclick = async () => {
     await post(`/api/projects/${pid}/candidates`, { candidate_id: b.dataset.c, verdict: b.dataset.v });
+    el("cand-load").click();
+  });
+  el("cand-list").querySelectorAll("button[data-item]").forEach((b) => b.onclick = async () => {
+    await post(`/api/projects/${pid}/candidates`, {
+      candidate_id: b.dataset.c,
+      assessment: { [items[Number(b.dataset.item)]]: b.dataset.a },
+    });
     el("cand-load").click();
   });
 };

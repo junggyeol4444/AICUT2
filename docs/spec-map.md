@@ -169,12 +169,32 @@
 
 - 후보 화면은 AI의 결정과 **판단 근거**를 함께 띄우고, 동의/반대를 받아
   `TB_CONTENT_CANDIDATE.human_verdict`에 적재한다 (12.3 B 학습 데이터).
+  같은 화면에서 원본 32장의 네 항목도 후보마다 받는다
+  (`human_assessment`) — 동의/반대 하나로는 네 항목 중 어느 것이 틀렸는지
+  알 수 없기 때문이다. 19장 MVP 3이 채점하는 것이 그 네 항목이다.
 - 검수 API는 검수자 이름 없이는 승인을 거부한다 (11.3 — 누가 공개를 허락했는지 기록).
 - 미측정 파라미터 경고를 모든 화면 상단에 띄운다 (17.5).
 - 전달 방식은 로컬 HTTP 서버 + 정적 페이지다. 20.1이 적은 데스크톱 래퍼는
   `aicut/desktop.py`가 이 서버를 감싸는 방식으로 붙어 있다 — 실행 파일 하나를
   더블클릭하면 서버가 뜨고 브라우저가 열린다. PyInstaller 스펙은 `aicut.spec`,
   세 플랫폼에서 실제로 빌드·실행하는 것은 CI의 `desktop` 잡이다.
+
+## 19장 — MVP 관문
+
+19장은 각 MVP의 성공 기준을 통과해야 다음으로 넘어간다고 못박고, MVP 2에는
+실측 항목까지 이름을 붙였다. 관문은 재는 것이 있어야 관문이다.
+
+| 관문 | 기준 | 어디 | 상태 |
+|---|---|---|---|
+| MVP 1 | 분석 결과가 실제 제작 의도와 일치하는 비율 | `intelligence/reference.py` | 사람의 판정 입력 경로 없음 |
+| MVP 2 | 사람이 기억하는 주요 사건을 누락 없이 잡는가 / **실측**: 1차 통과 밀도별 사건 검출률과 처리 시간 | `calibration/mvp2.py`, `aicut gate <project> --density --remembered` | 실측 명령 있음. 실제 방송에서 측정하는 것은 운영자 몫 |
+| MVP 3 | 항목별 평가 4개 (원본 32장) | `pipeline/review.py: ASSESSMENT_ITEMS`, `aicut candidates --assess`, UI 15.4 화면 | 입력·집계 있음. 통과 판정은 사람 |
+| MVP 4 | 원본↔완성본 매핑 (= 17.2 데이터셋) | `intelligence/source_output.py`, `aicut learn pairs` | 데이터셋 필요 |
+| MVP 5 | 편집 계획만 읽고 결과물을 예상할 수 있는가 | `render/editplan.py: describe()`, `aicut plan` | 사람이 읽는 것으로 검증 |
+| MVP 6~9 | 10장 / 11장 / 11.4 / 12.2 | `render/`, `pipeline/packaging.py`, `publishing.py`, `performance.py` | 코드 있음, 관문 측정 없음 |
+
+통과 여부는 어느 쪽도 코드가 정하지 않는다. 19장이 사람에게 맡긴 판단이고,
+숫자를 만들어 통과라고 적는 것은 그 판단을 지어내는 것이다.
 
 ## 20.1 / 22 — 프로그램과 편집기
 

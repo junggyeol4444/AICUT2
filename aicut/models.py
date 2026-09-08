@@ -181,6 +181,10 @@ class ContentCandidate:
     decision_reason: str = ""
     combine_with: list[str] = field(default_factory=list)
     human_verdict: str | None = None       # 15.4 agree / disagree, feeds 12.3 B
+    # 19장 MVP 3 / 원본 32장 scores each candidate on four named items, not on
+    # one agree/disagree. Keys are the items themselves; see
+    # aicut.pipeline.review.ASSESSMENT_ITEMS.
+    human_assessment: dict[str, str] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------

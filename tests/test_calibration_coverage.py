@@ -245,3 +245,123 @@ class UnreachedThresholdTests(unittest.TestCase):
         source = inspect.getsource(understanding._note_unreached_thresholds)
         self.assertNotIn("with_overrides", source)
         self.assertIn("does not adjust the value", source)
+
+
+class Mvp2DensityGateTests(unittest.TestCase):
+    """19장 MVP 2 실측 항목: 1차 통과 밀도별 사건 검출률과 처리 시간."""
+
+    def _remembered(self):
+        from aicut.calibration.mvp2 import RememberedEvent
+
+        return [
+            RememberedEvent(at_sec=100.0, what="싸움이 시작된다"),
+            RememberedEvent(at_sec=900.0, what="화해한다"),
+        ]
+
+    def _event(self, event_id, start, end, summary="…"):
+        class _E:
+            def __init__(self):
+                self.event_id = event_id
+                self.summary = summary
+
+            def span(self):
+                return (start, end)
+
+        return _E()
+
+    def test_a_remembered_event_with_no_detected_event_near_it_is_missed(self):
+        from aicut.calibration.mvp2 import coverage
+
+        result = coverage(
+            [self._event("e1", 60.0, 150.0)], self._remembered(), tolerance_sec=90.0,
+        )
+
+        self.assertEqual(len(result.found), 1)
+        self.assertEqual(len(result.missed), 1)
+        self.assertEqual(result.missed[0]["what"], "화해한다")
+        self.assertEqual(result.rate, 0.5)
+
+    def test_tolerance_is_what_decides_a_near_miss(self):
+        """A person recalling a six-hour broadcast does not give frame numbers."""
+        from aicut.calibration.mvp2 import coverage
+
+        detected = [self._event("e1", 200.0, 260.0)]
+        remembered = [self._remembered()[0]]          # at 100s
+
+        self.assertEqual(coverage(detected, remembered, tolerance_sec=30.0).rate, 0.0)
+        self.assertEqual(coverage(detected, remembered, tolerance_sec=120.0).rate, 1.0)
+
+    def test_a_perfect_rate_earned_by_one_huge_event_is_visible(self):
+        """One event spanning the broadcast matches everything a person wrote
+        down while having detected nothing. The rate cannot say that."""
+        from aicut.calibration.mvp2 import DensityMeasurement, coverage
+
+        measurement = DensityMeasurement(
+            pass1_window_sec=120.0, events=1, seconds=4.0, realtime_factor=250.0,
+            coverage=coverage([self._event("e1", 0.0, 1000.0)], self._remembered()),
+            duration_sec=1000.0,
+        )
+
+        self.assertEqual(measurement.coverage.rate, 1.0)
+        self.assertEqual(measurement.as_dict()["widest_match_ratio"], 1.0)
+
+    def test_the_measurement_does_not_destroy_the_project_it_measures(self):
+        """`understanding.run` is a production stage: it replaces the project's
+        windows and events. Measuring must not cost the analysis."""
+        import tempfile
+        from pathlib import Path
+
+        from aicut.calibration.mvp2 import measure_densities
+        from aicut.config import CalibrationProfile
+        from aicut.db.store import Store
+        from aicut.llm import get_producer
+        from aicut.models import Event, EventMention, Project
+        from aicut.pipeline.context import RunContext
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            store = Store(str(Path(tmp) / "aicut.db"))
+            project = store.create_project(Project(
+                project_id="p1", file_path="/nowhere.mkv", duration_sec=1200.0,
+            ))
+            store.replace_events(project.project_id, [Event(
+                event_id="kept", project_id=project.project_id, summary="the real one",
+                mentions=[EventMention(event_id="kept", source_start_sec=10.0,
+                                       source_end_sec=20.0)],
+            )])
+            ctx = RunContext(project=project, store=store, profile=CalibrationProfile.load(),
+                             producer=get_producer("mock"), workspace=Path(tmp))
+
+            def wipe(context):
+                context.store.replace_events(context.project.project_id, [])
+
+            rows = measure_densities(ctx, [60.0, 120.0], understand=wipe)
+
+            self.assertEqual([r.events for r in rows], [0, 0])
+            surviving = store.events(project.project_id)
+            self.assertEqual([e.event_id for e in surviving], ["kept"])
+            self.assertIs(ctx.store, store)
+            store.close()
+
+    def test_a_remembered_file_without_at_sec_says_what_the_file_should_be(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from aicut.calibration.mvp2 import load_remembered
+        from aicut.errors import AicutError
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            path = Path(tmp) / "remembered.json"
+            path.write_text(json.dumps([{"what": "무슨 일"}]), encoding="utf-8")
+            with self.assertRaises(AicutError):
+                load_remembered(path)
+
+            path.write_text(json.dumps([]), encoding="utf-8")
+            with self.assertRaises(AicutError):
+                load_remembered(path)
+
+            path.write_text(
+                json.dumps([{"at_sec": 90, "what": "b"}, {"at_sec": 10, "what": "a"}]),
+                encoding="utf-8",
+            )
+            self.assertEqual([e.what for e in load_remembered(path)], ["a", "b"])

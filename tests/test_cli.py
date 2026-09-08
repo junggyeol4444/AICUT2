@@ -388,3 +388,29 @@ class WhisperXOptionsTests(unittest.TestCase):
             compute_type="int8", language=None, hf_token=None, no_diarize=True,
         )
         self.assertEqual(_transcriber(args).compute_type, "int8")
+
+
+class AssessmentArgumentTests(unittest.TestCase):
+    """19장 MVP 3's four items are long Korean sentences; the shell needs a
+    shorter way to name one that is still the same item."""
+
+    def test_an_index_names_the_clause_s_item(self):
+        from aicut.cli import _parse_assessment
+        from aicut.pipeline.review import ASSESSMENT_ITEMS
+
+        self.assertEqual(_parse_assessment(["1=yes", "4=no"]),
+                         {ASSESSMENT_ITEMS[0]: "yes", ASSESSMENT_ITEMS[3]: "no"})
+
+    def test_the_item_can_also_be_written_out(self):
+        from aicut.cli import _parse_assessment
+        from aicut.pipeline.review import ASSESSMENT_ITEMS
+
+        self.assertEqual(_parse_assessment([f"{ASSESSMENT_ITEMS[2]}=unclear"]),
+                         {ASSESSMENT_ITEMS[2]: "unclear"})
+
+    def test_a_bad_index_or_answer_is_refused_with_what_to_type(self):
+        from aicut.cli import _parse_assessment
+
+        for bad in (["5=yes"], ["0=yes"], ["1=maybe"], ["1"], ["없는항목=yes"]):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                _parse_assessment(bad)

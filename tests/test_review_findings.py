@@ -423,3 +423,40 @@ class ProjectCompletionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AssessmentColumnMigrationTests(unittest.TestCase):
+    """A workspace that already ran a broadcast must not break on the next one.
+
+    CREATE TABLE IF NOT EXISTS leaves an older database on its old shape, so the
+    column 19장 MVP 3 needs has to be added to a database that predates it.
+    """
+
+    def test_an_older_database_gains_the_column(self):
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+
+        from aicut.db.store import Store
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            path = Path(tmp) / "old.db"
+            fresh = Store(str(path))
+            fresh.close()
+            conn = sqlite3.connect(path)
+            # Drop back to the pre-19장 shape.
+            conn.execute("ALTER TABLE tb_content_candidate DROP COLUMN human_assessment")
+            conn.commit()
+            present = {r[1] for r in conn.execute("PRAGMA table_info(tb_content_candidate)")}
+            conn.close()
+            self.assertNotIn("human_assessment", present)
+
+            reopened = Store(str(path))
+            try:
+                columns = {
+                    r["name"] for r in
+                    reopened.conn.execute("PRAGMA table_info(tb_content_candidate)")
+                }
+            finally:
+                reopened.close()
+            self.assertIn("human_assessment", columns)

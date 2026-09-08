@@ -400,6 +400,11 @@ class UiServer:
         return {
             "candidates": review_mod.candidate_review(ctx),
             "agreement": review_mod.agreement_rate(ctx),
+            # 19장 MVP 3 is scored on the four items of 원본 32장, so the screen
+            # that collects them also shows where they stand.
+            "assessment_items": list(review_mod.ASSESSMENT_ITEMS),
+            "assessment_verdicts": list(review_mod.ASSESSMENT_VERDICTS),
+            "assessment": review_mod.assessment_rates(ctx),
             "events": [
                 {"event_id": e.event_id, "summary": e.summary, "span": list(e.span()),
                  "mentions": len(e.mentions), "people": e.people}
@@ -409,10 +414,21 @@ class UiServer:
 
     def verdict(self, project_id: str, body: dict[str, Any]) -> dict[str, Any]:
         ctx = self.context(project_id)
-        review_mod.record_candidate_verdict(
-            ctx, body["candidate_id"], body["verdict"], body.get("note", "") or ""
-        )
-        return {"agreement": review_mod.agreement_rate(ctx)}
+        # A request may carry the 15.4 agree/disagree, the four 원본 32장 answers,
+        # or both - the reviewer works through one candidate, not two screens.
+        if body.get("verdict"):
+            review_mod.record_candidate_verdict(
+                ctx, body["candidate_id"], body["verdict"], body.get("note", "") or ""
+            )
+        assessment = body.get("assessment") or {}
+        if assessment:
+            review_mod.record_candidate_assessment(ctx, body["candidate_id"], assessment)
+        if not body.get("verdict") and not assessment:
+            raise ValueError("a candidate review needs a verdict or an assessment")
+        return {
+            "agreement": review_mod.agreement_rate(ctx),
+            "assessment": review_mod.assessment_rates(ctx),
+        }
 
     # ---- 15.5 results ------------------------------------------------------
     def episodes(self, project_id: str) -> list[dict[str, Any]]:

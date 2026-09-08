@@ -90,6 +90,7 @@ class Store:
         ("tb_content_candidate", "outcome", "TEXT NOT NULL DEFAULT ''"),
         ("tb_content_candidate", "event_relations", "TEXT NOT NULL DEFAULT '[]'"),
         ("tb_content_candidate", "suggested_form", "TEXT NOT NULL DEFAULT ''"),
+        ("tb_content_candidate", "human_assessment", "TEXT NOT NULL DEFAULT '{}'"),
     )
 
     def _add_missing_columns(self) -> None:
@@ -361,6 +362,7 @@ class Store:
                 density_score=r["density_score"], has_resolution=bool(r["has_resolution"]),
                 decision=Decision(r["decision"]), decision_reason=r["decision_reason"],
                 combine_with=_u(r["combine_with"], []), human_verdict=r["human_verdict"],
+                human_assessment=_u(r["human_assessment"], {}),
             )
             for r in self.conn.execute(
                 "SELECT * FROM tb_content_candidate WHERE project_id=? ORDER BY independence_score DESC", (project_id,)
@@ -370,6 +372,26 @@ class Store:
     def set_human_verdict(self, candidate_id: str, verdict: str) -> None:
         self.conn.execute(
             "UPDATE tb_content_candidate SET human_verdict=? WHERE candidate_id=?", (verdict, candidate_id)
+        )
+        self.conn.commit()
+
+    def set_human_assessment(self, candidate_id: str, assessment: dict[str, str]) -> None:
+        """19장 MVP 3 / 원본 32장: the four per-item verdicts on one candidate.
+
+        Merged, not replaced: a reviewer answers one item at a time, and the
+        upsert that discovery runs does not touch this column, so an answer
+        given before a re-run survives it.
+        """
+        row = self.conn.execute(
+            "SELECT human_assessment FROM tb_content_candidate WHERE candidate_id=?", (candidate_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown candidate {candidate_id}")
+        merged = dict(_u(row["human_assessment"], {}))
+        merged.update(assessment)
+        self.conn.execute(
+            "UPDATE tb_content_candidate SET human_assessment=? WHERE candidate_id=?",
+            (_j(merged), candidate_id),
         )
         self.conn.commit()
 

@@ -505,3 +505,110 @@ class FramesReachTheJudgementTests(unittest.TestCase):
         producer.summarize_window({"window": {"start_sec": 0, "end_sec": 5}, "utterances": []},
                                   images=["a.jpg", "b.jpg"])
         self.assertEqual(producer.seen_images["summarize_window"], ["a.jpg", "b.jpg"])
+
+
+class Mvp3AssessmentTests(PipelineHarness):
+    """19장 MVP 3 / 원본 32장: each candidate is evaluated on four named items.
+
+    One agree/disagree cannot say which of the four failed, and 19장 makes MVP 3
+    the project's first gate - so the four are recorded and reported apart.
+    """
+
+    def test_the_four_items_are_the_clause_s_own_words(self):
+        from aicut.pipeline import review
+
+        self.assertEqual(review.ASSESSMENT_ITEMS, (
+            "관련 장면을 제대로 찾는가",
+            "서로 다른 시간대의 장면을 연결하는가",
+            "사건의 시작과 결과를 이해하는가",
+            "불필요한 장면을 제외하는가",
+        ))
+
+    def test_each_item_is_scored_and_reported_separately(self):
+        from aicut.pipeline import review
+
+        ctx = self.seed()
+        self.pipeline.run(ctx.project, context=ctx, render=False)
+        candidates = self.store.candidates(ctx.project.project_id)
+        self.assertTrue(candidates)
+        finds, connects = review.ASSESSMENT_ITEMS[0], review.ASSESSMENT_ITEMS[1]
+
+        review.record_candidate_assessment(
+            ctx, candidates[0].candidate_id, {finds: "yes", connects: "no"},
+        )
+        rates = review.assessment_rates(ctx)
+
+        self.assertEqual(rates["assessed"], 1)
+        self.assertEqual(rates["items"][finds]["rate"], 1.0)
+        self.assertEqual(rates["items"][connects]["rate"], 0.0)
+        # An item nobody answered is not a zero. Scoring it as failure would
+        # make an unmeasured gate look like a failed one.
+        self.assertIsNone(rates["items"][review.ASSESSMENT_ITEMS[2]]["rate"])
+
+    def test_an_answer_survives_answering_a_second_item(self):
+        from aicut.pipeline import review
+
+        ctx = self.seed()
+        self.pipeline.run(ctx.project, context=ctx, render=False)
+        candidate = self.store.candidates(ctx.project.project_id)[0]
+        first, second = review.ASSESSMENT_ITEMS[0], review.ASSESSMENT_ITEMS[3]
+
+        review.record_candidate_assessment(ctx, candidate.candidate_id, {first: "yes"})
+        review.record_candidate_assessment(ctx, candidate.candidate_id, {second: "no"})
+
+        stored = {c.candidate_id: c for c in self.store.candidates(ctx.project.project_id)}
+        self.assertEqual(stored[candidate.candidate_id].human_assessment,
+                         {first: "yes", second: "no"})
+
+    def test_unclear_is_not_counted_as_either_answer(self):
+        from aicut.pipeline import review
+
+        ctx = self.seed()
+        self.pipeline.run(ctx.project, context=ctx, render=False)
+        candidate = self.store.candidates(ctx.project.project_id)[0]
+        item = review.ASSESSMENT_ITEMS[0]
+
+        review.record_candidate_assessment(ctx, candidate.candidate_id, {item: "unclear"})
+        row = review.assessment_rates(ctx)["items"][item]
+
+        self.assertEqual(row["answered"], 1)
+        self.assertEqual(row["unclear"], 1)
+        self.assertEqual((row["yes"], row["no"]), (0, 0))
+        self.assertIsNone(row["rate"])
+
+    def test_an_item_outside_the_clause_is_refused(self):
+        from aicut.pipeline import review
+
+        ctx = self.seed()
+        self.pipeline.run(ctx.project, context=ctx, render=False)
+        candidate = self.store.candidates(ctx.project.project_id)[0]
+
+        with self.assertRaises(ValueError):
+            review.record_candidate_assessment(
+                ctx, candidate.candidate_id, {"재미있는가": "yes"},
+            )
+        with self.assertRaises(ValueError):
+            review.record_candidate_assessment(
+                ctx, candidate.candidate_id, {review.ASSESSMENT_ITEMS[0]: "8"},
+            )
+
+    def test_the_verdict_and_the_four_items_are_kept_apart(self):
+        """15.4's agree/disagree is a different question from 원본 32장's four."""
+        from aicut.pipeline import review
+
+        ctx = self.seed()
+        self.pipeline.run(ctx.project, context=ctx, render=False)
+        candidate = self.store.candidates(ctx.project.project_id)[0]
+
+        review.record_candidate_verdict(ctx, candidate.candidate_id, "agree")
+        review.record_candidate_assessment(
+            ctx, candidate.candidate_id, {review.ASSESSMENT_ITEMS[1]: "no"},
+        )
+
+        stored = self.store.candidates(ctx.project.project_id)[0]
+        self.assertEqual(stored.human_verdict, "agree")
+        self.assertEqual(stored.human_assessment, {review.ASSESSMENT_ITEMS[1]: "no"})
+        self.assertEqual(review.agreement_rate(ctx)["agreement"], 1.0)
+        self.assertEqual(
+            review.assessment_rates(ctx)["items"][review.ASSESSMENT_ITEMS[1]]["rate"], 0.0,
+        )
