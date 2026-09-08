@@ -20,7 +20,7 @@ from __future__ import annotations
 import dataclasses
 
 import logging
-from typing import Sequence
+from typing import Any, Sequence
 
 from aicut.analysis.pacing import PacingJudge, build_silence_contexts, trim_target
 from aicut.models import (
@@ -165,10 +165,60 @@ def plan_episode(
     episode.planned_duration_sec = timeline.duration
     _note_length_deviation(ctx, episode, structure)
     _note_implausible_plan(ctx, episode)
+    _note_stitching(ctx, episode, index, group_events)
 
     ctx.store.save_episode(episode)
     _write_plan(ctx, episode)
     return episode
+
+
+def _note_stitching(
+    ctx: RunContext, episode: Episode, index: SceneIndex, group_events: list[Event],
+) -> None:
+    """6.2: is this one event, or is it 짜깁기?
+
+    "하나의 영상은 하나의 사건으로 완결되어야 한다 ... 토크 -> 게임 -> 토크 ->
+    게임으로 오가는 결과물을 만들지 않는다. 이것이 1.2에서 지적한 짜깁기다."
+
+    Retrieval scores the episode's own events higher (+1.0) but does not filter
+    on them, so a scene from an unrelated hour of the broadcast can win on text
+    alone and become a cut. 6.2 allows the screen situation to change inside one
+    content - explicitly - as long as the event flow needs it; what it forbids
+    is 맥락 없이 화면만 오가는 구성. So the thing to report is not that the
+    situation changed, it is a cut that carries none of this episode's events.
+
+    Reported, not removed. Which cut belongs to the content is 8.1's judgement
+    and the scene was chosen by it; this says when the result stopped being one
+    event so a person can look (2.6, 15.4).
+    """
+    wanted = {e.event_id for e in group_events}
+    if not wanted or not index.scenes:
+        return
+    adrift: list[dict[str, Any]] = []
+    for cut in episode.timeline:
+        overlapping = [
+            scene for scene in index.scenes
+            if scene.end_sec > cut.source_start_sec and scene.start_sec < cut.source_end_sec
+        ]
+        if overlapping and not any(set(s.event_ids) & wanted for s in overlapping):
+            adrift.append({
+                "sequence_order": cut.sequence_order,
+                "role": cut.scene_role,
+                "span": [round(cut.source_start_sec, 2), round(cut.source_end_sec, 2)],
+            })
+    if not adrift:
+        return
+    ctx.report.setdefault("cuts_off_event", []).append({
+        "episode_id": episode.episode_id,
+        "cuts": len(episode.timeline),
+        "off_event": adrift,
+        "detail": (
+            f"{len(adrift)} of {len(episode.timeline)} cuts sit on material carrying"
+            f" none of this episode's {len(wanted)} event(s). 6.2 asks for one video"
+            " to be one event; retrieval prefers the episode's events but does not"
+            " require them, so a scene can win on wording alone"
+        ),
+    })
 
 
 def _note_unfilled_beat(

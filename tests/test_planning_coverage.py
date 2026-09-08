@@ -311,3 +311,100 @@ class DroppedBeatsAreReportedTests(unittest.TestCase):
         entry = ctx.report["episodes_not_produced"][0]
         self.assertEqual(entry["candidate_ids"], ["c9"])
         self.assertIn("resolve", entry["detail"])
+
+
+class StitchedEpisodeIsReportedTests(unittest.TestCase):
+    """6.2: 하나의 영상은 하나의 사건으로 완결되어야 한다.
+
+    Retrieval scores the episode's own events higher but does not require them,
+    so a scene from an unrelated hour can win on wording alone and become a cut.
+    That is the 짜깁기 1.2 names, and nothing measured it on the result.
+    """
+
+    def _scene(self, start, end, events, text="말"):
+        from aicut.pipeline.retrieval import Scene
+
+        return Scene(start_sec=start, end_sec=end, text=text, speaker="A",
+                     event_ids=list(events))
+
+    def _episode(self, spans):
+        from aicut.models import Cut, Episode
+
+        episode = Episode(episode_id="ep1", project_id="p1")
+        episode.timeline = [
+            Cut(sequence_order=i, source_start_sec=a, source_end_sec=b,
+                scene_role="core")
+            for i, (a, b) in enumerate(spans)
+        ]
+        return episode
+
+    def _report(self, episode, scenes, event_ids):
+        import tempfile
+        from pathlib import Path
+
+        from aicut.config import CalibrationProfile
+        from aicut.db.store import Store
+        from aicut.llm import get_producer
+        from aicut.models import Event, Project
+        from aicut.pipeline.context import RunContext
+        from aicut.pipeline.planning import _note_stitching
+        from aicut.pipeline.retrieval import SceneIndex
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            store = Store(str(Path(tmp) / "aicut.db"))
+            project = store.create_project(Project(
+                project_id="p1", file_path="/nowhere.mkv", duration_sec=9000.0))
+            ctx = RunContext(project=project, store=store,
+                             profile=CalibrationProfile.load(),
+                             producer=get_producer("mock"), workspace=Path(tmp))
+            try:
+                _note_stitching(ctx, episode, SceneIndex(scenes),
+                                [Event(event_id=e, project_id="p1") for e in event_ids])
+            finally:
+                store.close()
+        return ctx.report
+
+    def test_an_episode_whose_cuts_all_carry_its_events_reports_nothing(self):
+        episode = self._episode([(10.0, 20.0), (400.0, 410.0)])
+        scenes = [self._scene(10.0, 20.0, ["e1"]), self._scene(400.0, 410.0, ["e1"])]
+
+        self.assertNotIn("cuts_off_event", self._report(episode, scenes, ["e1"]))
+
+    def test_a_cut_from_an_unrelated_event_is_named_with_its_span(self):
+        episode = self._episode([(10.0, 20.0), (5000.0, 5010.0)])
+        scenes = [self._scene(10.0, 20.0, ["e1"]),
+                  self._scene(5000.0, 5010.0, ["e9"])]
+
+        entry = self._report(episode, scenes, ["e1"])["cuts_off_event"][0]
+
+        self.assertEqual(entry["cuts"], 2)
+        self.assertEqual(len(entry["off_event"]), 1)
+        self.assertEqual(entry["off_event"][0]["span"], [5000.0, 5010.0])
+        self.assertIn("6.2", entry["detail"])
+
+    def test_a_screen_change_inside_one_event_is_not_stitching(self):
+        """6.2 allows the situation to change inside one content, explicitly.
+        What it forbids is 맥락 없이 화면만 오가는 구성 - a different thing."""
+        episode = self._episode([(10.0, 20.0), (3000.0, 3010.0), (30.0, 40.0)])
+        scenes = [self._scene(10.0, 20.0, ["e1"]),
+                  self._scene(3000.0, 3010.0, ["e1"]),
+                  self._scene(30.0, 40.0, ["e1"])]
+
+        self.assertNotIn("cuts_off_event", self._report(episode, scenes, ["e1"]))
+
+    def test_a_cut_no_scene_covers_is_not_counted_as_off_event(self):
+        """Absence of a scene is not evidence the cut is off-event; a gap in
+        the index would otherwise read as 짜깁기."""
+        episode = self._episode([(10.0, 20.0), (8000.0, 8010.0)])
+        scenes = [self._scene(10.0, 20.0, ["e1"])]
+
+        self.assertNotIn("cuts_off_event", self._report(episode, scenes, ["e1"]))
+
+    def test_it_reports_and_never_removes_the_cut(self):
+        """8.1 chose the scene. This says the result stopped being one event."""
+        episode = self._episode([(10.0, 20.0), (5000.0, 5010.0)])
+        scenes = [self._scene(10.0, 20.0, ["e1"]), self._scene(5000.0, 5010.0, ["e9"])]
+
+        self._report(episode, scenes, ["e1"])
+
+        self.assertEqual(len(episode.timeline), 2)

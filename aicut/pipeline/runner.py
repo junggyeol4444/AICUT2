@@ -359,6 +359,9 @@ def build_report(ctx: RunContext, state: State, episodes: list[Episode]) -> dict
         # candidate that was decided PRODUCE and then found no scene at all.
         "beats_unfilled": ctx.report.get("beats_unfilled", []),
         "episodes_not_produced": ctx.report.get("episodes_not_produced", []),
+        # 6.2: cuts in a finished episode that carry none of its own events -
+        # the 짜깁기 1.2 names, measured on the result rather than assumed away.
+        "cuts_off_event": ctx.report.get("cuts_off_event", []),
         # Which of 12.1's nine a performance collection did not get. Empty on a
         # normal run - loop C is its own command - but the field exists so a
         # report never silently omits it.
@@ -389,6 +392,11 @@ def build_report(ctx: RunContext, state: State, episodes: list[Episode]) -> dict
                 "a candidate decided PRODUCE found no scene and was not made - "
                 "see episodes_not_produced"
                 if ctx.report.get("episodes_not_produced") else ""
+            ),
+            (
+                "an episode contains cuts carrying none of its own events, which "
+                "is the 짜깁기 6.2 forbids - see cuts_off_event"
+                if ctx.report.get("cuts_off_event") else ""
             ),
         ) if part),
     }

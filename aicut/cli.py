@@ -140,6 +140,11 @@ def _print_report_warnings(report: dict) -> None:
         print(f"      {entry['note']}")
     for entry in report.get("episodes_not_produced", []):
         print(f"\n  NOT PRODUCED ({entry['episode_id'][:8]}): {entry['detail']}")
+    for entry in report.get("cuts_off_event", []):
+        print(f"\n  OFF-EVENT (6.2) for {entry['episode_id'][:8]}: {entry['detail']}")
+        for cut in entry["off_event"][:6]:
+            print(f"      #{cut['sequence_order']} {cut['role'] or '?'}"
+                  f" {cut['span'][0]:.0f}-{cut['span'][1]:.0f}s")
     for entry in report.get("beats_unfilled", []):
         print(
             f"\n  BEAT DROPPED ({entry['episode_id'][:8]} #{entry['beat']}"
