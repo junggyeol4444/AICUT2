@@ -36,6 +36,7 @@ from .http_utils import read_json_object
 from .backup import DatabaseBackupManager
 from .health import runtime_readiness
 from .editor_export import export_editor_bundle
+from .intelligence import run_reference_analyzer, validate_reference_analysis
 from dataclasses import asdict
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -166,6 +167,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.json(DB.list_strategy_versions(channel_ref))
             elif path == "/api/learning/source-output":
                 self.json(DB.list_source_output_pairs())
+            elif path == "/api/youtube/references":
+                self.json(DB.list_youtube_references())
             elif path.startswith("/api/episodes/") and path.endswith("/performance"):
                 self.json(DB.list_performance(path.split("/")[3]))
             else:
@@ -203,6 +206,19 @@ class ApiHandler(BaseHTTPRequestHandler):
                     payload["source_ref"], payload["output_ref"], analysis, payload.get("project_id"),
                 )
                 self.json(pair, HTTPStatus.CREATED)
+            elif path == "/api/youtube/references":
+                self.json(DB.save_youtube_reference(validate_reference_analysis(payload)), HTTPStatus.CREATED)
+            elif path == "/api/youtube/references/analyze":
+                executable = payload.get("executable")
+                if not isinstance(executable, list):
+                    raise ValueError("executable은 셸 문자열이 아닌 인자 배열이어야 합니다.")
+                metadata = payload.get("metadata")
+                if not isinstance(metadata, dict):
+                    raise ValueError("metadata 객체가 필요합니다.")
+                output = payload.get("output_directory") or str(ROOT / "artifacts" / "references" / uuid.uuid4().hex)
+                result = run_reference_analyzer(executable, metadata, output)
+                saved = DB.save_youtube_reference(result["analysis"])
+                self.json({"reference": saved, "command": result["command"]}, HTTPStatus.CREATED)
             elif path.startswith("/api/episodes/") and path.endswith("/performance"):
                 episode_id = path.split("/")[3]
                 metrics = validate_metrics(payload["metrics"])

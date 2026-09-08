@@ -5,7 +5,7 @@ import { api, withFallback } from './api.js';
 const state = {
   view: 'workspace', selectedCandidate: '01', selectedProject: null, filter: '전체', modal: null,
   toastTimer: null, runtimeOnline: false, projects: null, candidates: null, episodes: [], logs: null,
-  calibrations: [], sourcePairs: [], uploads: [], job: null,
+  calibrations: [], sourcePairs: [], uploads: [], references: [], job: null,
 };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -120,7 +120,7 @@ function reviewView() {
 }
 
 function knowledgeView() {
-  if(state.runtimeOnline) return `<div class="page">${pageHeader('YOUTUBE CONTENT INTELLIGENCE','콘텐츠 지식','현재 API에는 일반 레퍼런스 지식 목록 endpoint가 없습니다. 실제 데이터가 없는 숫자는 표시하지 않습니다.')}<section class="panel"><p>성과 기반 전략은 API의 strategy version을 통해 관리됩니다.</p></section></div>`;
+  if(state.runtimeOnline) return `<div class="page">${pageHeader('YOUTUBE CONTENT INTELLIGENCE','콘텐츠 지식','공개 지표와 외부 분석기가 추출한 제작 논리만 저장하며 레퍼런스 원본 미디어는 보관하지 않습니다.')}<section class="stat-grid"><article><span>분석 레퍼런스</span><b>${state.references.length}</b></article><article><span>추출 패턴 묶음</span><b>${state.references.reduce((sum,item)=>sum+Object.keys(item.patterns||{}).length,0)}</b></article></section><section class="knowledge-grid">${state.references.map(item=>`<article class="knowledge-card"><h3>${item.title}</h3><p>${item.patterns?.production_logic||'제작 논리 없음'}</p><footer><span>${item.channel_ref||'채널 미지정'}</span><span>${item.video_id}</span></footer></article>`).join('')||'<p>아직 분석된 레퍼런스가 없습니다.</p>'}</section></div>`;
   return `<div class="page">${pageHeader('YOUTUBE CONTENT INTELLIGENCE','콘텐츠 지식','레퍼런스에서 추출한 제작 패턴입니다. 고정 규칙이 아니라 새 콘텐츠의 판단 근거로 사용됩니다.',`<button class="secondary-button">레퍼런스 가져오기</button>`)}
     <section class="stat-grid"><article><span>분석 영상</span><b>146</b><small>이번 달 +21</small></article><article><span>유효 제작 패턴</span><b>38</b><small>신뢰도 75% 이상</small></article><article><span>최근 갱신</span><b>2h</b><small>4개 패턴 업데이트</small></article><article><span>미디어 보관</span><b>0</b><small>분석 후 자동 폐기</small></article></section>
     <div class="toolbar"><div class="search-field">${icons.search}<input placeholder="패턴 검색" /></div><div class="segmented"><button class="active">전체</button><button>스토리텔링</button><button>편집</button><button>자막</button><button>패키징</button></div></div>
@@ -205,13 +205,13 @@ withFallback(() => api.health(), null).then(async health => {
   if (status) status.textContent = health ? '로컬 런타임 온라인' : '데모 데이터 모드';
   if (detail) detail.textContent = health ? 'SQLite API · Ready' : 'API 미실행 · Fixtures';
   if (health) {
-    const [rows, calibrations, sourcePairs, uploads, logs] = await Promise.all([
+    const [rows, calibrations, sourcePairs, uploads, logs, references] = await Promise.all([
       withFallback(() => api.projects(), []), withFallback(() => api.calibrations(), []),
       withFallback(() => api.sourceOutputPairs(), []), withFallback(() => api.uploads(), []),
-      withFallback(() => api.logs(), []),
+      withFallback(() => api.logs(), []), withFallback(() => api.youtubeReferences(), []),
     ]);
     state.projects = rows.map(normalizeProject); state.calibrations=calibrations;
-    state.sourcePairs=sourcePairs; state.uploads=uploads; state.logs=logs;
+    state.sourcePairs=sourcePairs; state.uploads=uploads; state.logs=logs; state.references=references;
     state.selectedProject = state.projects[0]?.id || null;
     setView(state.view);
   }

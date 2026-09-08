@@ -131,6 +131,18 @@ CREATE TABLE IF NOT EXISTS source_output_pairs (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS youtube_references (
+  reference_id TEXT PRIMARY KEY,
+  video_id TEXT NOT NULL UNIQUE,
+  channel_ref TEXT,
+  title TEXT NOT NULL,
+  published_at TEXT,
+  duration_sec REAL CHECK(duration_sec IS NULL OR duration_sec > 0),
+  public_metrics_json TEXT NOT NULL DEFAULT '{}',
+  extracted_patterns_json TEXT NOT NULL,
+  analyzed_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS performance_snapshots (
   performance_id TEXT PRIMARY KEY,
   episode_id TEXT NOT NULL REFERENCES episodes(episode_id) ON DELETE CASCADE,
@@ -263,6 +275,7 @@ CREATE INDEX IF NOT EXISTS idx_episodes_project ON episodes(project_id);
 CREATE INDEX IF NOT EXISTS idx_logs_project ON job_logs(project_id, log_id DESC);
 CREATE INDEX IF NOT EXISTS idx_upload_jobs_status ON upload_jobs(status, retry_at);
 CREATE INDEX IF NOT EXISTS idx_source_output_project ON source_output_pairs(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_youtube_references_analyzed ON youtube_references(analyzed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_performance_episode ON performance_snapshots(episode_id, collected_at DESC);
 CREATE INDEX IF NOT EXISTS idx_analytics_collection_due ON analytics_collection_jobs(status, due_at);
 CREATE INDEX IF NOT EXISTS idx_transcript_project_time ON transcript_segments(project_id, start_sec);

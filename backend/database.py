@@ -878,6 +878,40 @@ class Database:
         value["selection_analysis"] = json.loads(value.pop("selection_analysis_json"))
         return value
 
+    def save_youtube_reference(self, reference: dict[str, Any]) -> dict[str, Any]:
+        reference_id = str(uuid.uuid4())
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO youtube_references
+                (reference_id,video_id,channel_ref,title,published_at,duration_sec,
+                 public_metrics_json,extracted_patterns_json,analyzed_at)
+                VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(video_id) DO UPDATE SET channel_ref=excluded.channel_ref,title=excluded.title,
+                published_at=excluded.published_at,duration_sec=excluded.duration_sec,
+                public_metrics_json=excluded.public_metrics_json,
+                extracted_patterns_json=excluded.extracted_patterns_json,analyzed_at=excluded.analyzed_at""",
+                (reference_id, reference["video_id"], reference.get("channel_ref"), reference["title"],
+                 reference.get("published_at"), reference.get("duration_sec"),
+                 json.dumps(reference.get("public_metrics", {}), ensure_ascii=False),
+                 json.dumps(reference["patterns"], ensure_ascii=False), now()),
+            )
+            row = connection.execute("SELECT * FROM youtube_references WHERE video_id=?", (reference["video_id"],)).fetchone()
+        value = dict(row)
+        value["public_metrics"] = json.loads(value.pop("public_metrics_json"))
+        value["patterns"] = json.loads(value.pop("extracted_patterns_json"))
+        return value
+
+    def list_youtube_references(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute("SELECT * FROM youtube_references ORDER BY analyzed_at DESC").fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            value["public_metrics"] = json.loads(value.pop("public_metrics_json"))
+            value["patterns"] = json.loads(value.pop("extracted_patterns_json"))
+            result.append(value)
+        return result
+
     def list_source_output_pairs(self, project_id: str | None = None) -> list[dict[str, Any]]:
         with self.connect() as connection:
             if project_id:

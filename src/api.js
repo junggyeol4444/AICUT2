@@ -53,6 +53,13 @@ export const api = {
   calibrations: () => request('/calibrations'),
   calibrate: payload => request('/calibrations', { method: 'POST', body: JSON.stringify(payload) }),
   sourceOutputPairs: () => request('/learning/source-output'),
+  youtubeReferences: () => request('/youtube/references'),
+  saveYoutubeReference: payload => request('/youtube/references', {
+    method: 'POST', body: JSON.stringify(payload),
+  }),
+  analyzeYoutubeReference: payload => request('/youtube/references/analyze', {
+    method: 'POST', body: JSON.stringify(payload),
+  }),
   analyzeSourceOutput: payload => request('/learning/source-output', {
     method: 'POST', body: JSON.stringify(payload),
   }),
