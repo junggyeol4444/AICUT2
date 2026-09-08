@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from aicut.config import CalibrationProfile
@@ -377,6 +378,7 @@ class SubtitleFontChecksTests(unittest.TestCase):
         import subprocess
 
         from aicut.media.ffmpeg_util import have_ffmpeg, has_filter
+        from aicut.render.ffmpeg import _escape_filter_path
 
         if not have_ffmpeg() or not has_filter("subtitles"):
             self.skipTest("this ffmpeg cannot burn subtitles")
@@ -394,10 +396,15 @@ class SubtitleFontChecksTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 out = Path(tmp) / f"{font}.png"
+                # The same escaping the renderer uses. A Windows path reaches
+                # the filter as `C:\Users\...`, and the drive colon is an
+                # option separator to ffmpeg's parser: unescaped, it read the
+                # rest of the path as an `original_size` value and refused.
                 done = subprocess.run(
                     ["ffmpeg", "-v", "error", "-f", "lavfi",
                      "-i", "color=c=black:s=320x180:d=1",
-                     "-vf", f"subtitles={ass}", "-frames:v", "1", "-y", str(out)],
+                     "-vf", f"subtitles='{_escape_filter_path(str(ass))}'",
+                     "-frames:v", "1", "-y", str(out)],
                     capture_output=True, text=True,
                 )
                 self.assertEqual(done.returncode, 0, done.stderr)
@@ -461,3 +468,38 @@ class SubtitleFontChecksTests(unittest.TestCase):
         if not shutil.which("fc-match"):
             self.skipTest("fontconfig is not installed here")
         self.assertIs(font_installed("Definitely Not A Font 12345"), False)
+
+    def test_windows_is_asked_through_its_own_font_list(self):
+        """Windows has no fontconfig; a check that only knows fc-match would
+        answer None there and never notice a missing font on the platform most
+        operators are on."""
+        import sys
+        from unittest import mock
+
+        from aicut.render import subtitles
+
+        with mock.patch.object(sys, "platform", "win32"), \
+             mock.patch.object(subtitles, "_font_installed_windows", return_value=True) as asked:
+            self.assertIs(subtitles.font_installed("Noto Sans KR"), True)
+        asked.assert_called_once_with("Noto Sans KR")
+
+    def test_a_family_with_a_weight_suffix_still_counts_as_installed(self):
+        """The registry lists "Noto Sans KR Bold (TrueType)" as its own value."""
+        from aicut.render.subtitles import _font_installed_windows
+
+        winreg = mock.MagicMock()
+        winreg.QueryInfoKey.return_value = (0, 2, 0)
+        winreg.EnumValue.side_effect = lambda key, i: [
+            ("Noto Sans KR Bold (TrueType)", "notosanskr-b.ttf", 1),
+            ("Arial (TrueType)", "arial.ttf", 1),
+        ][i]
+        with mock.patch.dict("sys.modules", {"winreg": winreg}):
+            self.assertIs(_font_installed_windows("Noto Sans KR"), True)
+
+    def test_an_unreadable_registry_answers_none_rather_than_missing(self):
+        from aicut.render.subtitles import _font_installed_windows
+
+        winreg = mock.MagicMock()
+        winreg.OpenKey.side_effect = OSError("no such key")
+        with mock.patch.dict("sys.modules", {"winreg": winreg}):
+            self.assertIsNone(_font_installed_windows("Noto Sans KR"))

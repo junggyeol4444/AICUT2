@@ -107,10 +107,17 @@ def font_installed(name: str) -> bool | None:
     this is the same question the renderer will ask. `fc-match` always answers
     with *something*, substituting when the request is unknown, so the family it
     returns has to be compared with the family that was asked for.
+
+    Windows has no fontconfig. There the registry's font list is asked instead;
+    its value names are families with the format appended - `Noto Sans KR
+    (TrueType)` - so the family is what is compared.
     """
     import shutil
     import subprocess
+    import sys
 
+    if sys.platform == "win32":
+        return _font_installed_windows(name)
     if not shutil.which("fc-match"):
         return None
     try:
@@ -124,6 +131,40 @@ def font_installed(name: str) -> bool | None:
         return None
     families = {f.strip().casefold() for f in done.stdout.split(",") if f.strip()}
     return name.strip().casefold() in families
+
+
+def _font_installed_windows(name: str) -> bool | None:
+    """The Windows font list, machine-wide and per-user.
+
+    Registry rather than a directory listing: a file name is not a family name,
+    and the value names here are exactly the families a program asks for.
+    """
+    try:
+        import winreg                                  # pragma: no cover - Windows only
+    except ImportError:                                # pragma: no cover - elsewhere
+        return None
+    wanted = name.strip().casefold()
+    found_any = False
+    for root, path in (
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"),
+    ):
+        try:
+            with winreg.OpenKey(root, path) as key:
+                count = winreg.QueryInfoKey(key)[1]
+                found_any = found_any or count > 0
+                for index in range(count):
+                    value = winreg.EnumValue(key, index)[0]
+                    # "Noto Sans KR (TrueType)" -> "noto sans kr"; a family with
+                    # several weights is listed as "Family Bold (TrueType)", so
+                    # the leading part is compared rather than the whole.
+                    family = value.split("(")[0].strip().casefold()
+                    if family == wanted or family.startswith(wanted + " "):
+                        return True
+        except OSError:
+            continue
+    # An empty or unreadable registry is not evidence the font is absent.
+    return False if found_any else None
 
 
 def _fmt(value: Any) -> str:
