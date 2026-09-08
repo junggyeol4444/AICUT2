@@ -54,6 +54,9 @@ class RenderSettings:
     fps: float | None = None
     cut_fade_ms: int = 8
     zoom_strategy: str = "segment_crop"
+    #: Default length of a 10.2 전환 when the plan asks for one without saying
+    #: how long. Overridable per transition; a profile value like the rest.
+    transition_sec: float = 0.4
     loudness_i: float = -14.0
     loudness_tp: float = -1.0
     loudness_lra: float = 11.0
@@ -75,6 +78,7 @@ class RenderSettings:
             height=int(video["default_height"]),
             fps=video.get("fps"),
             cut_fade_ms=int(audio["cut_fade_ms"]),
+            transition_sec=float(video.get("transition_sec", 0.4)),
             zoom_strategy=profile.get("render.zoom.strategy"),
             loudness_i=float(loud["integrated_lufs"]),
             loudness_tp=float(loud["true_peak_dbtp"]),
@@ -191,6 +195,85 @@ def sendcmd_file(keyframes: Sequence[dict[str, Any]], path: str | Path) -> Path:
     return target
 
 
+def crop_filter(effect: dict[str, Any]) -> str:
+    """A standalone crop, separate from the zoom of 10.4-1 (10.2 크롭).
+
+    Two forms the plan can state, and nothing else:
+
+    * ``"crop": "9:16"`` - keep that aspect out of the middle of the frame.
+      This is what a Shorts cut of a 16:9 broadcast needs.
+    * ``"crop": {"x": .., "y": .., "w": .., "h": ..}`` - normalised 0..1 box.
+
+    10.1 gives the renderer no discretion, so an unparseable value is dropped
+    with a warning rather than guessed at.
+    """
+    crop = effect.get("crop")
+    if not crop:
+        return ""
+    if isinstance(crop, dict):
+        w = max(0.01, min(1.0, float(crop.get("w", 1.0))))
+        h = max(0.01, min(1.0, float(crop.get("h", 1.0))))
+        x = max(0.0, min(1.0 - w, float(crop.get("x", (1.0 - w) / 2))))
+        y = max(0.0, min(1.0 - h, float(crop.get("y", (1.0 - h) / 2))))
+        return f"crop=w=iw*{w:.4f}:h=ih*{h:.4f}:x=iw*{x:.4f}:y=ih*{y:.4f}"
+    text = str(crop)
+    if ":" in text:
+        try:
+            num, den = (float(part) for part in text.split(":", 1))
+        except ValueError:
+            log.warning("crop %r is not an aspect or a box; ignoring", crop)
+            return ""
+        if num <= 0 or den <= 0:
+            log.warning("crop %r has a non-positive side; ignoring", crop)
+            return ""
+        # Take the largest window of that aspect that fits, centred.
+        return (
+            f"crop=w='min(iw,ih*{num / den:.6f})':h='min(ih,iw*{den / num:.6f})'"
+            ":x='(iw-ow)/2':y='(ih-oh)/2'"
+        )
+    log.warning("crop %r is not an aspect or a box; ignoring", crop)
+    return ""
+
+
+def transition_filters(effect: dict[str, Any], duration: float, settings: RenderSettings):
+    """The join into and out of this cut (10.2 전환).
+
+    10.4-2 rules out a per-join filter on the joined graph, and the reasoning
+    holds for video as well as audio: hundreds of ``xfade`` pairs is a graph
+    ffmpeg has to hold at once. So a transition is expressed on the segment
+    itself, as a fade at its edges, and the cuts are still joined by concat.
+
+    It is a fade through black, not a cross dissolve. The plan asks for
+    ``"transition": "fade"`` or ``{"in": "fade", "out": "fade", "sec": 0.4}``
+    and gets exactly that; a name this does not implement is dropped with a
+    warning rather than silently rendered as something else (10.1).
+    """
+    transition = effect.get("transition")
+    if not transition:
+        return []
+    if isinstance(transition, str):
+        transition = {"in": transition, "out": transition}
+    seconds = float(transition.get("sec", settings.transition_sec))
+    seconds = max(0.0, min(seconds, duration / 2 if duration else seconds))
+    if seconds <= 0:
+        return []
+    out: list[str] = []
+    for edge, key in (("in", "in"), ("out", "out")):
+        name = transition.get(key)
+        if not name:
+            continue
+        if name not in ("fade", "cut"):
+            log.warning("transition %r is not implemented; rendering a hard cut", name)
+            continue
+        if name == "cut":
+            continue
+        if edge == "in":
+            out.append(f"fade=t=in:st=0:d={seconds:.3f}")
+        else:
+            out.append(f"fade=t=out:st={max(0.0, duration - seconds):.3f}:d={seconds:.3f}")
+    return out
+
+
 def scale_filter(settings: RenderSettings) -> str:
     """Fit to the output frame; pad rather than stretch when the aspect differs."""
     if settings.width:
@@ -248,10 +331,18 @@ def build_segment_command(
             filters.append(zoom_filter(effect, settings))
         else:
             filters.append(zoom_filter(effect, settings))
+    # 10.2 크롭: separate from the zoom above, and applied before the scale so
+    # the framing is chosen in source pixels.
+    crop = crop_filter(effect)
+    if crop:
+        filters.append(crop)
     filters.append(scale_filter(settings))
     if settings.fps:
         filters.append(f"fps={settings.fps}")
     filters.append("setsar=1")
+    # 10.2 전환, as a fade on this segment's own edges - see transition_filters
+    # for why it is not a per-join filter.
+    filters.extend(transition_filters(effect, segment.duration, settings))
 
     audio_filters = [audio_edge_filter(segment.duration, settings)]
     gain = float((audio_effect or {}).get("gain_db", 0.0))
@@ -271,20 +362,119 @@ def build_segment_command(
         "-c:a", settings.audio_codec, "-b:a", settings.audio_bitrate, "-ar", str(settings.sample_rate),
     ]
 
-    if audio_streams > 1:
-        # -vf and -filter_complex cannot both be given, so the video chain moves
-        # into the complex graph unchanged when there is mixing to do.
-        sources = "".join(f"[0:a:{index}]" for index in range(audio_streams))
-        graph = ";".join([
-            f"[0:v:0]{','.join(filters)}[v]",
-            f"{sources}amix=inputs={audio_streams}:normalize=0,{','.join(audio_filters)}[a]",
-        ])
-        return head + ["-filter_complex", graph] + tail + ["-map", "[v]", "-map", "[a]", out_path]
+    # 10.2 그래픽 and 효과음 each bring a file of their own, so they become extra
+    # inputs and the whole thing has to go through the complex graph.
+    graphic = _graphic_input(effect)
+    sfx = _sfx_input(audio_effect or {})
+    extra: list[str] = []
+    next_input = 1
+    graphic_index = sfx_index = None
+    if graphic:
+        extra += ["-i", graphic["path"]]
+        graphic_index = next_input
+        next_input += 1
+    if sfx:
+        extra += ["-i", sfx["path"]]
+        sfx_index = next_input
+        next_input += 1
 
-    return head + [
-        "-vf", ",".join(filters),
-        "-af", ",".join(audio_filters),
-    ] + tail + ["-map", "0:v:0", "-map", "0:a:0?", out_path]
+    complex_needed = audio_streams > 1 or graphic_index is not None or sfx_index is not None
+    if not complex_needed:
+        return head + [
+            "-vf", ",".join(filters),
+            "-af", ",".join(audio_filters),
+        ] + tail + ["-map", "0:v:0", "-map", "0:a:0?", out_path]
+
+    # -vf and -filter_complex cannot both be given, so the video chain moves
+    # into the complex graph unchanged when there is anything to combine.
+    chains: list[str] = []
+    video_label = "[v]"
+    if graphic_index is None:
+        chains.append(f"[0:v:0]{','.join(filters)}[v]")
+    else:
+        chains.append(f"[0:v:0]{','.join(filters)}[vbase]")
+        chains.append(
+            f"[{graphic_index}:v]scale={graphic['width']}:-1[gfx]"
+            if graphic["width"] else f"[{graphic_index}:v]null[gfx]"
+        )
+        chains.append(
+            f"[vbase][gfx]overlay=x={graphic['x']}:y={graphic['y']}"
+            f":enable='between(t,{graphic['start']:.3f},{graphic['end']:.3f})'[v]"
+        )
+
+    if audio_streams > 1:
+        sources = "".join(f"[0:a:{index}]" for index in range(audio_streams))
+        chains.append(
+            f"{sources}amix=inputs={audio_streams}:normalize=0,{','.join(audio_filters)}"
+            + ("[abase]" if sfx_index is not None else "[a]")
+        )
+    else:
+        chains.append(
+            f"[0:a:0]{','.join(audio_filters)}"
+            + ("[abase]" if sfx_index is not None else "[a]")
+        )
+
+    if sfx_index is not None:
+        chains.append(
+            f"[{sfx_index}:a]adelay={int(sfx['at'] * 1000)}:all=1,volume={sfx['gain_db']}dB[sfx]"
+        )
+        # duration=first: the effect never extends the cut it decorates.
+        chains.append("[abase][sfx]amix=inputs=2:normalize=0:duration=first[a]")
+
+    return (
+        head + extra + ["-filter_complex", ";".join(chains)] + tail
+        + ["-map", video_label, "-map", "[a]", out_path]
+    )
+
+
+def _graphic_input(effect: dict[str, Any]) -> dict[str, Any] | None:
+    """One overlaid image for this cut (10.2 그래픽).
+
+    The plan states ``"graphic": "path.png"`` or a dict with ``path`` and any of
+    ``x``/``y`` (ffmpeg overlay expressions, default centred), ``width`` (pixels,
+    height follows the aspect) and ``start``/``end`` seconds within the cut.
+    A path that is not there is dropped with a warning rather than failing the
+    whole render for one decoration.
+    """
+    graphic = effect.get("graphic")
+    if not graphic:
+        return None
+    spec = {"path": graphic} if isinstance(graphic, str) else dict(graphic)
+    path = str(spec.get("path", ""))
+    if not path or not Path(path).is_file():
+        log.warning("graphic %r is not a file; skipping the overlay", path)
+        return None
+    return {
+        "path": path,
+        "x": spec.get("x", "(W-w)/2"),
+        "y": spec.get("y", "(H-h)/2"),
+        "width": int(spec["width"]) if spec.get("width") else 0,
+        "start": float(spec.get("start", 0.0)),
+        "end": float(spec.get("end", 1e9)),
+    }
+
+
+def _sfx_input(audio_effect: dict[str, Any]) -> dict[str, Any] | None:
+    """One sound effect mixed into this cut (10.2 효과음).
+
+    ``"sfx": "path.wav"`` or a dict with ``path``, ``at`` seconds into the cut,
+    and ``gain_db``. Like the graphic, a missing file is skipped rather than
+    fatal - 10.1 says the renderer makes no decisions, and dying over a missing
+    decoration would throw away the whole cut it belonged to.
+    """
+    sfx = audio_effect.get("sfx")
+    if not sfx:
+        return None
+    spec = {"path": sfx} if isinstance(sfx, str) else dict(sfx)
+    path = str(spec.get("path", ""))
+    if not path or not Path(path).is_file():
+        log.warning("sound effect %r is not a file; skipping it", path)
+        return None
+    return {
+        "path": path,
+        "at": max(0.0, float(spec.get("at", 0.0))),
+        "gain_db": float(spec.get("gain_db", 0.0)),
+    }
 
 
 def _count_audio_streams(source: str) -> int:
@@ -333,8 +523,16 @@ def build_final_command(
     ass_path: str | None = None,
     loudness: LoudnessStats | None = None,
     fonts_dir: str | None = None,
+    bgm: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Burn subtitles and apply the measured loudness correction (10.4-3)."""
+    """Burn subtitles, lay the BGM bed, and apply the loudness correction.
+
+    10.2 lists BGM among the renderer's features and 10.4-3 says the EBU R128
+    correction is applied after a 2-pass measurement. The bed goes in here
+    rather than per segment because it runs under the whole timeline: mixing it
+    into each cut would restart it at every join, and the measurement would
+    then be of a timeline the bed had not been added to yet.
+    """
     video_filters: list[str] = []
     if ass_path:
         # `filename=` is named rather than passed positionally: ffmpeg 7.2 (the
@@ -354,19 +552,58 @@ def build_final_command(
             f":measured_LRA={loudness.input_lra}:measured_thresh={loudness.input_thresh}"
             f":offset={loudness.target_offset}:linear=true"
         )
+    bed = _bgm_input(bgm)
     cmd = ["ffmpeg", "-hide_banner", "-nostats", "-y", "-i", joined_path]
+    if bed:
+        # -stream_loop before the input it applies to; -1 loops a short bed under
+        # a long timeline. duration=first below stops it running past the video.
+        cmd += ["-stream_loop", "-1" if bed["loop"] else "0", "-i", bed["path"]]
     if video_filters:
         cmd += ["-vf", ",".join(video_filters), "-c:v", settings.video_codec,
                 "-preset", settings.preset, "-crf", str(settings.crf), "-pix_fmt", settings.pix_fmt]
     else:
         cmd += ["-c:v", "copy"]
+    audio_chain = f"{loudnorm},aresample={settings.sample_rate}"
+    if bed:
+        # The bed is levelled and faded before the mix, then the loudness
+        # correction is measured and applied to the result - which is the
+        # timeline a viewer actually hears (10.4-3).
+        cmd += ["-filter_complex", ";".join([
+            f"[1:a]volume={bed['gain_db']}dB,afade=t=in:st=0:d={bed['fade']:.3f}[bed]",
+            f"[0:a][bed]amix=inputs=2:normalize=0:duration=first,{audio_chain}[a]",
+        ]), "-map", "0:v:0", "-map", "[a]"]
+    else:
+        cmd += ["-af", audio_chain]
     cmd += [
-        "-af", f"{loudnorm},aresample={settings.sample_rate}",
         "-c:a", settings.audio_codec, "-b:a", settings.audio_bitrate, "-ar", str(settings.sample_rate),
         "-movflags", "+faststart",
         out_path,
     ]
     return cmd
+
+
+def _bgm_input(bgm: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The music bed under the timeline (10.2 BGM).
+
+    The plan states ``"bgm": "path.mp3"`` or a dict with ``path``, ``gain_db``
+    (default well under the voice), ``fade`` seconds and ``loop``. Missing file
+    means no bed and a warning, not a failed render.
+    """
+    if not bgm:
+        return None
+    spec = {"path": bgm} if isinstance(bgm, str) else dict(bgm)
+    path = str(spec.get("path", ""))
+    if not path or not Path(path).is_file():
+        log.warning("bgm %r is not a file; rendering without a music bed", path)
+        return None
+    return {
+        "path": path,
+        # A bed sits under speech. The plan can say otherwise, but silence here
+        # would mean whatever level the file happens to have, over the voice.
+        "gain_db": float(spec.get("gain_db", -18.0)),
+        "fade": max(0.0, float(spec.get("fade", 1.0))),
+        "loop": bool(spec.get("loop", True)),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +689,9 @@ class Renderer:
                 str(joined), str(target), settings,
                 ass_path=str(ass_path) if ass_path else None,
                 loudness=loudness,
+                # 10.2 BGM. It belongs to the episode, not to any one cut, so
+                # the structure is where the plan states it (8.2).
+                bgm=plan.structure.get("bgm"),
             ))
         except RenderError:
             # The cut segments stay, because they are what a person needs to see

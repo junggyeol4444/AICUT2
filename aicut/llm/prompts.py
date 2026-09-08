@@ -211,8 +211,12 @@ looks like:
 
 Write each one for the beat it has to fill.
 
+BGM is 10.2's one editing intent that belongs to the whole video rather than to
+a scene, so it is stated here: "bgm": a path to a track the operator supplied,
+or null for none. Everything else in 8.2 is decided per scene.
+
 Return: {"structure_name": str, "rationale": str, "target_type": str,
-"planned_duration_sec": number, "length_note": str,
+"planned_duration_sec": number, "length_note": str, "bgm": str|null,
 "beats": [{"role": str, "intent": str, "query": str, "must_include_event_id": str|null}]}
 "role" is this beat's job in the structure — 8.2 records it on the cut, and 9.2
 uses it when judging that cut's silences.

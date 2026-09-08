@@ -133,7 +133,8 @@
         1080,
         1920
       ],
-      "fps": null
+      "fps": null,
+      "transition_sec": 0.4
     },
     "audio": {
       "codec": "aac",
