@@ -44,6 +44,13 @@ class Job:
     def running(self) -> bool:
         return self.finished_at is None
 
+    @property
+    def progress(self) -> float:
+        """15.3 asks for 진행률 next to the state; 14장's walk is what it means."""
+        from aicut.pipeline.states import progress as state_progress
+
+        return state_progress(self.state)
+
     def to_dict(self) -> dict[str, Any]:
         with self._lock:
             tail = list(self.log[-120:])
@@ -52,6 +59,7 @@ class Job:
             "project_id": self.project_id,
             "source": self.source,
             "state": self.state,
+            "progress": self.progress,
             "running": self.running,
             "elapsed_sec": round((self.finished_at or time.time()) - self.started_at, 1),
             "error": self.error,

@@ -43,6 +43,12 @@
   .banner { border-left: 3px solid var(--warn); background: #221f16; padding: 10px 14px;
             border-radius: 4px; margin-bottom: 14px; font-size: 13px; }
   .log { font-size: 11.5px; max-height: 300px; }
+  .bar { height: 6px; border-radius: 3px; background: #0002; overflow: hidden; margin: 8px 0; }
+  .bar > div { height: 100%; width: 0; background: var(--accent, #4c8); transition: width .3s; }
+  .summary { border-collapse: collapse; font-size: 12.5px; }
+  .summary th { text-align: left; padding: 2px 12px 2px 0; font-weight: 600; opacity: .7; }
+  .reasons { margin: 4px 0 0 16px; padding: 0; font-size: 12px; opacity: .85; }
+  .warn { color: var(--warn); font-size: 12px; }
   .log .error { color: var(--bad); } .log .warn { color: var(--warn); }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   td, th { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
@@ -120,11 +126,15 @@
         <div class="grow"><b id="job-state">—</b> <span class="muted" id="job-source"></span></div>
         <span class="muted" id="job-elapsed"></span>
       </div>
+      <!-- 15.3: 현재 상태(14장)와 진행률. The percentage is where in the walk
+           of 14장 the run is, not a guess at remaining time. -->
+      <div class="bar"><div id="job-bar"></div></div>
       <pre class="log" id="job-log"></pre>
     </div>
     <div class="card" id="job-report-card" style="display:none">
-      <div class="muted">작업 리포트 (22.6)</div>
-      <pre id="job-report"></pre>
+      <div class="muted">작업 리포트 (15.5)</div>
+      <div id="job-summary"></div>
+      <details><summary class="muted">전체 리포트</summary><pre id="job-report"></pre></details>
     </div>
   </section>
 
@@ -248,16 +258,42 @@ async function pollJob() {
     el("job-state").textContent = job.state;
     el("job-source").textContent = job.source;
     el("job-elapsed").textContent = `${job.elapsed_sec}s${job.running ? " (진행 중)" : ""}`;
+    el("job-bar").style.width = `${Math.round((job.progress || 0) * 100)}%`;
     el("job-log").innerHTML = job.log.map((l) =>
       `<div class="${esc(l.level)}">${esc(l.message)}</div>`).join("");
     if (!job.running && job.report && Object.keys(job.report).length) {
       el("job-report-card").style.display = "";
+      el("job-summary").innerHTML = reportSummary(job.report);
       el("job-report").textContent = JSON.stringify(job.report, null, 2);
     }
     if (job.error) el("job-log").innerHTML += `<div class="error">${esc(job.error)}</div>`;
   } catch (e) { /* job not ready yet */ }
 }
 setInterval(pollJob, 1500);
+
+// 15.5's 작업 리포트: 발견 후보 수 / 제작 결정 수 / 제외 사유 / 처리 시간.
+// The raw JSON stays under the fold; these four are what the clause asks for.
+function reportSummary(r) {
+  const decisions = r.decisions || {};
+  const made = Number(decisions.produce || 0) + Number(decisions.combine || 0);
+  const rejections = r.rejections || [];
+  const rows = [
+    ["발견 후보", `${r.candidates_found ?? 0}개`],
+    ["제작 결정", `${made}개 (제작 ${decisions.produce || 0} · 결합 ${decisions.combine || 0}
+       · 보류 ${decisions.hold || 0} · 제외 ${decisions.reject || 0})`],
+    ["처리 시간", r.elapsed_sec != null ? hms(r.elapsed_sec) : "—"],
+  ];
+  const drift = (r.environment_drift || []);
+  return `<table class="summary">${rows.map(([k, v]) =>
+      `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</table>
+    ${rejections.length ? `<div class="muted" style="margin-top:8px">제외 사유</div>
+      <ul class="reasons">${rejections.map((x) =>
+        `<li>${esc(x.summary || "")} — ${esc(x.reason || "")}</li>`).join("")}</ul>` : ""}
+    ${r.no_content_reason ? `<div class="muted">제작할 것이 없었던 이유: ${esc(r.no_content_reason)}</div>` : ""}
+    ${drift.length ? `<div class="warn" style="margin-top:8px">프로파일 재측정 필요 (17.4):
+      <ul class="reasons">${drift.map((d) => `<li>${esc(d)}</li>`).join("")}</ul></div>` : ""}
+    ${r.warning ? `<div class="warn">${esc(r.warning)}</div>` : ""}`;
+}
 
 el("cand-load").onclick = async () => {
   const pid = el("cand-project").value;
@@ -272,11 +308,27 @@ el("cand-load").onclick = async () => {
       <div class="row">
         <span class="tag ${esc(c.decision)}">${esc(c.decision)}</span>
         <b class="grow">${esc(c.core_summary || "(요약 없음)")}</b>
+        ${c.suggested_form ? `<span class="tag">${esc(c.suggested_form)}</span>` : ""}
         <span class="muted">독립성 ${c.independence_score.toFixed(2)} · 밀도 ${c.density_score.toFixed(2)}
           · 결말 ${c.has_resolution ? "있음" : "없음"}</span>
       </div>
       <div class="muted" style="margin-top:6px">판단 근거: ${esc(c.reason)}</div>
-      ${c.required_context ? `<div class="muted">필요한 맥락: ${esc(c.required_context)}</div>` : ""}
+      <!-- 6.1: 후보는 단순한 클립이 아니다. MVP 3 is scored on whether a person
+           agrees with these decisions, and they cannot judge two scores. -->
+      <table class="summary" style="margin-top:6px">
+        ${c.people && c.people.length ? `<tr><th>관련 인물</th><td>${esc(c.people.join(", "))}</td></tr>` : ""}
+        ${c.start_point ? `<tr><th>시작 지점</th><td>${
+            c.start_sec != null ? `${hms(c.start_sec)} — ` : ""}${esc(c.start_point)}</td></tr>` : ""}
+        ${c.key_changes && c.key_changes.length
+            ? `<tr><th>주요 변화</th><td>${esc(c.key_changes.join(" / "))}</td></tr>` : ""}
+        ${c.outcome ? `<tr><th>결과</th><td>${esc(c.outcome)}</td></tr>` : ""}
+        ${c.required_context ? `<tr><th>필요한 맥락</th><td>${esc(c.required_context)}</td></tr>` : ""}
+        ${c.event_relations && c.event_relations.length
+            ? `<tr><th>다른 사건과의 관계</th><td>${c.event_relations.length}건</td></tr>` : ""}
+        ${c.scenes && c.scenes.length
+            ? `<tr><th>관련 장면</th><td>${c.scenes.map((v) =>
+                `${hms(v.start_sec)}–${hms(v.end_sec)}`).join(", ")}</td></tr>` : ""}
+      </table>
       <div class="row" style="margin-top:10px">
         <button class="small" data-v="agree" data-c="${esc(c.candidate_id)}">동의</button>
         <button class="small" data-v="disagree" data-c="${esc(c.candidate_id)}">반대</button>
@@ -312,6 +364,10 @@ el("ep-load").onclick = async () => {
       <div class="row" style="margin-top:10px">
         <button class="small" data-plan="${esc(e.episode_id)}">편집 계획 보기</button>
         ${e.output ? `<button class="small" data-reveal="${esc(e.episode_id)}">폴더 열기</button>` : ""}
+        ${e.output && e.review_status !== "uploaded" && e.review_status !== "published"
+            ? `<button class="small" data-upload="${esc(e.episode_id)}">비공개 업로드</button>` : ""}
+        ${e.review_status === "approved"
+            ? `<button class="small" data-publish="${esc(e.episode_id)}">공개</button>` : ""}
         <button class="small" data-review="approve" data-e="${esc(e.episode_id)}">승인</button>
         <button class="small" data-review="reject" data-e="${esc(e.episode_id)}">반려</button>
         <span class="tag">${esc(e.review_status)}</span>
@@ -346,6 +402,23 @@ el("ep-load").onclick = async () => {
           b.textContent = "열었다"; setTimeout(() => b.textContent = "폴더 열기", 1500);
           console.info(r.opened); }
     catch (e) { alert(e.message); }
+  });
+  // 15.5's 업로드. 11.3 splits it in two: uploading is always private, and
+  // going public is a separate action that only an approved episode offers.
+  el("ep-list").querySelectorAll("button[data-upload]").forEach((b) => b.onclick = async () => {
+    b.disabled = true; b.textContent = "업로드 중…";
+    try {
+      const r = await post(`/api/episodes/${b.dataset.upload}/upload`, {});
+      b.textContent = r.video_id ? `비공개 업로드됨 (${r.video_id})` : "대기열에 넣었다";
+    } catch (e) { alert(e.message); b.disabled = false; b.textContent = "비공개 업로드"; }
+  });
+  el("ep-list").querySelectorAll("button[data-publish]").forEach((b) => b.onclick = async () => {
+    if (!confirm("이 영상을 공개한다. 되돌리려면 YouTube에서 직접 바꿔야 한다.")) return;
+    b.disabled = true;
+    try {
+      await post(`/api/episodes/${b.dataset.publish}/upload`, { action: "publish" });
+      el("ep-load").click();
+    } catch (e) { alert(e.message); b.disabled = false; }
   });
   el("ep-list").querySelectorAll("button[data-plan]").forEach((b) => b.onclick = async () => {
     const data = await api(`/api/episodes/${b.dataset.plan}/plan`);

@@ -772,6 +772,7 @@ def cmd_ui(args) -> int:
         guard=guard,
         backup_interval_sec=args.backup_every,
         backup_retention=args.backup_keep,
+        client_secrets=args.client_secrets, token_path=args.token,
     )
     print(f"aicut ui on http://{args.host}:{args.port}  (workspace {args.workspace})")
     if guard.enabled:
@@ -1308,6 +1309,9 @@ def build_parser() -> argparse.ArgumentParser:
     upload.set_defaults(func=cmd_upload)
 
     ui = _sub("ui", help="operator screens: submit, monitor, review (15장)")
+    ui.add_argument("--client-secrets", default="client_secrets.json",
+                    help="OAuth client secrets, for 15.5's upload button")
+    ui.add_argument("--token", help="stored OAuth token (11.4)")
     ui.add_argument("--host", default="127.0.0.1")
     ui.add_argument("--port", type=int, default=8765)
     ui.add_argument(

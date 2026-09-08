@@ -34,6 +34,40 @@ class State(str, Enum):
     RETRY_QUEUED = "RETRY_QUEUED"      # e.g. upload quota spent (11.4)
 
 
+#: 15.3 asks for 진행률 alongside the state. A pipeline has no percentage of
+#: its own - these are the states a run passes through in order, so a monitor
+#: can say where in that walk it is. The terminal states are deliberately not
+#: in here: NO_CONTENT is a finished run, not 60% of one.
+PROGRESS_ORDER: tuple[State, ...] = (
+    State.QUEUED,
+    State.PARSING,
+    State.UNDERSTANDING,
+    State.DISCOVERING,
+    State.EVALUATING,
+    State.PLANNING,
+    State.RENDERING,
+    State.PACKAGED,
+    State.REVIEW_PENDING,
+    State.PUBLISHED,
+)
+
+
+def progress(state: State | str) -> float:
+    """How far through the walk of 14장 this state is, 0..1.
+
+    A terminal state that is not PUBLISHED returns 1.0: NO_CONTENT and FAILED
+    are both finished, and showing a run that found nothing as 60% complete
+    would be a progress bar that never fills.
+    """
+    try:
+        value = State(state)
+    except ValueError:
+        return 0.0
+    if value in PROGRESS_ORDER:
+        return round(PROGRESS_ORDER.index(value) / (len(PROGRESS_ORDER) - 1), 3)
+    return 1.0
+
+
 _NEXT: dict[State, set[State]] = {
     State.QUEUED: {State.PARSING, State.FAILED},
     State.PARSING: {State.UNDERSTANDING, State.FAILED},

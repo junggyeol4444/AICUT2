@@ -96,6 +96,8 @@ class UiServer:
         guard: ApiKeyGuard | None = None,
         backup_interval_sec: float | None = None,
         backup_retention: int = 7,
+        client_secrets: str | Path = "client_secrets.json",
+        token_path: str | Path | None = None,
     ):
         self.workspace = Path(workspace)
         try:
@@ -106,6 +108,9 @@ class UiServer:
             raise AicutError(f"cannot write to the workspace {self.workspace}") from exc
         self.profile_path = profile_path
         self.producer_name = producer_name
+        # 15.5's upload button needs the same OAuth material the CLI uses.
+        self.client_secrets = Path(client_secrets)
+        self.token_path = Path(token_path) if token_path else None
         self.jobs = JobRunner()
         self.db_path = self.workspace / "aicut.db"
         self.guard = guard if guard is not None else guard_from_environment()
@@ -433,6 +438,38 @@ class UiServer:
             raise ValueError("action must be 'approve' or 'reject'")
         return {"episode_id": episode_id, "review_status": updated.review_status}
 
+    def upload(self, episode_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """15.5's 업로드 button. 11.3 decides what it is allowed to do.
+
+        This uploads private and queues on a spent quota (11.4); it never makes
+        anything public. Releasing an approved episode is a separate action, and
+        `publishing.publish_episode` is the one that refuses without a review.
+        """
+        episode = self.store.get_episode(episode_id)
+        if episode is None:
+            raise KeyError(f"unknown episode {episode_id}")
+        ctx = self.context(episode.project_id)
+        client = self._youtube(ctx)
+        if body.get("action") == "publish":
+            from aicut.pipeline import publishing
+
+            updated = publishing.publish_episode(ctx, episode_id, client)
+            return {"episode_id": episode_id, "review_status": updated.review_status,
+                    "youtube": updated.metadata.get("youtube", {})}
+        from aicut.pipeline import publishing
+
+        return publishing.upload_episode(ctx, episode, client)
+
+    def _youtube(self, ctx: RunContext):
+        """The API client, built the same way the CLI builds it."""
+        from aicut.intelligence.youtube import YouTubeClient, load_credentials
+        from aicut.intelligence.quota import QuotaLedger
+
+        credentials = load_credentials(
+            str(self.client_secrets), str(self.token_path) if self.token_path else None,
+        )
+        return YouTubeClient(credentials, QuotaLedger(ctx.store, ctx.profile))
+
     def report(self, project_id: str) -> dict[str, Any]:
         path = self.workspace / project_id / "report.json"
         if not path.exists():
@@ -520,6 +557,7 @@ class _Handler(BaseHTTPRequestHandler):
             (re.compile(r"^/api/projects/([\w-]+)/report$"), "GET", lambda pid: ui.report(pid)),
             (re.compile(r"^/api/episodes/([\w-]+)/plan$"), "GET", lambda eid: ui.plan(eid)),
             (re.compile(r"^/api/episodes/([\w-]+)/review$"), "POST", lambda eid, body: ui.review(eid, body)),
+            (re.compile(r"^/api/episodes/([\w-]+)/upload$"), "POST", lambda eid, body: ui.upload(eid, body)),
         ]
         super().__init__(*args, **kwargs)
 
@@ -689,6 +727,8 @@ def serve(
     guard: ApiKeyGuard | None = None,
     backup_interval_sec: float | None = None,
     backup_retention: int = 7,
+    client_secrets: str | Path = "client_secrets.json",
+    token_path: str | Path | None = None,
 ) -> tuple[ThreadingHTTPServer, UiServer]:
     """Start the UI.
 
@@ -703,6 +743,8 @@ def serve(
         guard=guard,
         backup_interval_sec=backup_interval_sec,
         backup_retention=backup_retention,
+        client_secrets=client_secrets,
+        token_path=token_path,
     )
     if ui.scheduler:
         ui.scheduler.start()
