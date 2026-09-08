@@ -10,7 +10,7 @@ reason field so it can never be mistaken for a real one in a report.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 from aicut.llm.base import Producer
 
@@ -26,7 +26,18 @@ def _keywords(text: str) -> set[str]:
 class MockProducer(Producer):
     name = "mock"
 
-    def complete_json(self, task: str, system: str, payload: dict[str, Any]) -> Any:
+    def __init__(self) -> None:
+        #: Frames each task was handed, per task. See complete_json.
+        self.seen_images: dict[str, list[str]] = {}
+
+    def complete_json(
+        self, task: str, system: str, payload: dict[str, Any],
+        *, images: Sequence[str] = (),
+    ) -> Any:
+        # Recorded, not read. The offline suite asserts that the passes of 5.2
+        # actually hand frames down; a mock that silently dropped them would let
+        # that wiring rot without a single test going red.
+        self.seen_images.setdefault(task, []).extend(images)
         handler = getattr(self, f"_task_{task}", None)
         if handler is None:
             return {}

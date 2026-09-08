@@ -9,12 +9,13 @@ was kept.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from aicut.errors import ProviderError
 from aicut.llm.base import Producer, parse_json_block
@@ -22,6 +23,41 @@ from aicut.llm.base import Producer, parse_json_block
 log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-sonnet-5"
+
+
+#: What a frame is sent as. The API takes base64 JPEG/PNG inline.
+_MEDIA_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+                ".webp": "image/webp"}
+
+#: Bytes above which a single frame is skipped rather than sent. A 6-hour pass
+#: is many calls; one oversized frame that fails the request would take a whole
+#: window's judgement with it.
+_MAX_IMAGE_BYTES = 4 * 1024 * 1024
+
+
+def _image_blocks(images: Sequence[str]) -> list[dict[str, Any]]:
+    """Turn frame paths into inline image blocks, skipping what cannot be sent."""
+    blocks: list[dict[str, Any]] = []
+    for path in images:
+        target = Path(path)
+        media_type = _MEDIA_TYPES.get(target.suffix.lower())
+        if not media_type:
+            log.warning("frame %s is not a sendable image type; skipped", target)
+            continue
+        try:
+            raw = target.read_bytes()
+        except OSError as exc:
+            log.warning("could not read frame %s: %s", target, exc)
+            continue
+        if len(raw) > _MAX_IMAGE_BYTES:
+            log.warning("frame %s is %d bytes; skipped", target, len(raw))
+            continue
+        blocks.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type,
+                       "data": base64.standard_b64encode(raw).decode("ascii")},
+        })
+    return blocks
 
 
 class AnthropicProducer(Producer):
@@ -54,8 +90,12 @@ class AnthropicProducer(Producer):
         if self.transcript_dir:
             self.transcript_dir.mkdir(parents=True, exist_ok=True)
 
-    def complete_json(self, task: str, system: str, payload: dict[str, Any]) -> Any:
+    def complete_json(
+        self, task: str, system: str, payload: dict[str, Any],
+        *, images: Sequence[str] = (),
+    ) -> Any:
         body = json.dumps(payload, ensure_ascii=False, default=str)
+        content = _image_blocks(images) + [{"type": "text", "text": body}]
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
             try:
@@ -63,7 +103,11 @@ class AnthropicProducer(Producer):
                     model=self.model,
                     max_tokens=self.max_tokens,
                     system=system,
-                    messages=[{"role": "user", "content": body}],
+                    # Pictures first, then the numbers and the words about
+                    # them: 5.2 has the passes read screen and sound together,
+                    # and a caption that arrives before its picture is read as
+                    # a description instead of a question about one.
+                    messages=[{"role": "user", "content": content}],
                 )
             except Exception as exc:  # transport / rate limit / overload
                 if not self._worth_retrying(exc):

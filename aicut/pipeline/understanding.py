@@ -16,6 +16,7 @@ work with.
 from __future__ import annotations
 
 import logging
+from typing import Sequence
 from pathlib import Path
 
 from aicut.analysis.signals import boundary_hints, label_situations, topic_shifts
@@ -101,6 +102,25 @@ def _read_faces(ctx: RunContext, frames: list[tuple[float, str]]) -> None:
 
 
 # ---------------------------------------------------------------------------
+def _frames_to_show(ctx: RunContext, frames: Sequence[str]) -> list[str]:
+    """Thin a window's frames down to what is worth sending, evenly spaced.
+
+    A window sampled at the pass-1 interval holds far more frames than a single
+    judgement needs, and every one of them is bytes on the wire and tokens in
+    the context. Taking the first N would show only the window's opening; these
+    are spread across it so the answer is about the whole window.
+
+    The count is a profile value (17.1), not a constant: how many looks a window
+    needs is exactly the kind of thing 17.4 measures.
+    """
+    frames = list(frames)
+    limit = ctx.profile.get_int("scan.frames_per_window")
+    if limit <= 0 or len(frames) <= limit:
+        return frames if limit != 0 else []
+    step = len(frames) / limit
+    return [frames[min(len(frames) - 1, int(i * step))] for i in range(limit)]
+
+
 def _first_pass(
     ctx: RunContext, duration: float, situations, *, frames: list[tuple[float, str]] | None = None
 ) -> list[WindowSummary]:
@@ -138,6 +158,10 @@ def _first_pass(
         window_utterances = [u for u in utterances if u.end_sec > at and u.start_sec < end]
         situation = _situation_at(situations, at, end)
         window_frames = [path for sec, path in sampled if at <= sec < end]
+        # 5.2: the pass reads screen and sound together. The frames go to the
+        # judgement as pictures, not as a list of paths it cannot open - a
+        # motion score says the picture changed, never what is in it.
+        shown = _frames_to_show(ctx, window_frames)
 
         payload = {
             "window": {"start_sec": at, "end_sec": end},
@@ -149,12 +173,12 @@ def _first_pass(
             "tension_peak": ctx.signals.tension.peak(at, end),
             "tension_mean": ctx.signals.tension.mean(at, end),
             "signal_markers": _markers(ctx, at, end),
-            "frames": window_frames,
+            "frames": shown,
             "face_ratio": _mean_face_ratio(ctx, at, end),
             "pass2_trigger": trigger,
             "memory": _memory(summaries),
         }
-        answer = ctx.producer.summarize_window(payload)
+        answer = ctx.producer.summarize_window(payload, images=shown)
         summaries.append(WindowSummary(
             start_sec=at,
             end_sec=end,
@@ -191,6 +215,7 @@ def _second_pass(ctx: RunContext, windows: list[WindowSummary], *, sample_frames
                     prefix=f"d{int(window.start_sec)}",
                 )
             ]
+        shown = _frames_to_show(ctx, frames)
         answer = ctx.producer.detail_window({
             "window": {"start_sec": window.start_sec, "end_sec": window.end_sec},
             "why_marked": window.notable_reason,
@@ -205,8 +230,8 @@ def _second_pass(ctx: RunContext, windows: list[WindowSummary], *, sample_frames
                 for s in ctx.signals.silences
                 if s.end_sec > window.start_sec and s.start_sec < window.end_sec
             ],
-            "frames": frames,
-        })
+            "frames": shown,
+        }, images=shown)
         details.append(DetailSpan(
             start_sec=window.start_sec,
             end_sec=window.end_sec,

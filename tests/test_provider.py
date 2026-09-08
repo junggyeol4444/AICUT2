@@ -49,7 +49,7 @@ class ShapeTests(unittest.TestCase):
         class Fixed(Producer):
             name = "fixed"
 
-            def complete_json(self, task, system, payload_in):
+            def complete_json(self, task, system, payload_in, *, images=()):
                 return payload
 
         return Fixed()
@@ -157,7 +157,10 @@ class AnthropicProducerTests(unittest.TestCase):
         self.assertEqual(answer["structure_name"], "result_first")
         sent = fake.calls[0]
         self.assertIn("Never assume a number of videos", sent["system"])
-        self.assertIn("the boss fight", sent["messages"][0]["content"])
+        content = sent["messages"][0]["content"]
+        self.assertEqual([block["type"] for block in content], ["text"],
+                         "no frames were passed, so nothing but the text should be sent")
+        self.assertIn("the boss fight", content[-1]["text"])
 
     def test_transient_failures_are_retried(self):
         producer, fake = self._build(['{"ok": true}'], failures=2)
@@ -258,3 +261,61 @@ class AnthropicProducerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FrameSendingTests(unittest.TestCase):
+    """5.2: the passes read screen and sound together, so frames must be sent."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        # A one-pixel PNG is enough: the question is whether bytes reach the
+        # request, not what is in them.
+        self.png = self.dir / "frame.png"
+        self.png.write_bytes(bytes.fromhex(
+            "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753"
+            "de0000000c4944415408d763f8ffff3f0005fe02fea735dd6a0000000049454e44ae426082"
+        ))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_a_frame_is_sent_as_an_image_block_before_the_text(self):
+        from aicut.llm.anthropic_provider import _image_blocks
+
+        blocks = _image_blocks([str(self.png)])
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0]["type"], "image")
+        self.assertEqual(blocks[0]["source"]["media_type"], "image/png")
+        self.assertTrue(blocks[0]["source"]["data"], "the frame arrived with no bytes")
+
+    def test_a_path_that_is_not_an_image_is_skipped_not_sent(self):
+        from aicut.llm.anthropic_provider import _image_blocks
+
+        other = self.dir / "notes.txt"
+        other.write_text("not a frame", encoding="utf-8")
+        self.assertEqual(_image_blocks([str(other)]), [])
+
+    def test_a_missing_frame_does_not_take_the_window_down(self):
+        from aicut.llm.anthropic_provider import _image_blocks
+
+        self.assertEqual(_image_blocks([str(self.dir / "gone.png")]), [])
+
+    def test_an_oversized_frame_is_skipped(self):
+        import aicut.llm.anthropic_provider as module
+
+        big = self.dir / "big.png"
+        big.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
+        original = module._MAX_IMAGE_BYTES
+        module._MAX_IMAGE_BYTES = 8
+        try:
+            self.assertEqual(module._image_blocks([str(big)]), [])
+        finally:
+            module._MAX_IMAGE_BYTES = original
+
+    def test_the_request_carries_pictures_then_text(self):
+        producer, fake = AnthropicProducerTests._build(self, ['{"summary": "ok", "notable": false}'])
+        producer.summarize_window({"window": {"start_sec": 0, "end_sec": 10}},
+                                  images=[str(self.png)])
+        content = fake.calls[0]["messages"][0]["content"]
+        self.assertEqual([block["type"] for block in content], ["image", "text"])

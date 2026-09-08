@@ -18,7 +18,8 @@
       "subtitle",
       "tension",
       "thumbnail",
-      "topic_shift"
+      "topic_shift",
+      "scan.frames_per_window"
     ]
   },
   "scan": {
@@ -35,7 +36,8 @@
       ]
     },
     "long_source_split_sec": 36000,
-    "long_source_chunk_sec": 7200
+    "long_source_chunk_sec": 7200,
+    "frames_per_window": 6
   },
   "silence": {
     "level_db": -35.0,

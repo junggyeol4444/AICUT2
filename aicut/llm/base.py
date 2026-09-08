@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Sequence
 
 from aicut.errors import ProviderError
 from aicut.llm import prompts
@@ -36,17 +36,31 @@ class Producer(ABC):
 
     # -- transport ----------------------------------------------------------
     @abstractmethod
-    def complete_json(self, task: str, system: str, payload: dict[str, Any]) -> Any:
-        """Answer one task, returning parsed JSON. Implemented per backend."""
+    def complete_json(
+        self, task: str, system: str, payload: dict[str, Any],
+        *, images: Sequence[str] = (),
+    ) -> Any:
+        """Answer one task, returning parsed JSON. Implemented per backend.
+
+        `images` are frame paths the judgement is supposed to look at. 5.2 says
+        the passes read picture and sound together — 인물, 표정, 동작, 게임
+        상황, 게임 결과, 채팅·후원, 화면 사건 — and none of that is in a
+        transcript or in a motion score. A backend that cannot take pictures
+        ignores them and says so in its answer rather than pretending it looked.
+        """
 
     # -- 5장: understanding --------------------------------------------------
-    def summarize_window(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def summarize_window(
+        self, payload: dict[str, Any], *, images: Sequence[str] = (),
+    ) -> dict[str, Any]:
         """First pass over one window: what is going on, and is it worth a second look."""
-        return self._object("summarize_window", payload)
+        return self._object("summarize_window", payload, images=images)
 
-    def detail_window(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def detail_window(
+        self, payload: dict[str, Any], *, images: Sequence[str] = (),
+    ) -> dict[str, Any]:
         """Second pass: exact boundaries, beats, reactions inside a marked window."""
-        return self._object("detail_window", payload)
+        return self._object("detail_window", payload, images=images)
 
     def build_events(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         """Fold the passes into events with their scattered mentions (5.4)."""
@@ -97,8 +111,10 @@ class Producer(ABC):
         return self._object("learn_from_performance", payload)
 
     # -- helpers -------------------------------------------------------------
-    def _object(self, task: str, payload: dict[str, Any]) -> dict[str, Any]:
-        result = self.complete_json(task, prompts.system_for(task), payload)
+    def _object(
+        self, task: str, payload: dict[str, Any], *, images: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        result = self.complete_json(task, prompts.system_for(task), payload, images=images)
         if not isinstance(result, dict):
             raise ProviderError(f"task {task!r} expected an object, got {type(result).__name__}")
         return result

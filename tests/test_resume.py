@@ -29,9 +29,9 @@ class CountingProducer(MockProducer):
         super().__init__()
         self.calls: dict[str, int] = {}
 
-    def complete_json(self, task, system, payload):
+    def complete_json(self, task, system, payload, *, images=()):
         self.calls[task] = self.calls.get(task, 0) + 1
-        return super().complete_json(task, system, payload)
+        return super().complete_json(task, system, payload, images=images)
 
 
 class FailingAtDiscovery(CountingProducer):

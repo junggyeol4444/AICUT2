@@ -459,3 +459,49 @@ class FailureReasonInTheReportTests(unittest.TestCase):
             self.assertEqual(report["error"], "ffprobe found no audio stream")
         finally:
             store.close()
+
+
+class FramesReachTheJudgementTests(unittest.TestCase):
+    """5.2: frames must arrive at the judgement as pictures, not as path strings.
+
+    They used to be put in the payload as a list of file paths and serialised
+    to JSON, so the model was handed filenames it could not open. Nothing about
+    that failed - the run produced summaries, from sound alone, which is the
+    tool 1.2 criticises.
+    """
+
+    def _windowed(self, frame_count: int, limit: int):
+        from aicut.config import CalibrationProfile
+        from aicut.pipeline import understanding
+
+        class Ctx:
+            profile = CalibrationProfile.load().with_overrides(
+                {"scan": {"frames_per_window": limit}}, measured=["scan.frames_per_window"],
+            )
+
+        return understanding._frames_to_show(Ctx(), [f"f{i}.jpg" for i in range(frame_count)])
+
+    def test_a_window_under_the_limit_shows_everything_it_has(self):
+        self.assertEqual(self._windowed(3, 6), ["f0.jpg", "f1.jpg", "f2.jpg"])
+
+    def test_a_dense_window_is_thinned_to_the_profile_count(self):
+        shown = self._windowed(300, 6)
+        self.assertEqual(len(shown), 6)
+
+    def test_the_thinning_spans_the_window_rather_than_its_opening(self):
+        """Taking the first six would describe the first six seconds."""
+        shown = self._windowed(300, 6)
+        self.assertEqual(shown[0], "f0.jpg")
+        self.assertGreater(int(shown[-1][1:-4]), 200, "the tail of the window is never seen")
+
+    def test_zero_means_send_none(self):
+        self.assertEqual(self._windowed(300, 0), [])
+
+    def test_the_mock_records_what_it_was_shown(self):
+        """The offline suite can only pin this wiring if the mock reports it."""
+        from aicut.llm.mock import MockProducer
+
+        producer = MockProducer()
+        producer.summarize_window({"window": {"start_sec": 0, "end_sec": 5}, "utterances": []},
+                                  images=["a.jpg", "b.jpg"])
+        self.assertEqual(producer.seen_images["summarize_window"], ["a.jpg", "b.jpg"])
