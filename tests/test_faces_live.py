@@ -9,6 +9,7 @@ differently from each other.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 import unittest
@@ -19,6 +20,39 @@ from aicut.config import CalibrationProfile
 from aicut.media import faces as faces_mod
 from aicut.media.ffmpeg_util import have_ffmpeg
 from aicut.models import SituationLabel, Utterance
+
+
+def backend_name() -> str | None:
+    detector = faces_mod.build_detector()
+    return detector.backend if detector else None
+
+
+def a_drawn_face_is_enough() -> bool:
+    """Whether the drawn fixtures below can exercise the detector that is loaded.
+
+    The cascade backend fires on the geometry of a face - an oval with two dark
+    patches and a line - which is why these fixtures could be drawn at all.
+    YuNet is a learned detector trained on photographs and does not fire on a
+    drawing; measured here, it returns a face ratio of exactly 0.0 for the
+    fixture below while finding faces in real footage.
+
+    So the drawn tests gate on the cascade, and the YuNet path is exercised by
+    AICUT_TEST_FACE_IMAGE - a real photograph the runner supplies. Pretending a
+    drawing is a face would make the yunet backend look tested when it is not.
+    """
+    return backend_name() == "cascade"
+
+
+def a_detector_can_be_built() -> bool:
+    """OpenCV being importable is not the same as a detector existing.
+
+    OpenCV 5.0 removed CascadeClassifier and ships no face model, so on 5.x a
+    detector needs a YuNet .onnx supplied through AICUT_FACE_MODEL. Gating these
+    on `available()` alone made every one of them fail the moment OpenCV 5 was
+    installed - against code that was answering correctly, by declining to build
+    a detector it has no model for.
+    """
+    return faces_mod.build_detector() is not None
 
 
 def _draw_face(path: Path, *, size=(640, 360), radius=(90, 120), center=(320, 180)) -> None:
@@ -61,7 +95,8 @@ def _draw_gameplay(path: Path, size=(640, 360)) -> None:
     cv2.imwrite(str(path), image)
 
 
-@unittest.skipUnless(faces_mod.available(), "OpenCV is not installed")
+@unittest.skipUnless(a_detector_can_be_built(),
+                     "no face detector: OpenCV<5, or OpenCV 5 with AICUT_FACE_MODEL set")
 class FaceDetectorLiveTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -80,9 +115,11 @@ class FaceDetectorLiveTests(unittest.TestCase):
         cls._tmp.cleanup()
 
     def test_a_backend_was_chosen_and_named(self):
-        self.assertIsNotNone(self.detector, "OpenCV is present but no detector could be built")
+        self.assertIsNotNone(self.detector)
         self.assertIn(self.detector.backend, {"cascade", "yunet"})
 
+    @unittest.skipUnless(a_drawn_face_is_enough(),
+                         "the drawn fixture only exercises the cascade backend")
     def test_a_face_is_found_and_measured(self):
         reading = self.detector.read_frame(str(self.face), 12.0)
         self.assertEqual(reading.at_sec, 12.0)
@@ -97,6 +134,8 @@ class FaceDetectorLiveTests(unittest.TestCase):
         self.assertEqual(reading.face_ratio, 0.0)
         self.assertIsNone(reading.box)
 
+    @unittest.skipUnless(a_drawn_face_is_enough(),
+                         "the drawn fixture only exercises the cascade backend")
     def test_a_closer_face_fills_more_of_the_frame(self):
         near = self.detector.read_frame(str(self.big_face), 0.0)
         far = self.detector.read_frame(str(self.face), 0.0)
@@ -107,6 +146,8 @@ class FaceDetectorLiveTests(unittest.TestCase):
         broken.write_bytes(b"not a png")
         self.assertEqual(self.detector.read_frame(str(broken), 3.0).face_ratio, 0.0)
 
+    @unittest.skipUnless(a_drawn_face_is_enough(),
+                         "the drawn fixture only exercises the cascade backend")
     def test_expression_change_moves_with_the_face(self):
         still = [self.detector.read_frame(str(self.face), t) for t in (0.0, 1.0)]
         moved = [self.detector.read_frame(str(self.face), 0.0),
@@ -114,6 +155,8 @@ class FaceDetectorLiveTests(unittest.TestCase):
         self.assertLess(faces_mod.expression_change(still, 0.5),
                         faces_mod.expression_change(moved, 0.5))
 
+    @unittest.skipUnless(a_drawn_face_is_enough(),
+                         "the drawn fixture only exercises the cascade backend")
     def test_the_signal_separates_talk_from_gameplay(self):
         """5.3: this is the whole reason the face signal exists."""
         profile = CalibrationProfile.load()
@@ -133,10 +176,13 @@ class FaceDetectorLiveTests(unittest.TestCase):
         self.assertFalse(any(s.label is SituationLabel.UNKNOWN for s in talk + game))
 
 
-@unittest.skipUnless(faces_mod.available() and have_ffmpeg(), "needs OpenCV and ffmpeg")
+@unittest.skipUnless(a_detector_can_be_built() and have_ffmpeg(),
+                     "needs ffmpeg and a usable face detector")
 class FaceOnSampledFramesTests(unittest.TestCase):
     """Frames come off the source through ffmpeg before the detector sees them."""
 
+    @unittest.skipUnless(a_drawn_face_is_enough(),
+                         "the drawn fixture only exercises the cascade backend")
     def test_frames_sampled_from_a_video_carry_a_face_signal(self):
         from aicut.media.vision import sample_frames
 
@@ -162,3 +208,50 @@ class FaceOnSampledFramesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+REAL_FACE = os.environ.get("AICUT_TEST_FACE_IMAGE", "")
+
+
+@unittest.skipUnless(REAL_FACE and Path(REAL_FACE).is_file(),
+                     "set AICUT_TEST_FACE_IMAGE to a photograph of a face")
+class RealPhotographTests(unittest.TestCase):
+    """The learned backend, on the only thing it recognises: an actual face.
+
+    A drawn oval is not a face to YuNet, so the fixtures above cannot reach it.
+    This does, when the runner supplies a photograph - which is also how the
+    5.3 label and the 9.2 expression signal behave in production, where every
+    frame is a photograph.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.detector = faces_mod.build_detector()
+        if cls.detector is None:
+            raise unittest.SkipTest("no face detector could be built")
+
+    def test_a_real_face_is_found(self):
+        reading = self.detector.read_frame(REAL_FACE, 0.0)
+        self.assertGreater(reading.face_ratio, 0.0, "no face found in the supplied photograph")
+        self.assertIsNotNone(reading.box)
+
+    def test_the_box_is_inside_the_frame(self):
+        reading = self.detector.read_frame(REAL_FACE, 0.0)
+        x, y, w, h = reading.box
+        self.assertGreaterEqual(x, 0)
+        self.assertGreaterEqual(y, 0)
+        self.assertGreater(w, 0)
+        self.assertGreater(h, 0)
+
+    def test_a_face_that_does_not_move_reports_no_expression_change(self):
+        """9.2's 표정: the same frame twice is a still face, not a missing one."""
+        readings = [self.detector.read_frame(REAL_FACE, t) for t in (0.0, 1.0)]
+        self.assertAlmostEqual(faces_mod.expression_change(readings, 0.5), 0.0, places=3)
+
+    def test_a_frame_with_no_face_reads_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            blank = Path(tmp) / "blank.png"
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+                            "-i", "color=c=gray:s=320x180:d=1", "-frames:v", "1", str(blank)],
+                           check=True, capture_output=True)
+            self.assertEqual(self.detector.read_frame(str(blank), 0.0).face_ratio, 0.0)

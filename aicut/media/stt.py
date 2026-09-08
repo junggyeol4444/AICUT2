@@ -204,6 +204,9 @@ class FasterWhisperTranscriber(Transcriber):
         language: str | None = None,
         beam_size: int = 5,
         vad_filter: bool = True,
+        condition_on_previous_text: bool = False,
+        hallucination_silence_threshold: float | None = 2.0,
+        no_speech_threshold: float = 0.6,
         model=None,
     ):
         self.model_size = model_size
@@ -212,6 +215,17 @@ class FasterWhisperTranscriber(Transcriber):
         self.language = language
         self.beam_size = beam_size
         self.vad_filter = vad_filter
+        #: faster-whisper defaults this to True, which is right for a podcast and
+        #: wrong for a broadcast: one bad segment conditions the next, and on
+        #: hours of audio with long silences that becomes a repetition loop that
+        #: fills minutes with text nobody said. Those minutes then reach the
+        #: pacing judge as speech and the subtitles as captions.
+        self.condition_on_previous_text = condition_on_previous_text
+        #: Silence longer than this is not turned into words. The pipeline's own
+        #: report already warns that "music or room tone can become invented text
+        #: on screen"; this is where that is prevented rather than reported.
+        self.hallucination_silence_threshold = hallucination_silence_threshold
+        self.no_speech_threshold = no_speech_threshold
         self._model = model
 
     def _load(self):
@@ -238,6 +252,10 @@ class FasterWhisperTranscriber(Transcriber):
                 beam_size=self.beam_size,
                 vad_filter=self.vad_filter,
                 word_timestamps=True,   # required: pacing measures gaps between words
+                condition_on_previous_text=self.condition_on_previous_text,
+                no_speech_threshold=self.no_speech_threshold,
+                **({"hallucination_silence_threshold": self.hallucination_silence_threshold}
+                   if self.hallucination_silence_threshold else {}),
             )
             # `segments` is lazy: it must be drained while the extracted track
             # still exists, or the decode reads a file this block already removed.
@@ -392,6 +410,7 @@ def build_transcriber(
     language: str | None = None,
     hf_token: str | None = None,
     diarize: bool = True,
+    long_form: bool = True,
 ) -> Transcriber:
     """The recogniser named by `backend`, built the same way everywhere.
 
@@ -406,6 +425,11 @@ def build_transcriber(
         return FasterWhisperTranscriber(
             model_size=model_size, device=device,
             compute_type=compute_type, language=language,
+            # `long_form` is what a broadcast is: hours, with real silence in it.
+            # Turning it off restores faster-whisper's own defaults, which suit a
+            # short clip.
+            condition_on_previous_text=not long_form,
+            hallucination_silence_threshold=2.0 if long_form else None,
         )
     if backend != "whisperx":
         raise ValueError(

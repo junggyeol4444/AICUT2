@@ -21,6 +21,10 @@ diarization = ["pyannote.audio"]
 vision = ["opencv-python", "numpy"]
 audio = ["librosa", "soundfile"]
 llm = ["anthropic"]
+# 18장 says where the program/AI line is, not which machine the AI runs on, and
+# 20.1's stack names no model service. Ollama needs no client library - the
+# provider talks to it over stdlib HTTP - so this exists only to name the choice.
+local-llm = []
 youtube = ["google-api-python-client", "google-auth-oauthlib"]
 yaml = ["PyYAML"]
 # 4.2 collects the reference video and its comments. The download is yt-dlp;

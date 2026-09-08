@@ -86,7 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--profile", default=None)
-    parser.add_argument("--producer", default="mock", choices=["mock", "anthropic"])
+    from aicut.llm import PRODUCERS
+
+    parser.add_argument("--producer", default="mock", choices=list(PRODUCERS))
     parser.add_argument("--no-browser", action="store_true", help="start the server only")
     parser.add_argument("--check", action="store_true",
                         help="start, verify the server answers, and exit (used by CI)")

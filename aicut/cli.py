@@ -19,7 +19,7 @@ from aicut.config import CalibrationProfile
 from aicut.db.store import Store
 from aicut.errors import AicutError
 from aicut.intelligence.knowledge import ProductionKnowledge
-from aicut.llm import get_producer
+from aicut.llm import PRODUCERS, get_producer
 from aicut.media.ffmpeg_util import have_ffmpeg
 from aicut.media.stt import TranscriptFileTranscriber
 from aicut.pipeline.context import RunContext
@@ -47,6 +47,33 @@ def _store(args) -> Store:
     return Store(Path(args.workspace) / "aicut.db")
 
 
+def _producer(args):
+    """The reasoning backend these flags name.
+
+    One place, because a provider option honoured by `run` and ignored by
+    `learn` is a provider the operator cannot actually point anywhere.
+    """
+    kwargs = {}
+    if getattr(args, "producer", "mock") == "ollama":
+        for flag, key in (("ollama_host", "host"), ("ollama_model", "model"),
+                          ("ollama_num_ctx", "num_ctx")):
+            value = getattr(args, flag, None)
+            if value is not None:
+                kwargs[key] = value
+    producer = get_producer(args.producer, **kwargs)
+    check = getattr(producer, "check", None)
+    if check is not None:
+        # Ask now whether the model is actually there. Without this a six-hour
+        # broadcast is parsed and scanned before the first window discovers the
+        # server was never started, and the operator waits an hour to be told
+        # something a request at second zero could have said.
+        state = check()
+        print(f"{producer.name}: {state['model']} at {state['host']}"
+              + ("" if state.get("takes_images", True)
+                 else "  [WARNING] this model does not take images; 5.2 needs one that does"))
+    return producer
+
+
 def _profile(args) -> CalibrationProfile:
     return CalibrationProfile.load(args.profile, strict=getattr(args, "strict", False))
 
@@ -57,7 +84,7 @@ def _pipeline(args) -> Pipeline:
     return Pipeline(
         _store(args),
         _profile(args),
-        get_producer(args.producer),
+        _producer(args),
         workspace=Path(args.workspace),
         knowledge=knowledge,
     )
@@ -69,7 +96,7 @@ def _context(args, project) -> RunContext:
         project=project,
         store=store,
         profile=_profile(args),
-        producer=get_producer(args.producer),
+        producer=_producer(args),
         workspace=Path(args.workspace),
     )
 
@@ -401,7 +428,7 @@ def cmd_calibrate(args) -> int:
     else:
         harness = ReplayHarness(
             dataset, workspace=Path(args.workspace), project_id=args.project,
-            producer=get_producer(args.producer),
+            producer=_producer(args),
         )
         evaluate = build_evaluator(harness)
 
@@ -593,7 +620,7 @@ def cmd_learn(args) -> int:
     from aicut.intelligence.knowledge import ProductionKnowledge
 
     store = _store(args)
-    producer = get_producer(args.producer)
+    producer = _producer(args)
     knowledge_path = Path(args.workspace) / "knowledge.json"
 
     if args.loop == "reference":
@@ -1159,7 +1186,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="aicut", description=__doc__)
     parser.add_argument("--workspace", default=str(DEFAULT_WORKSPACE), help="where outputs and the database live")
     parser.add_argument("--profile", default=None, help="calibration profile json (17장)")
-    parser.add_argument("--producer", default="mock", choices=["mock", "anthropic"], help="reasoning backend")
+    parser.add_argument("--producer", default="mock", choices=list(PRODUCERS),
+                        help="reasoning backend; mock decides nothing (18장)")
+    parser.add_argument("--ollama-host", default=None, metavar="URL",
+                        help="where Ollama is (default $OLLAMA_HOST or http://localhost:11434)")
+    parser.add_argument("--ollama-model", default=None, metavar="NAME",
+                        help="Ollama model. 5.2 needs one that takes images - llava, "
+                             "qwen2.5vl, gemma3. A text-only model judges from words alone")
+    parser.add_argument("--ollama-num-ctx", type=int, default=None, metavar="N",
+                        help="context window for the Ollama model")
     parser.add_argument("--strict", action="store_true", help="refuse to read provisional parameters (17.5)")
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1174,7 +1209,7 @@ def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--workspace", default=argparse.SUPPRESS)
     common.add_argument("--profile", default=argparse.SUPPRESS)
-    common.add_argument("--producer", default=argparse.SUPPRESS, choices=["mock", "anthropic"])
+    common.add_argument("--producer", default=argparse.SUPPRESS, choices=list(PRODUCERS))
     common.add_argument("--strict", action="store_true", default=argparse.SUPPRESS)
     common.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS)
 
