@@ -31,10 +31,16 @@ test.
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ElementTree
+
+try:
+    from urllib.parse import quote
+except ImportError:                           # pragma: no cover - py2 hosts
+    from urllib import quote
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 for _path in (_HERE, os.path.join(os.path.dirname(_HERE), "common")):
@@ -96,16 +102,33 @@ def rational(seconds, frame_num, frame_den):
     return "{}/{}s".format(frames * frame_num, frame_den)
 
 
+#: `C:\...` or `C:/...` - an absolute path on Windows, wherever this runs.
+_DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
 def media_src(path):
-    """A `file://` URI for the source, which is what makes the timeline relink."""
-    absolute = os.path.abspath(path)
-    try:
-        from urllib.parse import quote
-    except ImportError:                       # pragma: no cover - py2 hosts
-        from urllib import quote
-    if absolute[1:3] in (":\\", ":/"):        # C:\... on Windows
-        return "file:///" + quote(absolute.replace("\\", "/"), safe="/:")
-    return "file://" + quote(absolute, safe="/")
+    """The `src` of a media-rep: a URL, percent-encoded, on every platform.
+
+    The shape is read from the string, not from the running platform, and the
+    path is never made absolute against this machine. A model written on Linux
+    carries `/broadcasts/x.mkv`; resolving that on Windows produced
+    `file:///D:/broadcasts/x.mkv` - a drive letter that came from wherever the
+    adapter happened to be run, pointing at a file that is not there. Windows CI
+    caught exactly that, by comparing this against the exporter, which had
+    already been taught the same lesson.
+    """
+    if "://" in path:                                  # already a URL
+        return path
+    windows_absolute = bool(_DRIVE.match(path))
+    text = path.replace("\\", "/") if windows_absolute or "\\" in path else path
+    # ':' stays literal so a drive letter survives; everything else that is not
+    # URL-safe is encoded, which is what puts %20 in place of a space.
+    quoted = quote(text, safe="/:")
+    if windows_absolute:
+        return "file:///" + quoted
+    if text.startswith("/"):
+        return "file://" + quoted
+    return quoted                                      # relative: a relative URL
 
 
 def sequence_fps(sequence, stated=None):

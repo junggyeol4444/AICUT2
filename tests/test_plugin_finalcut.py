@@ -97,6 +97,37 @@ class SameTimelineAsTheExporterTests(unittest.TestCase):
         self.assertTrue(mine_src.startswith("file://"))
 
 
+class TheSourceUriTests(unittest.TestCase):
+    """The `src` is what makes the timeline relink instead of coming in offline.
+
+    Windows CI caught this twice, in two files: resolving the model's path
+    against the running machine turned a Linux-written `/broadcasts/x.mkv` into
+    `file:///D:/broadcasts/x.mkv` - a drive letter from wherever the adapter
+    happened to run, pointing at nothing.
+    """
+
+    def test_it_matches_the_exporter_on_every_shape_of_path(self):
+        for path in ("/broadcasts/stream.mkv",
+                     "C:\\Users\\j\\방송 [1].mkv",
+                     "C:/x/y.mkv",
+                     "relative/x.mkv",
+                     "/보관/방송 2026.mkv",
+                     "file:///already/there.mkv"):
+            with self.subTest(path=path):
+                self.assertEqual(finalcut.media_src(path), exchange.media_src(path))
+
+    def test_a_posix_path_keeps_its_own_root(self):
+        self.assertEqual(finalcut.media_src("/broadcasts/stream.mkv"),
+                         "file:///broadcasts/stream.mkv")
+
+    def test_a_windows_path_keeps_its_drive(self):
+        self.assertEqual(finalcut.media_src("C:/x/y.mkv"), "file:///C:/x/y.mkv")
+
+    def test_a_space_is_encoded_rather_than_ending_the_name(self):
+        """An importer either fails to relink or takes the space as the end."""
+        self.assertIn("%20", finalcut.media_src("/broadcasts/live 2026.mkv"))
+
+
 class TheDocumentTests(unittest.TestCase):
     def test_timeline_order_is_kept_not_source_order(self):
         """2.4: a video may open on the moment that happened last."""
