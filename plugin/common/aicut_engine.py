@@ -32,6 +32,28 @@ class EngineError(Exception):
     """The engine could not be reached, or refused."""
 
 
+#: The state a run reaches when it finished but the pipeline failed inside it.
+FAILED_STATE = "FAILED"
+
+
+def failure_reason(state):
+    """Why this job failed, or None if it did not.
+
+    A run the pipeline itself failed returns rather than raising, so the job's
+    `error` can be empty while its state says FAILED and the reason sits in the
+    report. An adapter reading `error` alone then fell through to "no episodes",
+    which it reported as 16장's 제작 가치 있는 콘텐츠 없음 - a normal ending. That
+    is the one thing a failure must not be mistaken for.
+    """
+    stated = str(state.get("error") or "").strip()
+    if stated:
+        return stated
+    if state.get("state") != FAILED_STATE:
+        return None
+    reported = str((state.get("report") or {}).get("error") or "").strip()
+    return reported or "the engine did not say why"
+
+
 class Engine(object):
     """One aicut engine, addressed over HTTP.
 

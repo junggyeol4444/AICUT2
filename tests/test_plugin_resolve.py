@@ -348,6 +348,30 @@ class TheButtonTests(unittest.TestCase):
 
         self.assertIn("ffmpeg died", str(raised.exception))
 
+    def test_a_run_the_pipeline_failed_is_not_called_finding_nothing(self):
+        """Measured against a real engine: a missing speech recogniser came back
+        as state FAILED with an empty `error`, and reading `error` alone
+        reported it as 16장's "nothing worth producing in this broadcast"."""
+        engine = self.FakeEngine([], states=[{
+            "running": False, "state": "FAILED", "error": "",
+            "report": {"error": "whisperx is not installed"},
+        }])
+        said = []
+
+        with self.assertRaises(aicut_resolve.EngineError) as raised:
+            self._run(engine, on_progress=said.append)
+
+        self.assertIn("whisperx is not installed", str(raised.exception))
+        self.assertFalse(any("16장" in line for line in said))
+
+    def test_a_failure_with_no_reason_anywhere_still_raises(self):
+        engine = self.FakeEngine([], states=[{"running": False, "state": "FAILED"}])
+
+        with self.assertRaises(aicut_resolve.EngineError) as raised:
+            self._run(engine, on_progress=lambda line: None)
+
+        self.assertIn("did not say why", str(raised.exception))
+
     def test_the_persons_mode_reaches_the_engine(self):
         """25장's choice is theirs; the adapter passes it through."""
         engine = self.FakeEngine([{"episode_id": "e1"}], model=_model())

@@ -299,7 +299,7 @@
         var project = currentProject();
         var source = sourceInSequence(project.activeSequence);
         var engine = engineFromEnvironment();
-        var job, jobId, projectId, state, line, last = "", episodes, document, list;
+        var job, jobId, projectId, state, line, last = "", failed, episodes, document, list;
         var built = [];
         var i, j;
 
@@ -324,8 +324,9 @@
             if (!state.running) { break; }
             $.sleep(POLL_MS);
         }
-        if (state.error) {
-            throw new aicutEngine.EngineError("the analysis failed: " + state.error);
+        failed = aicutEngine.failureReason(state);
+        if (failed) {
+            throw new aicutEngine.EngineError("the analysis failed: " + failed);
         }
         projectId = state.project_id || projectId;
         if (!projectId) {

@@ -11,6 +11,7 @@
 | `aicut export` (교환 파일) | Premiere Pro, Final Cut Pro, Resolve, Avid 등 **전부** | 불필요 | 실제 영상의 계획으로 생성·검증 완료 |
 | `plugin/resolve` (어댑터) | DaVinci Resolve 전용 | `plugin/common` + `plugin/resolve` 복사 | 판단·산술·엔진 호출은 테스트됨, **Resolve API 호출은 미검증** |
 | `plugin/premiere` (어댑터) | Premiere Pro 전용 | `plugin/common` + `plugin/premiere` 복사 | 판단·산술·엔진 호출은 테스트됨, **Premiere API 호출은 미검증** |
+| `plugin/finalcut` (어댑터) | Final Cut Pro 전용 | `plugin/common` + `plugin/finalcut` 복사 | 문서 생성·엔진 호출은 테스트됨, **Final Cut 임포트는 미검증** |
 
 기획안 37장의 구조다:
 
@@ -224,3 +225,69 @@ Resolve와 같은 이유로 같은 방식이다. Premiere Pro가 이 환경에 �
 
 FCPXML 경로(`aicut export --format fcpxml`)는 Premiere에서도 되고 그쪽은 검증됐다.
 스크립트가 안 맞으면 그걸 쓰면 된다.
+
+---
+
+## 4. Final Cut Pro — `plugin/finalcut`
+
+Final Cut Pro에는 **스크립트 API가 없다.** 부를 함수도, 그걸 부를 인터프리터도
+앱 안에 없다. 그래서 마지막 화살표가 문서다 — 시퀀스를 FCPXML로 쓰고 파일을
+Final Cut에 넘기면, Final Cut이 자기 임포트 창을 연다. Resolve·Premiere와 다른
+건 그것뿐이고, 읽는 모델도 순서도 거부하는 것도 같다.
+
+### 설치
+
+`plugin/common` 과 `plugin/finalcut` 을 나란히 두면 끝이다. 편집기가 로드하는 게
+아니라 **터미널에서 직접 돌리는 스크립트**다. 파이썬 3.6 이상이면 되고 표준
+라이브러리만 쓴다.
+
+### 사용 — 두 갈래
+
+```bash
+# 이미 받아 둔 모델로 만들기
+python plugin/finalcut/aicut_finalcut.py <edit-model>.json
+
+# 4장의 버튼: 방송을 엔진에 넘기고, 기다렸다가, 돌아온 걸로 만들기
+python plugin/finalcut/aicut_finalcut.py --engine /방송/live.mkv
+```
+
+* macOS면 다 쓰고 나서 Final Cut에 파일을 넘긴다 (`open -a "Final Cut Pro"`).
+  다른 OS면 그렇게 말하고 파일 경로만 알려준다. `--no-open` 으로 끌 수 있다.
+* `--fps` — 모델에 프레임 레이트가 없으면 **묻는다.** 모든 컷이 이 숫자를 기준으로
+  놓이기 때문에 30으로 찍어버리면 전부 밀린다.
+* `--out` — 파일 나갈 위치. 기본은 모델 옆.
+* 엔진 주소는 `AICUT_ENGINE`, 키는 `AICUT_API_KEY`.
+
+### FCPXML이 못 담는 것 — 조용히 빼먹지 않는다
+
+한 번 돌린 실제 출력이다:
+
+```
+AI_ep-live -> .../AI_ep-live.fcpxml
+  skipped 40.000-40.005s: shorter than one frame at 30.0 fps
+  1 audio placement(s) the model asks for are not in the XML:
+    BGM /music/bed.mp3 at 0.00s
+  3 marker(s) in the model are not in the XML
+  1 caption(s) in the model; import an .srt for them (`aicut export <plan> --format srt`)
+```
+
+BGM·효과음은 asset으로 선언해야 하는데 모델은 경로만 주고 길이·프레임 레이트를
+주지 않는다. 안 잰 숫자를 지어내느니 몇 개가 빠졌는지 말한다. 마커도 같은 이유다 —
+FCPXML의 마커는 타임라인이 아니라 **클립 안에** 붙어서, 엉뚱한 클립에 붙은 마커는
+없느니만 못하다.
+
+### 검증 상태
+
+Final Cut Pro는 macOS 전용이고 이 환경에 없다. 임포트 자체는 해 본 적 없다.
+대신 확인한 것:
+
+* 이 어댑터가 쓴 FCPXML을 **`aicut export --format fcpxml` 이 같은 에피소드로
+  만든 문서와 컷 단위로 대조한다** (`tests/test_plugin_finalcut.py`). offset,
+  start, duration, 원본 파일 URI, `frameDuration` 이 전부 같아야 통과한다.
+  23.976 같은 NTSC 레이트도 `1001/24000` 으로 같게 나온다.
+* 실제 파일(120초짜리 mkv)로 한 번 돌려서 XML이 파싱되고, asset이 **존재하는
+  파일**을 가리키고, 한 프레임보다 짧은 컷은 버려지면서 이름이 불리는 것까지 봤다.
+* 엔진 실패를 "만들 게 없다"로 잘못 읽던 버그를 여기서 잡았다. 실제로 엔진에
+  붙여 보니 STT가 없어서 실패한 작업이 `state: FAILED`, `error: ""` 로 오는데
+  `error`만 보던 어댑터 셋 다 그걸 16장(제작 가치 있는 콘텐츠 없음)으로 보고했다.
+  이제 셋 다 공통 판정(`failure_reason`)을 쓰고, 서버도 이유를 `error`에 채운다.

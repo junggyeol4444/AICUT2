@@ -36,7 +36,7 @@ for _path in (_HERE, os.path.join(os.path.dirname(_HERE), "common")):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from aicut_engine import Engine, EngineError            # noqa: E402
+from aicut_engine import Engine, EngineError, failure_reason  # noqa: E402
 from aicut_model import (                               # noqa: E402
     ModelError,
     audio_clips,
@@ -245,15 +245,18 @@ def build_from_engine(engine=None, mode="new_sequence", poll_sec=3.0, on_progres
         if not state.get("running", False):
             break
         time.sleep(poll_sec)
-    if state.get("error"):
-        raise EngineError("the analysis failed: {}".format(state["error"]))
+    failed = failure_reason(state)
+    if failed:
+        raise EngineError("the analysis failed: {}".format(failed))
     project_id = state.get("project_id") or project_id
     if not project_id:
         raise EngineError("the engine did not say which project it made")
 
     episodes = engine.episodes(project_id)
     if not episodes:
-        # 16장: 제작 가치 있는 콘텐츠 없음 is a normal ending, not a failure.
+        # 16장: 제작 가치 있는 콘텐츠 없음 is a normal ending, not a failure - and
+        # by here it is the only thing an empty list can mean, because a failure
+        # was raised above.
         say("the engine found nothing worth producing in this broadcast (16장)")
         return []
 

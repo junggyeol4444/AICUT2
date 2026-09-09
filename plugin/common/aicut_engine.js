@@ -23,6 +23,8 @@ var aicutEngine = (function () {
     "use strict";
 
     var DEFAULT_HOST = "127.0.0.1";
+    //: The state a run reaches when it finished but the pipeline failed inside it.
+    var FAILED_STATE = "FAILED";
     var DEFAULT_PORT = 8765;
 
     function EngineError(message) {
@@ -148,6 +150,23 @@ var aicutEngine = (function () {
         return jsonDecode(body, method + " " + path);
     }
 
+    /* Why this job failed, or null if it did not.
+     *
+     * A run the pipeline itself failed returns rather than raising, so the
+     * job's `error` can be empty while its state says FAILED and the reason
+     * sits in the report. An adapter reading `error` alone then fell through to
+     * "no episodes", which it reported as 16장's 제작 가치 있는 콘텐츠 없음 - a
+     * normal ending. That is the one thing a failure must not be mistaken for.
+     */
+    function failureReason(state) {
+        var stated = String((state && state.error) || "");
+        var reported;
+        if (stated.replace(/^\s+|\s+$/g, "")) { return stated; }
+        if (!state || state.state !== FAILED_STATE) { return null; }
+        reported = String((state.report && state.report.error) || "");
+        return reported.replace(/^\s+|\s+$/g, "") || "the engine did not say why";
+    }
+
     function Engine(options) {
         options = options || {};
         this.host = options.host || DEFAULT_HOST;
@@ -210,8 +229,10 @@ var aicutEngine = (function () {
     return {
         DEFAULT_HOST: DEFAULT_HOST,
         DEFAULT_PORT: DEFAULT_PORT,
+        FAILED_STATE: FAILED_STATE,
         EngineError: EngineError,
         Engine: Engine,
+        failureReason: failureReason,
         buildRequest: buildRequest,
         parseResponse: parseResponse,
         jsonEncode: jsonEncode,

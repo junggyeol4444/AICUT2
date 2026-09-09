@@ -123,6 +123,16 @@ class JobRunner:
                 result = work(job)
                 job.state = getattr(result, "final_state", State.FAILED).value
                 job.report = getattr(result, "report", {}) or {}
+                if job.state == State.FAILED.value and not job.error:
+                    # A run the pipeline itself failed returns rather than
+                    # raising, so nothing filled this in: the API said FAILED
+                    # with an empty reason, and a client reading `error` alone
+                    # could not tell it from a run that finished with nothing to
+                    # make. The reason is in the report either way.
+                    job.error = str(job.report.get("error") or "").strip() or (
+                        "the run failed and said no reason; see the log"
+                    )
+                    job.append("error", job.error)
             except Exception as exc:
                 job.state = State.FAILED.value
                 job.error = f"{type(exc).__name__}: {exc}"

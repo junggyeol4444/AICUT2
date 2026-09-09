@@ -317,6 +317,46 @@ class NodeTests(unittest.TestCase):
         )
         self.assertIn("aicut ui", result["error"])
 
+    def test_a_failed_run_is_not_read_as_finding_nothing(self):
+        """Measured against a real engine: a missing speech recogniser came back
+        as state FAILED with an empty `error`, and an adapter reading `error`
+        alone fell through to "no episodes" - 16장's normal ending."""
+        reason = self.run_js(
+            "return aicutEngine.failureReason({running: false, state: 'FAILED',"
+            " error: '', report: {error: 'whisperx is not installed'}});"
+        )
+        self.assertEqual(reason, "whisperx is not installed")
+
+    def test_a_run_that_finished_with_nothing_to_make_is_not_a_failure(self):
+        """16장: NO_CONTENT is a finished run, not a failed one."""
+        self.assertIsNone(self.run_js(
+            "return aicutEngine.failureReason({running: false, state: 'NO_CONTENT'});"
+        ))
+
+    def test_a_failure_with_no_reason_anywhere_still_says_it_failed(self):
+        reason = self.run_js(
+            "return aicutEngine.failureReason({running: false, state: 'FAILED'});"
+        )
+        self.assertIn("did not say why", reason)
+
+    def test_the_two_connectors_answer_the_same_way(self):
+        """The JS wire and the Python one are the same rule, twice."""
+        from plugin.common.aicut_engine import failure_reason
+
+        states = [
+            {"running": False, "state": "FAILED", "error": "",
+             "report": {"error": "whisperx is not installed"}},
+            {"running": False, "state": "FAILED"},
+            {"running": False, "state": "NO_CONTENT"},
+            {"running": False, "state": "REVIEW_PENDING", "error": "ffmpeg died"},
+        ]
+        got = self.run_js(
+            "return input.states.map(function (s) {"
+            " return aicutEngine.failureReason(s); });",
+            states=states,
+        )
+        self.assertEqual(got, [failure_reason(s) for s in states])
+
     def test_a_reply_is_parsed_into_the_model_the_adapter_builds_from(self):
         model = _model([Cut(sequence_order=1, source_start_sec=0.0, source_end_sec=1.0)])
         count = self.run_js(

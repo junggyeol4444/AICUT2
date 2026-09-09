@@ -3,6 +3,7 @@
 import json
 import tempfile
 import threading
+import types
 import time
 import unittest
 import urllib.error
@@ -184,6 +185,59 @@ class UiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FailedJobReasonTests(unittest.TestCase):
+    """A FAILED run has to say why, in the field that exists to say it.
+
+    The pipeline catches its own failures and returns a result rather than
+    raising, so nothing filled `error` in: the API said FAILED with an empty
+    reason. Measured against a running server - a missing speech recogniser
+    came back that way, and an editor plugin reading `error` alone called it
+    "nothing worth producing in this broadcast" (16장's normal ending).
+    """
+
+    def _run(self, result):
+        import time
+
+        from aicut.ui.jobs import JobRunner
+
+        registry = JobRunner()
+        job = registry.start("j1", "p1", "/a.mkv", lambda _job: result)
+        deadline = time.time() + 5
+        while job.running and time.time() < deadline:
+            time.sleep(0.01)
+        return job
+
+    def test_the_reason_in_the_report_reaches_the_job(self):
+        from aicut.pipeline.states import State
+
+        result = types.SimpleNamespace(
+            final_state=State.FAILED,
+            report={"error": "whisperx is not installed"},
+        )
+
+        job = self._run(result)
+
+        self.assertEqual(job.state, "FAILED")
+        self.assertIn("whisperx is not installed", job.error)
+
+    def test_a_failure_with_no_reason_says_that_rather_than_nothing(self):
+        from aicut.pipeline.states import State
+
+        job = self._run(types.SimpleNamespace(final_state=State.FAILED, report={}))
+
+        self.assertEqual(job.state, "FAILED")
+        self.assertTrue(job.error)
+
+    def test_a_run_that_finished_with_nothing_to_make_is_not_an_error(self):
+        """16장: NO_CONTENT is a finished run, not a failed one."""
+        from aicut.pipeline.states import State
+
+        job = self._run(types.SimpleNamespace(final_state=State.NO_CONTENT, report={}))
+
+        self.assertEqual(job.state, "NO_CONTENT")
+        self.assertEqual(job.error, "")
 
 
 class JobIsolationTests(unittest.TestCase):
