@@ -194,6 +194,17 @@ def _escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace("{", "(").replace("}", ")").replace("\n", "\\N")
 
 
+def _escape_field(text: str) -> str:
+    """A value for one of the comma-separated Dialogue columns.
+
+    Only the last column may contain a comma: libass splits the nine before it
+    on commas, so a speaker called "Kim, Minsu" pushed the margins one column
+    along and the rest of the line was read as the caption text - the line came
+    out at the wrong position, or vanished.
+    """
+    return _escape(text).replace(",", ";")
+
+
 def build_ass(
     lines: Sequence[SubtitleLine],
     profile: SubtitleStyleProfile,
@@ -219,7 +230,7 @@ def build_ass(
     for name in used:
         style = profile.resolved(name)
         values = ",".join(_fmt(style.get(field, 0)) for field in _FIELD_ORDER)
-        head.append(f"Style: {name},{values}")
+        head.append(f"Style: {_escape_field(name)},{values}")
 
     head += [
         "",
@@ -241,8 +252,8 @@ def build_ass(
             tags += transform
         text = (f"{{{tags}}}" if tags else "") + _escape(line.text)
         head.append(
-            f"Dialogue: 0,{_timestamp(line.start_sec)},{_timestamp(line.end_sec)},{style_name},"
-            f"{_escape(line.speaker)},0,0,0,,{text}"
+            f"Dialogue: 0,{_timestamp(line.start_sec)},{_timestamp(line.end_sec)},"
+            f"{_escape_field(style_name)},{_escape_field(line.speaker)},0,0,0,,{text}"
         )
     return "\n".join(head) + "\n"
 

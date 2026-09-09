@@ -41,6 +41,19 @@ class ProductionKnowledge:
     source_output_rules: list[str] = field(default_factory=list)                # 12.3 B
     sample_size: int = 0
 
+    def carry_over_learning(self, previous: "ProductionKnowledge") -> "ProductionKnowledge":
+        """Keep what the other two loops learned when loop A rebuilds this file.
+
+        12.3 runs three loops into one knowledge file. Loop A rebuilds its own
+        patterns from every stored reference, which is right for A and wrong for
+        the file: saving that fresh object dropped 12.3 B's inferred rules and
+        12.2's performance learning, so a reference run silently undid every
+        pair the operator had fed in.
+        """
+        self.source_output_rules = list(previous.source_output_rules)
+        self.performance_learning = list(previous.performance_learning)
+        return self
+
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in self.__dict__.items()}
 
@@ -63,7 +76,14 @@ class ProductionKnowledge:
         return target
 
     def summary_for_planner(self, *, limit: int = 8) -> dict[str, Any]:
-        """A compact view for the planner: patterns plus how well supported they are."""
+        """A compact view for the planner: patterns plus how well supported they are.
+
+        The pattern lists come out of :func:`consolidate` ordered by support, so
+        the first few are the best-supported ones. The two learning lists do not:
+        loop B and loop C append to them run after run, so the front of those
+        lists is the oldest thing ever learned. Slicing them from the front hid
+        every later correction behind the first eight - the newest are taken.
+        """
         return {
             "sample_size": self.sample_size,
             "structure": self.structure_patterns[:limit],
@@ -80,8 +100,8 @@ class ProductionKnowledge:
             "production_logic": self.production_logic[:limit],
             "titles": self.title_patterns[:limit],
             "thumbnails": self.thumbnail_patterns[:limit],
-            "learned_from_own_performance": self.performance_learning[:limit],
-            "learned_from_human_edits": self.source_output_rules[:limit],
+            "learned_from_own_performance": self.performance_learning[-limit:],
+            "learned_from_human_edits": self.source_output_rules[-limit:],
             "caveat": "observed patterns, not rules; compare against this content before applying (4.5, 7.1)",
         }
 

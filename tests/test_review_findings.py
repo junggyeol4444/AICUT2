@@ -320,7 +320,7 @@ class LoudnessOverTheBedTests(unittest.TestCase):
         from aicut.render.ffmpeg import measure_loudness_with_bed
 
         source = inspect.getsource(measure_loudness_with_bed)
-        self.assertIn("return measure_loudness(joined_path, profile)", source)
+        self.assertIn("return measure_loudness(joined_path, profile, targets=targets)", source)
 
     def test_the_renderer_measures_with_the_bed_it_will_add(self):
         import inspect

@@ -142,6 +142,67 @@ class Clip:
         removed = sum(max(0.0, b - a) for a, b in self.remove_spans)
         return max(0.0, self.duration_sec - removed)
 
+    @property
+    def kept_spans(self) -> list[tuple[float, float]]:
+        """The source spans that survive, in source time and in order."""
+        spans = [(self.in_point_sec, self.out_point_sec)]
+        for start, end in sorted((float(a), float(b)) for a, b in self.remove_spans):
+            out: list[tuple[float, float]] = []
+            for a, b in spans:
+                if end <= a or start >= b:
+                    out.append((a, b))
+                    continue
+                if start > a:
+                    out.append((a, min(start, b)))
+                if end < b:
+                    out.append((max(end, a), b))
+            spans = out
+        return [(a, b) for a, b in spans if b - a > 1e-6]
+
+    def timeline_offset_of(self, cut_offset_sec: float) -> float | None:
+        """Put a time measured on the cut's own clock onto the timeline.
+
+        8.2 states a graphic's start/end and a sound effect's `at` in seconds
+        from the start of the cut, written before pacing removed anything. On a
+        0-20s cut with 10-12s removed, 14s is 12s into the clip on the timeline.
+        Copying the number placed it at 14s: late by the removal, and further
+        with every removal before it.
+
+        ``None`` means the time is inside material pacing removed - it does not
+        exist on the timeline, and the renderer drops the effect there too.
+        """
+        target = self.in_point_sec + float(cut_offset_sec)
+        elapsed = 0.0
+        for a, b in self.kept_spans:
+            if target < a:
+                return None
+            if target < b:
+                return elapsed + (target - a)
+            elapsed += b - a
+        return None
+
+    def timeline_offset_at_least(self, cut_offset_sec: float) -> float | None:
+        """The first surviving moment at or after ``cut_offset_sec``."""
+        target = self.in_point_sec + float(cut_offset_sec)
+        elapsed = 0.0
+        for a, b in self.kept_spans:
+            if target < b:
+                return elapsed + max(0.0, target - a)
+            elapsed += b - a
+        return None
+
+    def timeline_offset_at_most(self, cut_offset_sec: float) -> float | None:
+        """The last surviving moment at or before ``cut_offset_sec``."""
+        target = self.in_point_sec + float(cut_offset_sec)
+        elapsed = 0.0
+        found: float | None = None
+        for a, b in self.kept_spans:
+            if target <= a:
+                break
+            found = elapsed + min(b - a, target - a)
+            elapsed += b - a
+        return found
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "clip_id": self.clip_id,
@@ -453,24 +514,28 @@ def from_edit_plan(
         graphic = visual.get("graphic")
         if graphic:
             spec = {"path": graphic} if isinstance(graphic, str) else dict(graphic)
-            start = clip.timeline_position_sec + float(spec.get("start", 0.0))
-            end = clip.timeline_position_sec + float(spec.get("end", clip.duration_sec))
-            sequence.track("video", TRACK_GRAPHIC).texts.append(
-                Text(start_sec=start, end_sec=end,
-                     text=str(spec.get("path", "")), style="graphic")
-            )
+            start = clip.timeline_offset_at_least(float(spec.get("start", 0.0)))
+            end = clip.timeline_offset_at_most(float(spec.get("end", clip.duration_sec)))
+            if start is not None and end is not None and end > start:
+                sequence.track("video", TRACK_GRAPHIC).texts.append(
+                    Text(start_sec=clip.timeline_position_sec + start,
+                         end_sec=clip.timeline_position_sec + end,
+                         text=str(spec.get("path", "")), style="graphic")
+                )
 
         sfx = audio_effect.get("sfx")
         if sfx:
             spec = {"path": sfx} if isinstance(sfx, str) else dict(sfx)
-            sequence.track("audio", TRACK_SFX).audio.append(AudioClip(
-                clip_id=f"{clip.clip_id}-sfx",
-                source_media_id="",
-                path=str(spec.get("path", "")),
-                timeline_position_sec=clip.timeline_position_sec + float(spec.get("at", 0.0)),
-                gain_db=(float(spec["gain_db"]) if spec.get("gain_db") is not None else None),
-                name="sfx",
-            ))
+            at = clip.timeline_offset_of(float(spec.get("at", 0.0)))
+            if at is not None:
+                sequence.track("audio", TRACK_SFX).audio.append(AudioClip(
+                    clip_id=f"{clip.clip_id}-sfx",
+                    source_media_id="",
+                    path=str(spec.get("path", "")),
+                    timeline_position_sec=clip.timeline_position_sec + at,
+                    gain_db=(float(spec["gain_db"]) if spec.get("gain_db") is not None else None),
+                    name="sfx",
+                ))
 
     sequence.duration_sec = timeline.duration
 
@@ -510,8 +575,13 @@ def from_edit_plan(
 
     # A marker where each cut begins: 29장 has the person check the result, and
     # the cut boundaries are where they would step through it.
-    for cut_start, order in zip(timeline.cut_boundaries(), sorted(cuts_by_order)):
-        cut = cuts_by_order[order]
+    # A cut pacing removed whole is nowhere in the sequence, so it gets no
+    # marker rather than the next cut's place (the same misalignment 11.2's
+    # chapter marks had).
+    for order, cut_start in sorted(timeline.cut_starts().items()):
+        cut = cuts_by_order.get(order)
+        if cut is None:
+            continue
         sequence.markers.append(Marker(
             at_sec=cut_start,
             name=cut.scene_role or f"cut {order}",

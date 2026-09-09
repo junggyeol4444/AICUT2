@@ -83,6 +83,10 @@ class QuotaLedger:
     def can_afford(self, units: int) -> bool:
         return self.state().remaining >= units
 
+    def reserve(self, units: int, reason: str) -> bool:
+        """Check and book in one go. False means the day cannot afford it."""
+        return self.store.reserve_quota(self.pt_date(), units, reason, self.daily_limit)
+
     def spend(self, units: int, reason: str) -> QuotaState:
         self.store.record_quota(self.pt_date(), units, reason)
         return self.state()

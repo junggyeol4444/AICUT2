@@ -92,6 +92,15 @@ def watch(
 
     media = probe_mod.probe(path)
     interval = profile.get_float("scan.pass1_frame_interval_sec")
+    # The scan interval is for the source being edited, where every window is
+    # looked at separately. A reference is read in one go, so the same interval
+    # put a whole video's frames into a single call: 36 minutes at 5s is 432
+    # images, and a long stream is thousands. The cap spreads the same coverage
+    # over as many frames as the analysis can actually be shown, by widening the
+    # interval rather than decoding frames and then throwing them away.
+    cap = profile.get_int("scan.reference_frame_cap")
+    if cap > 0 and media.duration_sec > 0:
+        interval = max(interval, media.duration_sec / cap)
     frames: list[str] = []
     if frames_dir is not None:
         samples = vision_mod.sample_frames(
@@ -100,7 +109,11 @@ def watch(
             interval_sec=interval, prefix="ref",
         )
         frames = [f.path for f in samples]
-    return {"frames": frames, "duration_sec": media.duration_sec}
+    return {
+        "frames": frames,
+        "duration_sec": media.duration_sec,
+        "frame_interval_sec": interval,
+    }
 
 
 def watch_all(
@@ -232,8 +245,9 @@ def analyze(
             payload["note"] += (
                 "; the images are this video's own material."
                 + (" The first is its thumbnail." if thumbnail else "")
-                + (f" The remaining {len(frames)} are frames sampled across the video,"
-                   " in time order." if frames else "")
+                + (f" The remaining {len(frames)} are frames sampled across the video"
+                   f" every {seen.get('frame_interval_sec', 0.0):.1f}s, in time order."
+                   if frames else "")
                 + " 4.3 asks what its editing is - 컷, 평균 장면 길이, 확대, 크롭, 화면 전환,"
                   " 자막, 강조, 효과, 효과음, BGM, 이미지, 밈, 리플레이 - and who the video"
                   " is about. 4.4 asks why it was made that way"

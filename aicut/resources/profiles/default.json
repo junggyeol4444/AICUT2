@@ -22,7 +22,8 @@
       "scan.frames_per_window",
       "calibration",
       "performance",
-      "render.zoom.min_piece_sec"
+      "render.zoom.min_piece_sec",
+      "scan.reference_frame_cap"
     ]
   },
   "scan": {
@@ -40,7 +41,8 @@
     },
     "long_source_split_sec": 36000,
     "long_source_chunk_sec": 7200,
-    "frames_per_window": 6
+    "frames_per_window": 6,
+    "reference_frame_cap": 60
   },
   "silence": {
     "level_db": -35.0,

@@ -42,6 +42,10 @@ class SignalBundle:
     """Raw ``(time_sec, level_db)``, kept so the tension curve can be rebuilt
     with different profile weights without decoding the source again (17.4)."""
     speaker_reliability: float = 0.0
+    measured_with: dict[str, Any] = field(default_factory=dict)
+    """The profile numbers the media was measured under (17.1). A resumed run
+    with a different profile must measure again rather than reuse silences found
+    at another noise floor."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,6 +69,7 @@ class SignalBundle:
                 for f in self.faces
             ],
             "speaker_reliability": self.speaker_reliability,
+            "measured_with": dict(self.measured_with),
         }
 
     @classmethod
@@ -96,6 +101,7 @@ class SignalBundle:
                 for f in data.get("faces", [])
             ],
             speaker_reliability=float(data.get("speaker_reliability", 0.0)),
+            measured_with=dict(data.get("measured_with", {})),
         )
 
     def save(self, path: str | Path) -> Path:

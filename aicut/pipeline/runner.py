@@ -361,6 +361,10 @@ def build_report(ctx: RunContext, state: State, episodes: list[Episode]) -> dict
         "no_content_reason": ctx.report.get("no_content_reason"),
         "resumed_from": ctx.report.get("resumed_from"),
         "source_warnings": ctx.report.get("source_warnings", []),
+        # Measured signals thrown away rather than reused, and why. A resumed
+        # run under a re-tuned profile has to decode the media again (17.1), and
+        # the report is where the extra hours are accounted for.
+        "cache_invalidated": ctx.report.get("cache_invalidated", []),
         "elapsed_sec": ctx.report.get("elapsed_sec"),
         # 22.6 asks the work report for 처리 시간, and R3 makes it an open risk
         # to be measured rather than estimated. Per stage, because that is the

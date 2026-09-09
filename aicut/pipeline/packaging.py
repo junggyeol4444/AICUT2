@@ -35,7 +35,8 @@ def run(ctx: RunContext, episodes: list[Episode], *, knowledge: dict | None = No
 
 def package_episode(ctx: RunContext, episode: Episode, *, knowledge: dict | None = None) -> Episode:
     timeline = Timeline.from_cuts(episode.timeline)
-    boundaries = timeline.cut_boundaries()
+    starts = timeline.cut_starts()
+    boundaries = list(starts.values())
     candidates = ctx.store.candidates(ctx.project.project_id)
     core = " / ".join(c.core_summary for c in candidates if c.candidate_id in episode.candidate_ids)
 
@@ -56,7 +57,12 @@ def package_episode(ctx: RunContext, episode: Episode, *, knowledge: dict | None
                 # chapter mark can honestly sit.
                 "output_start_sec": round(at, 2),
             }
-            for c, at in zip(sorted(episode.timeline, key=lambda c: c.sequence_order), boundaries)
+            for c in sorted(episode.timeline, key=lambda c: c.sequence_order)
+            # A cut pacing removed whole is not in the finished video, so it has
+            # no honest time to offer a chapter mark. Pairing the cuts with the
+            # boundaries in order handed its place to the next cut and shifted
+            # every chapter after it (11.2).
+            if (at := starts.get(c.sequence_order)) is not None
         ],
         "subtitles": [{"at_sec": s.start_sec, "text": s.text} for s in episode.subtitles[:200]],
         "youtube_knowledge": knowledge or {},

@@ -884,7 +884,9 @@ def cmd_learn(args) -> int:
                   f"{', thumbnail' if seen.get('thumbnail') else ''}")
         print(f"analysing {len(references)}")
         reference_mod.analyze(producer, store, references, watched=watched)
-        knowledge = reference_mod.build_knowledge(store)
+        knowledge = reference_mod.build_knowledge(store).carry_over_learning(
+            ProductionKnowledge.load(knowledge_path)
+        )
         knowledge.save(knowledge_path)
         print(f"knowledge from {knowledge.sample_size} references -> {knowledge_path}")
         return 0

@@ -70,7 +70,6 @@ class YouTubeClient:
             response = self._data.videos().list(
                 part="snippet,statistics,contentDetails", id=",".join(chunk)
             ).execute()
-            self.ledger.spend(COST_LIST, "videos.list")
             for item in response.get("items", []):
                 stats = item.get("statistics", {})
                 snippet = item.get("snippet", {})
@@ -99,7 +98,6 @@ class YouTubeClient:
         response = self._data.search().list(
             part="id", q=query, type="video", maxResults=max_results, **params
         ).execute()
-        self.ledger.spend(COST_SEARCH, "search.list")
         return [item["id"]["videoId"] for item in response.get("items", []) if item.get("id", {}).get("videoId")]
 
     # -- own channel only ----------------------------------------------------
@@ -221,7 +219,6 @@ class YouTubeClient:
             # would let it escape and the PT-midnight queue of 11.4 would never
             # be reached for the one failure it exists to handle.
             raise self._as_quota_error(exc, "videos.insert") from exc
-        self.ledger.spend(COST_VIDEO_INSERT, "videos.insert")
         video_id = response["id"]
         return UploadResult(
             video_id=video_id,
@@ -244,7 +241,6 @@ class YouTubeClient:
         response = self._data.playlists().list(
             part="snippet", mine=True, maxResults=50,
         ).execute()
-        self.ledger.spend(COST_LIST, "playlists.list")
         wanted = playlist.strip().casefold()
         match = next(
             (item for item in response.get("items", [])
@@ -264,7 +260,6 @@ class YouTubeClient:
             body={"snippet": {"playlistId": playlist_id,
                               "resourceId": {"kind": "youtube#video", "videoId": video_id}}},
         ).execute()
-        self.ledger.spend(COST_PLAYLIST_ITEM_INSERT, "playlistItems.insert")
         return playlist_id
 
     def set_thumbnail(self, video_id: str, image_path: str) -> None:
@@ -274,7 +269,6 @@ class YouTubeClient:
             raise AicutError("install aicut[youtube] to talk to the YouTube API") from exc
         self._require(COST_THUMBNAIL_SET, "thumbnails.set")
         self._data.thumbnails().set(videoId=video_id, media_body=MediaFileUpload(image_path)).execute()
-        self.ledger.spend(COST_THUMBNAIL_SET, "thumbnails.set")
 
     def set_privacy(self, video_id: str, privacy_status: str) -> None:
         """Flip a reviewed video to public - the only step that makes it visible."""
@@ -282,7 +276,6 @@ class YouTubeClient:
         self._data.videos().update(
             part="status", body={"id": video_id, "status": {"privacyStatus": privacy_status}}
         ).execute()
-        self.ledger.spend(COST_VIDEO_INSERT // 32, "videos.update")
 
     # -- helpers -------------------------------------------------------------
     #: Reasons the Data API gives when the project is out of units. Matched on
@@ -312,7 +305,15 @@ class YouTubeClient:
         )
 
     def _require(self, units: int, what: str) -> None:
-        if not self.ledger.can_afford(units):
+        """Book the units for this call, or refuse it (11.4).
+
+        The booking is the check: asking whether the day can afford a call and
+        then recording the spend after it returned left the whole call in
+        between, and a second process asking in that window got the same yes.
+        Booking first also means a call that fails partway still counted - the
+        API charges for the attempt, so that is the true reading.
+        """
+        if not self.ledger.reserve(units, what):
             reset = self.ledger.next_reset()
             raise QuotaExceeded(
                 f"{what} needs {units} units; {self.ledger.state().remaining} left today. "
@@ -352,6 +353,7 @@ def load_credentials(client_secrets: str, token_path: str):  # pragma: no cover 
     secure = store_from_environment(token.with_suffix(token.suffix + ".enc"))
 
     creds = None
+    from_plaintext = False
     stored = secure.load() if secure else None
     if stored is not None:
         creds = Credentials.from_authorized_user_info(stored, SCOPES)
@@ -359,6 +361,7 @@ def load_credentials(client_secrets: str, token_path: str):  # pragma: no cover 
         creds = Credentials.from_authorized_user_info(
             json.loads(token.read_text(encoding="utf-8")), SCOPES
         )
+        from_plaintext = True
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
@@ -373,4 +376,11 @@ def load_credentials(client_secrets: str, token_path: str):  # pragma: no cover 
         else:
             token.parent.mkdir(parents=True, exist_ok=True)
             token.write_text(creds.to_json(), encoding="utf-8")
+    elif secure and from_plaintext:
+        # Turning encryption on with a token already cached did nothing: the
+        # token was valid, so the branch that writes the encrypted copy never
+        # ran, and the plaintext file the key exists to replace stayed in the
+        # workspace until the token expired.
+        secure.save(json.loads(creds.to_json()))
+        token.unlink(missing_ok=True)
     return creds

@@ -101,12 +101,19 @@ def intersect_silences(
     does contain the guest, so a silence here is a moment where all of the
     speech tracks are quiet together.
 
+    A track with no silences at all is somebody talking from start to finish,
+    which is the strongest possible reason not to cut anywhere: it makes the
+    intersection empty rather than dropping out of it. Skipping such a track
+    turned the mic's silences into the answer and cut the guest's speech.
+
     Spans shorter than ``min_duration_sec`` after the intersection are dropped:
     the same threshold the per-track detection used, applied again because an
     intersection is shorter than either side.
     """
-    lists = [sorted(s, key=lambda x: x.start_sec) for s in per_track if s]
+    lists = [sorted(s, key=lambda x: x.start_sec) for s in per_track]
     if not lists:
+        return []
+    if any(not s for s in lists):
         return []
     common = list(lists[0])
     for other in lists[1:]:
@@ -200,18 +207,30 @@ def _parse_rms(output: str, *, start_sec: float = 0.0, frame_sec: float = 1.0) -
     return list(zip(times[: len(levels)], levels))
 
 
-def measure_loudness(path: str, profile: CalibrationProfile) -> LoudnessStats:
+def measure_loudness(
+    path: str, profile: CalibrationProfile,
+    *, targets: tuple[float, float, float] | None = None,
+) -> LoudnessStats:
     """First pass of the two-pass EBU R128 normalisation (10.4 수정 3).
 
     Single-pass loudnorm adjusts dynamically and leaves the level drifting
     between sections, which on a timeline stitched from a dozen different points
     in a broadcast is exactly the artefact one notices. So measure first, then
     apply the measurement as fixed input values in the render pass.
+
+    ``targets`` are the I/TP/LRA the correcting pass will use. loudnorm's
+    measurement carries an offset computed against the target it was told, so
+    measuring at one target and correcting at another lands at neither. The
+    render settings can differ from the profile - 8.2 lets a stored plan carry
+    its own - so the caller states what the second pass will ask for.
     """
     require_ffmpeg()
-    target_i = profile.get_float("render.audio.loudness.integrated_lufs")
-    target_tp = profile.get_float("render.audio.loudness.true_peak_dbtp")
-    target_lra = profile.get_float("render.audio.loudness.loudness_range")
+    if targets is not None:
+        target_i, target_tp, target_lra = targets
+    else:
+        target_i = profile.get_float("render.audio.loudness.integrated_lufs")
+        target_tp = profile.get_float("render.audio.loudness.true_peak_dbtp")
+        target_lra = profile.get_float("render.audio.loudness.loudness_range")
     output = run([
         "ffmpeg", "-hide_banner", "-nostats", "-i", path,
         "-af", f"loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}:print_format=json",

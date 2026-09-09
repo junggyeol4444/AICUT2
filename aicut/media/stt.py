@@ -66,6 +66,12 @@ def speech_source(path: str, track_index: int | None):
 
 
 class Transcriber(ABC):
+    #: Whether ``track_index`` actually selects a stream. A recogniser that runs
+    #: on the media honours it; one that replays a finished transcript cannot,
+    #: and asking it once per track returned the whole transcript once per track
+    #: (5.2's multi-track read then counted every utterance twice).
+    separates_tracks = True
+
     @abstractmethod
     def transcribe(self, path: str, media: MediaInfo,
                    *, track_index: int | None = None) -> list[Utterance]:
@@ -79,6 +85,8 @@ class TranscriptFileTranscriber(Transcriber):
     for tests. Accepts WhisperX-shaped JSON: ``{"segments": [{start, end, text,
     speaker, words: [...]}]}``.
     """
+
+    separates_tracks = False
 
     def __init__(self, transcript_path: str | Path, track: str = "mic"):
         self.transcript_path = Path(transcript_path)

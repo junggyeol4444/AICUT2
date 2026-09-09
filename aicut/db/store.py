@@ -592,6 +592,26 @@ class Store:
         )
         self.conn.commit()
 
+    def reserve_quota(self, pt_date: str, units: int, reason: str, limit: int) -> bool:
+        """Book ``units`` against the day only if they fit, in one statement.
+
+        Reading the total and then writing the spend are two statements, and
+        between them another process - a second `aicut upload`, the UI's worker
+        beside the CLI - can do the same. Both saw room for one upload, both
+        uploaded, and 11.4's daily allowance was over-spent by a full video. The
+        row here is inserted by a SELECT that re-checks the total under the
+        write lock, so exactly one of them gets it.
+        """
+        cur = self.conn.execute(
+            "INSERT INTO tb_quota_usage (pt_date, units, reason, at)"
+            " SELECT ?,?,?,? WHERE ? + ("
+            "   SELECT COALESCE(SUM(units),0) FROM tb_quota_usage WHERE pt_date=?"
+            " ) <= ?",
+            (pt_date, units, reason, _now(), units, pt_date, limit),
+        )
+        self.conn.commit()
+        return cur.rowcount == 1
+
     def quota_used(self, pt_date: str) -> int:
         row = self.conn.execute(
             "SELECT COALESCE(SUM(units),0) AS used FROM tb_quota_usage WHERE pt_date=?", (pt_date,)

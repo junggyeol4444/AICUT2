@@ -627,14 +627,16 @@ def measure_loudness_with_bed(
     that has music under it means the advertised two-pass normalisation misses
     its LUFS target and can clip on a loud bed.
     """
+    # The correcting pass reads its targets off the settings, which a stored
+    # plan can carry (8.2) - so measuring against the profile's numbers instead
+    # applied an offset computed for a target nobody was aiming at.
+    targets = (settings.loudness_i, settings.loudness_tp, settings.loudness_lra)
     bed = _bgm_input(bgm)
     if bed is None:
-        return measure_loudness(joined_path, profile)
+        return measure_loudness(joined_path, profile, targets=targets)
 
     require_ffmpeg()
-    target_i = profile.get_float("render.audio.loudness.integrated_lufs")
-    target_tp = profile.get_float("render.audio.loudness.true_peak_dbtp")
-    target_lra = profile.get_float("render.audio.loudness.loudness_range")
+    target_i, target_tp, target_lra = targets
     loudnorm = (
         f"loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}:print_format=json"
     )
@@ -731,19 +733,37 @@ def _effects_for_piece(
     # 2s into the piece starting at source 12s; summing durations put it at 4s,
     # and a larger removal moves it onto the wrong piece or off the end.
     offset = segment.source_start_sec - cut.source_start_sec
-    span = (offset, offset + segment.duration)
-    elapsed = offset
+    scope_timed_effects(visual, audio, offset=offset, duration=segment.duration)
+    return visual, audio
+
+
+def scope_timed_effects(
+    visual: dict[str, Any], audio: dict[str, Any], *, offset: float, duration: float,
+) -> None:
+    """Move a graphic and a sound effect onto the piece that contains them.
+
+    ``offset`` is where this piece begins on the clock the times are written on,
+    and ``duration`` how long it runs. A graphic that ends before the piece
+    starts, or a sound effect timed after it ends, does not belong here at all
+    and is removed rather than clamped to the edge.
+
+    Both callers split one continuous stretch of video into pieces: pacing
+    removing something out of the middle of a cut, and 10.4-1 (a) cutting a cut
+    at its zoom keyframes. Either way an 8.2 time written for the whole stretch
+    is meaningless on a piece until it is rebased.
+    """
+    span = (offset, offset + duration)
 
     graphic = visual.get("graphic")
     if graphic:
         spec = {"path": graphic} if isinstance(graphic, str) else dict(graphic)
         start = float(spec.get("start", 0.0))
-        end = float(spec.get("end", elapsed + segment.duration))
+        end = float(spec.get("end", offset + duration))
         if end <= span[0] or start >= span[1]:
             visual.pop("graphic", None)
         else:
-            spec["start"] = max(0.0, start - elapsed)
-            spec["end"] = min(segment.duration, end - elapsed)
+            spec["start"] = max(0.0, start - offset)
+            spec["end"] = min(duration, end - offset)
             visual["graphic"] = spec
 
     sfx = audio.get("sfx")
@@ -751,11 +771,10 @@ def _effects_for_piece(
         spec = {"path": sfx} if isinstance(sfx, str) else dict(sfx)
         at = float(spec.get("at", 0.0))
         if span[0] <= at < span[1]:
-            spec["at"] = at - elapsed
+            spec["at"] = at - offset
             audio["sfx"] = spec
         else:
             audio.pop("sfx", None)
-    return visual, audio
 
 
 #: Only for a caller with no profile. How short a framing step may be is a
@@ -899,16 +918,22 @@ class Renderer:
                         piece_visual = dict(visual)
                         piece_visual.pop("keyframes", None)
                         piece_visual.update(framing)
-                        if part:
-                            # The sound effect and the graphic belong to the
-                            # cut, and it is one cut still: repeating them once
-                            # per framing step would restage them mid-camera-move.
-                            piece_visual.pop("graphic", None)
+                        piece_audio = dict(audio)
+                        # The graphic and the sound effect happen once, at a
+                        # time measured on the whole cut. Leaving them on the
+                        # first piece staged them at that time inside a piece
+                        # that may only be a second long: a graphic timed at 5s
+                        # never appeared, and the sound effect fired at the top
+                        # of the camera move instead of where the plan put it.
+                        scope_timed_effects(
+                            piece_visual, piece_audio,
+                            offset=piece.source_start_sec - segment.source_start_sec,
+                            duration=piece.duration,
+                        )
                         run(build_segment_command(
                             plan.source_path, piece, str(piece_path), settings,
                             visual_effect=piece_visual,
-                            audio_effect=audio if not part else
-                            {k: v for k, v in audio.items() if k != "sfx"},
+                            audio_effect=piece_audio,
                             audio_streams=audio_streams,
                         ))
                         segment_paths.append(piece_path)

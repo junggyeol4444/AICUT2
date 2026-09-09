@@ -12,6 +12,8 @@ import logging
 
 from aicut.analysis.tension import build_tension_curve
 from aicut.analysis.vocalburst import build_detector
+from aicut.config import CalibrationProfile
+from aicut.errors import ConfigError
 from aicut.media import audio as audio_mod
 from aicut.media import vision as vision_mod
 from aicut.media.probe import probe, verify_tail
@@ -20,6 +22,36 @@ from aicut.models import UNKNOWN_SPEAKER
 from aicut.pipeline.context import RunContext, SignalBundle
 
 log = logging.getLogger(__name__)
+
+
+#: The profile numbers that decide what the measuring itself produces. Anything
+#: derived afterwards (tension weights, laughter) is rebuilt every run from the
+#: cached RMS, so only these force the media to be decoded again.
+MEASUREMENT_KEYS = (
+    "silence.level_db",
+    "silence.min_duration_sec",
+    "silence.merge_gap_sec",
+    "scan.pass1_frame_interval_sec",
+)
+
+
+def measurement_fingerprint(profile: CalibrationProfile) -> dict[str, float]:
+    """What the cached signals were measured under (17.1).
+
+    ``resume --profile`` with a re-tuned noise floor kept the old cache: the run
+    reported the new profile and used silences found under the old one.
+
+    A profile that does not carry one of these keys leaves it out rather than
+    failing: an older profile file is still usable, and a key that is absent on
+    both sides compares equal.
+    """
+    out: dict[str, float] = {}
+    for key in MEASUREMENT_KEYS:
+        try:
+            out[key] = profile.get_float(key)
+        except ConfigError:
+            continue
+    return out
 
 
 def _transcribe_tracks(ctx: RunContext, transcriber, tracks) -> list:
@@ -36,6 +68,16 @@ def _transcribe_tracks(ctx: RunContext, transcriber, tracks) -> list:
     people on a mixed recording.
     """
     if not tracks:
+        return transcriber.transcribe(ctx.project.file_path, ctx.media, track_index=None)
+
+    # A recogniser that cannot select a stream returns the same transcript for
+    # every track. Asking it once per track merged that transcript into itself,
+    # so a two-track broadcast came out with every utterance duplicated.
+    if not getattr(transcriber, "separates_tracks", True):
+        log.info(
+            "%s does not read tracks separately: transcribing once for %d speech tracks",
+            type(transcriber).__name__, len(tracks),
+        )
         return transcriber.transcribe(ctx.project.file_path, ctx.media, track_index=None)
 
     merged: list = []
@@ -89,8 +131,24 @@ def run(ctx: RunContext, transcriber: Transcriber | None = None, *, use_cache: b
         ctx.project.duration_sec = ctx.media.duration_sec
         ctx.store.set_duration(ctx.project.project_id, ctx.media.duration_sec)
 
+    fingerprint = measurement_fingerprint(ctx.profile)
+    cached = None
     if use_cache and ctx.signal_cache_path.exists():
-        ctx.signals = SignalBundle.load(ctx.signal_cache_path)
+        cached = SignalBundle.load(ctx.signal_cache_path)
+        if cached.measured_with and cached.measured_with != fingerprint:
+            changed = sorted(
+                k for k in set(cached.measured_with) | set(fingerprint)
+                if cached.measured_with.get(k) != fingerprint.get(k)
+            )
+            log.info("re-measuring: the profile changed %s since the cache", ", ".join(changed))
+            ctx.report.setdefault("cache_invalidated", []).append({
+                "reason": "profile_changed",
+                "keys": changed,
+            })
+            cached = None
+
+    if cached is not None:
+        ctx.signals = cached
         log.info("reusing cached signals from %s", ctx.signal_cache_path)
     else:
         # 5.2 separates 내 마이크 / 통화 / 게임 / BGM, and people talk on two of
@@ -119,7 +177,9 @@ def run(ctx: RunContext, transcriber: Transcriber | None = None, *, use_cache: b
             ctx.project.file_path,
             interval_sec=ctx.profile.get_float("scan.pass1_frame_interval_sec"),
         )
-        ctx.signals = SignalBundle(motion=motion, silences=silences, rms=rms)
+        ctx.signals = SignalBundle(
+            motion=motion, silences=silences, rms=rms, measured_with=fingerprint,
+        )
 
     # The same tracks the silence and RMS above were measured from. Without the
     # index a recogniser decodes the container's default stream, so on a

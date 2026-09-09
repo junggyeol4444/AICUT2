@@ -74,12 +74,16 @@ class Timeline:
                 return segment.out_start_sec + (source_sec - segment.source_start_sec)
         return None
 
-    def cut_boundaries(self) -> list[float]:
-        """Output times where one cut hands over to the next (chapter candidates)."""
-        seen: set[int] = set()
-        out: list[float] = []
+    def cut_starts(self) -> dict[int, float]:
+        """Where each cut begins in the finished video, by sequence order.
+
+        Chapter marks (11.2) and sequence markers are placed from this.
+
+        A cut pacing removed entirely has no segment and so no start. Reading
+        the starts as a bare list and pairing it with the cuts in order put
+        every later cut's chapter mark at the previous cut's time.
+        """
+        out: dict[int, float] = {}
         for segment in self.segments:
-            if segment.sequence_order not in seen:
-                seen.add(segment.sequence_order)
-                out.append(segment.out_start_sec)
+            out.setdefault(segment.sequence_order, segment.out_start_sec)
         return out
