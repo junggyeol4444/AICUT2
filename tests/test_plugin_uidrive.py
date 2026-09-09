@@ -559,15 +559,23 @@ user32.SetFocus(hwnd)
 print("FOREGROUND" if user32.GetForegroundWindow() == hwnd else "NOFOCUS", flush=True)
 
 wanted = int(sys.argv[2])
-message = w.MSG()
-deadline = time.time() + 20
-while time.time() < deadline and len(got) < wanted:
-    while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
-        user32.TranslateMessage(ctypes.byref(message))
-        user32.DispatchMessageW(ctypes.byref(message))
-    time.sleep(0.01)
-json.dump(got, open(sys.argv[1], "w"))
-print("DONE", len(got), flush=True)
+try:
+    message = w.MSG()
+    deadline = time.time() + 20
+    while time.time() < deadline and len(got) < wanted:
+        while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
+            user32.TranslateMessage(ctypes.byref(message))
+            user32.DispatchMessageW(ctypes.byref(message))
+        time.sleep(0.01)
+except BaseException as exc:
+    print("LOOPDIED", type(exc).__name__, exc, flush=True)
+finally:
+    # Written whatever happened: a receiver that dies without saying what it had
+    # turns a driver bug into a missing file, which is what the first Windows
+    # run of this test reported.
+    with open(sys.argv[1], "w") as handle:
+        json.dump(got, handle)
+    print("DONE", len(got), flush=True)
 """
 
 
@@ -604,7 +612,13 @@ class TheWindowsDriverReallyTypesTests(unittest.TestCase):
                 time.sleep(0.5)
                 driver = driver_mod.WindowsDriver()
                 presses(driver)
-                receiver.wait(timeout=25)
+                receiver.wait(timeout=30)
+                rest = receiver.stdout.read()
+                errors = receiver.stderr.read()
+            if not target.exists():
+                self.fail("the stand-in window wrote nothing.\n"
+                          "first line: {}\nthen: {}\nstderr: {}".format(
+                              first, rest.strip(), errors.strip()))
             return json.loads(target.read_text(encoding="utf-8"))
 
     def test_a_timecode_arrives_as_a_timecode(self):
