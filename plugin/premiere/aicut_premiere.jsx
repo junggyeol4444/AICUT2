@@ -251,6 +251,17 @@
         }
 
         say(aicutBuild.summary(document, sequence, fps));
+        // 10.2's zooms, crops and transitions. Premiere's scripting API sets no
+        // clip framing, so they are named rather than dropped in silence.
+        var effects = 0;
+        var modelClips = aicutModel.videoClips(sequence);
+        for (i = 0; i < modelClips.length; i++) {
+            effects += (modelClips[i].effects || []).length
+                + (modelClips[i].transitions || []).length;
+        }
+        if (effects) {
+            say("  " + effects + " effect(s)/transition(s) the model asks for are not applied");
+        }
         dropped = aicutModel.droppedSpans(sequence, fps);
         for (i = 0; i < dropped.length; i++) {
             say("  skipped " + dropped[i][0].toFixed(3) + "-" + dropped[i][1].toFixed(3)

@@ -49,13 +49,23 @@ class UnsupportedFrameRate(AicutError):
 def timecode(seconds: float, fps: float) -> str:
     """HH:MM:SS:FF, non-drop-frame.
 
+    Non-drop-frame counts the frames the media really has and labels them at the
+    nearest whole rate: at 29.97 the hour mark of the timeline is frame 107892,
+    and it is written `00:59:56:12` - not `01:00:00:00`, which is frame 108000
+    and 3.6 seconds further on. Multiplying the seconds by 30 wrote the second
+    one, so an editor conformed every cut of an NTSC source a little late, and
+    further with every hour.
+
     A negative or absurd input is a bug upstream, so it fails here rather than
     silently wrapping into a plausible-looking timecode hours away.
     """
     if seconds < 0:
         raise ValueError(f"negative time {seconds}")
     base = _tc_base(fps)
-    total = int(round(seconds * base))
+    # The frame the media is actually on, at its actual rate...
+    total = int(round(seconds * float(fps)))
+    # ...and then labelled by counting at the whole rate, which is what
+    # non-drop-frame timecode is.
     frames = total % base
     total //= base
     return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}:{frames:02d}"

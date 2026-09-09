@@ -464,9 +464,19 @@ el("ep-load").onclick = async () => {
   el("ep-list").querySelectorAll("video[data-video]").forEach((v) => {
     // Loaded on demand: a rendered episode is hundreds of MB and the operator
     // may only want the plan.
+    //
+    // Pointed at the URL rather than fetched as a blob when there is no key to
+    // carry: the server answers Range requests, so the browser streams and can
+    // seek immediately. Fetching first meant downloading the whole episode -
+    // hundreds of MB, twice over in memory - before the first frame played, and
+    // the server's own Range support was never used.
     v.onplay = v.onclick = async () => {
       if (v.src) return;
-      try { v.src = await mediaUrl(`/api/episodes/${v.dataset.video}/video`); v.play(); }
+      const path = `/api/episodes/${v.dataset.video}/video`;
+      if (!apiKey()) { v.src = path; v.play(); return; }
+      // With a key there is no way to put the header on a <video src>, so the
+      // blob is the price of an authenticated server.
+      try { v.src = await mediaUrl(path); v.play(); }
       catch (e) { alert(`재생할 수 없다: ${e.message}`); }
     };
   });

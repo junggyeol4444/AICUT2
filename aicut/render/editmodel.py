@@ -623,7 +623,10 @@ def _transitions_of(visual: dict[str, Any], settings: dict[str, Any]) -> list[Tr
         spec = {"in": stated, "out": stated}
     else:
         spec = dict(stated)
-    seconds = float(spec.get("duration", default))
+    # `sec` is the key the renderer reads (`transition_filters`), so a plan
+    # asking for a two-second fade rendered as two seconds and reached the
+    # editor as the profile's default - the same plan, two lengths.
+    seconds = float(spec.get("sec", spec.get("duration", default)))
     out: list[Transition] = []
     for edge in ("in", "out"):
         kind = spec.get(edge)

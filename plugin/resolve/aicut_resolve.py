@@ -49,6 +49,7 @@ from aicut_model import (                               # noqa: E402
     summary,
     timeline_name,
     validated,
+    video_clips,
 )
 
 
@@ -179,6 +180,14 @@ def build_sequence(resolve, project, model, sequence, mode="new_sequence"):
             )
 
     print(summary(model, sequence, fps))
+    # 10.2's zooms, crops and transitions. Resolve's scripting API has no call
+    # that sets a clip's framing, so they are named rather than dropped in
+    # silence - the operator can add them, but only if they know they are gone.
+    effects = sum(len(c.get("effects") or []) + len(c.get("transitions") or [])
+                  for c in video_clips(sequence))
+    if effects:
+        print("  {} effect(s)/transition(s) the model asks for are not applied".format(
+            effects))
     for start, end in dropped_spans(sequence, fps):
         print("  skipped {:.3f}-{:.3f}s: shorter than one frame at {} fps".format(
             start, end, fps))

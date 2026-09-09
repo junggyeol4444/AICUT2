@@ -49,6 +49,15 @@ def run(
     knowledge: dict | None = None,
 ) -> list[Episode]:
     """Plan one episode per candidate group."""
+    # A resumed run plans again from the start, and the episodes of the previous
+    # attempt would otherwise stand beside the new ones - offered for upload,
+    # and waiting for a review nobody can give.
+    retired = ctx.store.supersede_episodes(ctx.project.project_id)
+    if retired:
+        log.info("superseded %d episode(s) from an earlier planning run", retired)
+        ctx.report.setdefault("episodes_superseded", 0)
+        ctx.report["episodes_superseded"] += retired
+
     events = {e.event_id: e for e in ctx.store.events(ctx.project.project_id)}
     utterances = ctx.store.utterances(ctx.project.project_id)
     index = SceneIndex.build(
@@ -604,10 +613,18 @@ def _note_length_deviation(ctx: RunContext, episode: Episode, structure: dict) -
 
 def _write_plan(ctx: RunContext, episode: Episode) -> EditPlan:
     settings = RenderSettings.from_profile(ctx.profile, target_type=episode.target_type)
+    # 8.2 makes the plan the render's whole input, and the subtitle style was the
+    # one thing it did not carry: re-rendering a saved plan after a
+    # recalibration, or on another machine, silently used whatever style profile
+    # was current - different font, size and margins from the video the person
+    # approved.
+    settings_dict = settings.as_dict()
+    settings_dict["subtitle_style_profile"] = ctx.profile.get(
+        "render.subtitle_style_profile")
     plan = EditPlan.from_episode(
         episode,
         ctx.project.file_path,
-        render_settings=settings.as_dict(),
+        render_settings=settings_dict,
         provenance={
             "profile": ctx.profile.name,
             "profile_source": str(ctx.profile.source_path) if ctx.profile.source_path else "",

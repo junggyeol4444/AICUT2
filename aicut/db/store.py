@@ -451,6 +451,26 @@ class Store:
         self.conn.commit()
         return episode
 
+    def supersede_episodes(self, project_id: str) -> int:
+        """Retire the episodes an earlier planning run made (14장).
+
+        A resumed run plans again, and every episode it makes is a new row with
+        a new id. The old ones stayed: the UI offered both generations for
+        upload, and a project could never reach PUBLISHED because the stale
+        pending ones were still waiting on a person who had nothing to review.
+
+        Only the unsettled ones. An episode that was published is on the
+        channel, and one a person rejected is a decision they made - neither is
+        this run's to rewrite.
+        """
+        cursor = self.conn.execute(
+            "UPDATE tb_episode SET review_status='superseded'"
+            " WHERE project_id=? AND review_status NOT IN ('published','rejected')",
+            (project_id,),
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
     def episodes(self, project_id: str) -> list[Episode]:
         ids = [r["episode_id"] for r in self.conn.execute(
             "SELECT episode_id FROM tb_episode WHERE project_id=?", (project_id,)

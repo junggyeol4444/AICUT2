@@ -46,7 +46,12 @@ def render_episode(ctx: RunContext, episode: Episode, plan_path: str | Path | No
         if plan_path
         else EditPlan.load(ctx.project_dir / "plans" / f"{episode.episode_id}.json")
     )
-    style = SubtitleStyleProfile.load(ctx.profile.get("render.subtitle_style_profile"))
+    # The plan's own style, when it has one: 8.2 says the plan is what the
+    # render executes, and a profile that has been re-measured since is not what
+    # this plan was written against.
+    style_name = (plan.render_settings or {}).get("subtitle_style_profile")
+    style = SubtitleStyleProfile.load(
+        style_name or ctx.profile.get("render.subtitle_style_profile"))
     ass_path = None
     if plan.subtitles:
         ass_path = write_ass(

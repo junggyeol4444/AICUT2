@@ -14,6 +14,7 @@ from fractions import Fraction
 
 from aicut.errors import AicutError
 from aicut.models import Cut, Episode, SubtitleLine
+from aicut.render import exchange
 from aicut.render.editplan import EditPlan
 from aicut.render.exchange import (
     UnsupportedFrameRate,
@@ -254,3 +255,53 @@ class FrameRateFallbackTests(unittest.TestCase):
         with self.assertRaises(AicutError) as raised:
             plan_fps(plan, None, source_fps=None)
         self.assertIn("--fps", str(raised.exception))
+
+
+class NtscTimecodeTests(unittest.TestCase):
+    """Non-drop-frame counts real frames and labels them at the whole rate.
+
+    Measured before the fix: `timecode(3600, 29.97)` wrote `01:00:00:00`, which
+    an editor resolves to frame 108000 in a 29.97 timeline. The media is on
+    frame 107892 there - 3.6 seconds earlier - so every cut of an NTSC source
+    conformed late, and further with every hour.
+    """
+
+    def _frame_the_editor_goes_to(self, text, base):
+        hours, minutes, seconds, frames = (int(part) for part in text.split(":"))
+        return ((hours * 3600) + (minutes * 60) + seconds) * base + frames
+
+    def test_an_hour_of_2997_lands_on_the_frame_the_media_is_on(self):
+        text = exchange.timecode(3600.0, 29.97)
+        self.assertEqual(text, "00:59:56:12")
+        self.assertEqual(self._frame_the_editor_goes_to(text, 30), round(3600 * 29.97))
+
+    def test_an_hour_of_23976_lands_on_the_frame_the_media_is_on(self):
+        text = exchange.timecode(3600.0, 23.976)
+        self.assertEqual(self._frame_the_editor_goes_to(text, 24), round(3600 * 23.976))
+
+    def test_an_hour_of_5994_lands_on_the_frame_the_media_is_on(self):
+        text = exchange.timecode(3600.0, 59.94)
+        self.assertEqual(self._frame_the_editor_goes_to(text, 60), round(3600 * 59.94))
+
+    def test_a_whole_rate_is_unchanged(self):
+        """25 and 30 have no drift to correct, and must not acquire one."""
+        self.assertEqual(exchange.timecode(3600.0, 30), "01:00:00:00")
+        self.assertEqual(exchange.timecode(3600.0, 25), "01:00:00:00")
+        self.assertEqual(exchange.timecode(1.5, 30), "00:00:01:15")
+
+    def test_every_edl_event_of_an_ntsc_plan_lands_where_it_should(self):
+        """The whole document, not just the helper: a six-hour broadcast is
+        where this drift is minutes rather than seconds."""
+        cuts = [Cut(sequence_order=1, source_start_sec=3600.0, source_end_sec=3605.0),
+                Cut(sequence_order=2, source_start_sec=21600.0, source_end_sec=21610.0)]
+        plan = EditPlan(episode_id="ep", project_id="p", source_path="/live.mkv",
+                        cuts=cuts, render_settings={"fps": 29.97})
+        for line in exchange.to_edl(plan, 29.97).splitlines():
+            if not line[:3].isdigit():
+                continue
+            for text in line.split()[-4:]:
+                with self.subTest(timecode=text):
+                    frame = self._frame_the_editor_goes_to(text, 30)
+                    seconds = frame / 29.97
+                    self.assertAlmostEqual(
+                        exchange.timecode(seconds, 29.97), text)

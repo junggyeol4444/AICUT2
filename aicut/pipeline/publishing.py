@@ -78,7 +78,7 @@ def upload_episode(
     upload_info = episode.metadata.get("upload") or {}
     metadata = {
         "title": (episode.title_candidates or ["untitled"])[0],
-        "description": episode.metadata.get("description", ""),
+        "description": _description_with_chapters(episode),
         "tags": episode.metadata.get("tags", []),
         # Defaulted rather than required: a profile written before these keys
         # existed still uploads, and an absent category means YouTube's own
@@ -192,7 +192,47 @@ def publish_approved(ctx: RunContext, episode: Episode, client: YouTubeClient) -
 #: Review outcomes that mean nobody is waiting on this episode any more. A
 #: rejected episode is finished too - it is not going out, and holding the
 #: project open for it would leave a project that can never close.
-_SETTLED = {"published", "rejected"}
+#: An episode nobody is waiting on any more. `superseded` is here because a
+#: replanned generation is not something a person can review - it is gone.
+_SETTLED = {"published", "rejected", "superseded"}
+
+
+def _description_with_chapters(episode: Episode) -> str:
+    """The description YouTube is sent, with 11.2's chapters actually in it.
+
+    YouTube has no chapter field: it reads them out of the description. The
+    package carried a chapter list and the upload sent only the prose, so every
+    chapter the model wrote was lost at the last step - the checks passed, the
+    list existed, and the video went up without it.
+
+    Appended only when the description does not already carry them, because the
+    model is free to write them into its own text and two copies is worse than
+    none.
+    """
+    description = (episode.metadata or {}).get("description", "") or ""
+    chapters = [c for c in ((episode.metadata or {}).get("chapters") or [])
+                if isinstance(c, dict) and c.get("title")]
+    if not chapters:
+        return description
+    lines = []
+    for chapter in sorted(chapters, key=lambda c: float(c.get("at_sec", 0.0))):
+        stamp = _chapter_stamp(float(chapter.get("at_sec", 0.0)))
+        line = "{} {}".format(stamp, str(chapter["title"]).strip())
+        if line not in description:
+            lines.append(line)
+    if not lines:
+        return description
+    return (description.rstrip() + "\n\n" + "\n".join(lines)).strip()
+
+
+def _chapter_stamp(at_sec: float) -> str:
+    """`0:00` or `1:02:03` - the shapes YouTube reads as a chapter mark."""
+    at_sec = max(0, int(round(at_sec)))
+    hours, rest = divmod(at_sec, 3600)
+    minutes, seconds = divmod(rest, 60)
+    if hours:
+        return "{}:{:02d}:{:02d}".format(hours, minutes, seconds)
+    return "{}:{:02d}".format(minutes, seconds)
 
 
 def _advance_project_if_settled(ctx: RunContext) -> None:

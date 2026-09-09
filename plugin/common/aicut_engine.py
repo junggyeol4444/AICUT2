@@ -76,8 +76,14 @@ class Engine(object):
 
         This is 4장's button: the person pressed it, and from here the engine
         does 5장's whole list on its own.
+
+        Rendering is off unless the caller asks for it. An editor plugin wants
+        the plan, not an encoded file - 10.1 is the renderer's job and the
+        person is about to do it themselves in their editor. Worse than the
+        wasted hours: a render that fails ends the job as FAILED, and the
+        adapter then refuses to fetch plans that were finished and fine.
         """
-        body = {"source": source_path}
+        body = {"source": source_path, "render": False}
         body.update(options)
         return self._call("POST", "/api/projects", body)
 

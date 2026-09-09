@@ -74,11 +74,18 @@ def tc_base(fps):
 
 
 def timecode(seconds, fps):
-    """HH:MM:SS:FF, non-drop-frame."""
+    """HH:MM:SS:FF, non-drop-frame.
+
+    The frame is counted at the media's real rate and labelled at the whole one.
+    At 29.97 the timeline's hour is frame 107892 and reads `00:59:56:12`;
+    writing `01:00:00:00` sends Media Composer to frame 108000, 3.6 seconds
+    late - and this adapter is checked against the exporter, which had the same
+    fault.
+    """
     if seconds < 0:
         raise ModelError("negative time {}".format(seconds))
     base = tc_base(fps)
-    total = int(round(seconds * base))
+    total = int(round(seconds * float(fps)))
     frames = total % base
     total //= base
     return "{:02d}:{:02d}:{:02d}:{:02d}".format(
@@ -141,12 +148,14 @@ def to_edl(model, sequence, fps, title=None):
     record = 0.0
     for clip in video_clips(sequence):
         for start_sec, end_sec in kept_spans(clip):
-            base = tc_base(fps)
-            frames = int(round(end_sec * base)) - int(round(start_sec * base))
+            frames = int(round(end_sec * float(fps))) - int(round(start_sec * float(fps)))
             if frames <= 0:
                 continue                      # reported by dropped_spans
             index += 1
-            duration = frames / float(base)
+            # Seconds of media, at the media's rate - the record timecode is
+            # written from this, and dividing by the label rate instead stretched
+            # every NTSC event by a thousandth.
+            duration = frames / float(fps)
             lines.append("{:03d}  {} AA/V  C        {} {} {} {}".format(
                 index, reel,
                 timecode(start_sec, fps), timecode(end_sec, fps),

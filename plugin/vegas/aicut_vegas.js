@@ -514,8 +514,11 @@ var aicutEngine = (function () {
 
     /* Hand the engine the file the editor has open. This is 4장's button: the
      * person pressed it, and from here the engine does 5장's whole list. */
+    /* Rendering is off unless the caller asks for it: a plugin wants the plan,
+     * not an encoded file, and a failed render would end the job as FAILED and
+     * take the finished plans with it. */
     Engine.prototype.submit = function (sourcePath, options) {
-        var body = {source: sourcePath};
+        var body = {source: sourcePath, render: false};
         var key;
         if (options) {
             for (key in options) {

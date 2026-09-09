@@ -361,6 +361,10 @@ def build_report(ctx: RunContext, state: State, episodes: list[Episode]) -> dict
         "no_content_reason": ctx.report.get("no_content_reason"),
         "resumed_from": ctx.report.get("resumed_from"),
         "source_warnings": ctx.report.get("source_warnings", []),
+        # Episodes an earlier planning run made, retired by this one. A resumed
+        # run replans, and the operator should see that what they were looking
+        # at before is not what is here now.
+        "episodes_superseded": ctx.report.get("episodes_superseded", 0),
         # Measured signals thrown away rather than reused, and why. A resumed
         # run under a re-tuned profile has to decode the media again (17.1), and
         # the report is where the extra hours are accounted for.

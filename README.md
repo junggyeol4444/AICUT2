@@ -143,7 +143,7 @@ aicut learn reference --query "게임 스트리머 편집 영상" --producer ant
 
 # B. 원본↔완성본 — 이 시스템의 핵심 차별점. 네트워크 불필요.
 #    같은 작업이 17.2 캘리브레이션 데이터셋이 된다
-aicut learn pairs --source-transcript src.json --output-transcript out.json
+aicut learn pairs --source 원본_생방송.mkv --output 완성본.mp4
 
 # C. 성과 — 자기 채널 한정
 aicut learn performance --project <id> --days 28

@@ -33,8 +33,14 @@ from aicut.intelligence.quota import (
 
 log = logging.getLogger(__name__)
 
+#: 11.3 uploads privately and a person makes it public; 11.2 puts it in a
+#: playlist. Both of those are writes - `videos.update` and
+#: `playlistItems.insert` - and neither `youtube.upload` nor `youtube.readonly`
+#: authorises them, so the review gate could upload and then never publish.
+#: `youtube.force-ssl` is the write scope Google documents for them.
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.force-ssl",
     "https://www.googleapis.com/auth/youtube.readonly",
     "https://www.googleapis.com/auth/yt-analytics.readonly",
 ]
@@ -354,6 +360,13 @@ def load_credentials(client_secrets: str, token_path: str):  # pragma: no cover 
 
     creds = None
     from_plaintext = False
+    # A token cached before a scope was added still says what it was granted,
+    # and Google does not widen it on refresh: it has to be authorised again, or
+    # publishing fails at the moment the person presses the button.
+    def _has_every_scope(candidate):
+        granted = set(getattr(candidate, "scopes", None) or [])
+        return granted.issuperset(SCOPES)
+
     stored = secure.load() if secure else None
     if stored is not None:
         creds = Credentials.from_authorized_user_info(stored, SCOPES)
@@ -362,6 +375,11 @@ def load_credentials(client_secrets: str, token_path: str):  # pragma: no cover 
             json.loads(token.read_text(encoding="utf-8")), SCOPES
         )
         from_plaintext = True
+
+    if creds is not None and not _has_every_scope(creds):
+        print("this saved YouTube token was granted fewer permissions than "
+              "publishing needs; asking for them again")
+        creds = None
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:

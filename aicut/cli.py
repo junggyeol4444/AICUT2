@@ -95,10 +95,33 @@ def _context(args, project) -> RunContext:
     return RunContext(
         project=project,
         store=store,
-        profile=_profile(args),
+        profile=_project_profile(args, store, project),
         producer=_producer(args),
         workspace=Path(args.workspace),
     )
+
+
+def _project_profile(args, store, project):
+    """The profile this project was analysed under, unless one was asked for.
+
+    `aicut review`, `upload` and `retry` build a context for a project that
+    already exists, and they were building it from `--profile` - which is the
+    default when nobody passes one. So an episode submitted through the UI under
+    a measured channel profile was uploaded under the default one: another
+    privacy setting, another language, another category, and a quota ledger
+    built from a profile that had nothing to do with it.
+
+    The same resolution the UI does: by id, then by name, then the profile on
+    disk. An explicit `--profile` still wins - that is a person saying so.
+    """
+    asked = getattr(args, "profile", None)
+    if asked:
+        return _profile(args)
+    if getattr(project, "profile_id", ""):
+        for row in store.profiles():
+            if row["profile_id"] == project.profile_id:
+                return CalibrationProfile.from_mapping(row["params"])
+    return _profile(args)
 
 
 def _print(data) -> None:

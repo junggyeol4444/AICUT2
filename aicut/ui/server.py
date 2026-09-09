@@ -341,7 +341,12 @@ class UiServer:
         )
         transcript = body.get("transcript") or None
         render = bool(body.get("render", True))
-        frames = bool(body.get("sample_frames", False))
+        # 5.2 reads 화면과 소리를 분리하지 않고 같이 본다, and the browser sends
+        # no such field - so this default meant every ordinary run understood the
+        # broadcast from speech and a motion number alone: no faces (5.3, 11.1),
+        # no frames for the model to look at. Looking is the normal path; the
+        # caller can still turn it off.
+        frames = bool(body.get("sample_frames", True))
         stop_after = body.get("stop_after") or None
 
         # Built here rather than inside the worker: a missing dependency should
@@ -569,9 +574,12 @@ class UiServer:
         from aicut.intelligence.youtube import YouTubeClient, load_credentials
         from aicut.intelligence.quota import QuotaLedger
 
-        credentials = load_credentials(
-            str(self.client_secrets), str(self.token_path) if self.token_path else None,
-        )
+        # The same workspace-local default the CLI uses. `aicut ui` takes no
+        # --token, so this was None, and `load_credentials` does `Path(None)`:
+        # every upload and publish button raised a TypeError before OAuth could
+        # even start.
+        token = self.token_path or (self.workspace / "youtube_token.json")
+        credentials = load_credentials(str(self.client_secrets), str(token))
         return YouTubeClient(credentials, QuotaLedger(ctx.store, ctx.profile))
 
     def report(self, project_id: str) -> dict[str, Any]:

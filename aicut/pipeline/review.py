@@ -84,6 +84,12 @@ def reject(ctx: RunContext, episode_id: str, *, reviewer: str, reason: str) -> E
         "auto": False,
     }
     ctx.store.save_episode(episode)
+    # The same check publishing makes. With one episode published and one still
+    # pending, rejecting the second is the moment the project is finished - and
+    # without this it stayed REVIEW_PENDING for good.
+    from aicut.pipeline.publishing import _advance_project_if_settled
+
+    _advance_project_if_settled(ctx)
     return episode
 
 
