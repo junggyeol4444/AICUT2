@@ -18,15 +18,18 @@ def now() -> str:
 
 
 class Database:
+    connection_timeout_sec = 30
+
     def __init__(self, path: str | Path):
         self.path = str(path)
         self.initialize()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(self.path, timeout=self.connection_timeout_sec)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(f"PRAGMA busy_timeout = {self.connection_timeout_sec * 1000}")
         try:
             yield connection
             connection.commit()
@@ -38,6 +41,7 @@ class Database:
 
     def initialize(self) -> None:
         with self.connect() as connection:
+            connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript((ROOT / "schema.sql").read_text(encoding="utf-8"))
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(pipeline_steps)")}
             migrations = {

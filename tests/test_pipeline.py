@@ -1,6 +1,7 @@
 import json
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import Future
 from pathlib import Path
@@ -11,6 +12,21 @@ from backend.pipeline import PipelineManager
 
 
 class PipelineTest(unittest.TestCase):
+    def test_completed_async_job_releases_in_memory_tracking(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "pipeline.db")
+            project = database.create_project({"file_path": "/media/live.mkv"})
+            manager = PipelineManager(database, probe=lambda _path: SimpleNamespace(to_dict=lambda: {
+                "duration_sec": 10, "width": 1920, "height": 1080, "audio_tracks": 0,
+            }))
+            self.assertTrue(manager.submit(project["project_id"]))
+            deadline = time.monotonic() + 2
+            while project["project_id"] in manager._jobs and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertNotIn(project["project_id"], manager._jobs)
+            self.assertNotIn(project["project_id"], manager._cancel)
+            manager.shutdown()
+
     def test_pipeline_persists_steps_and_reuses_checkpoints(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "pipeline.db")
@@ -301,8 +317,12 @@ class PipelineTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "pipeline.db")
             project = database.create_project({"file_path": "/media/live.mkv"})
-            subtitle = Path(directory) / "episode-1.ass"
-            subtitle.write_text("[Script Info]\n")
+            artifact_root = Path(directory) / "artifacts"
+            subtitle = artifact_root / "subtitles" / "episode-1.ass"
+            database.replace_transcript(project["project_id"], [{
+                "track_index": 0, "start_sec": 50, "end_sec": 52,
+                "speaker_tag": "HOST", "text": "결과 장면", "confidence": .95, "words": [],
+            }])
             discovery = {"events": [{"event_id": "event-1", "summary": "event", "mentions": []}],
                          "candidates": [{"candidate_id": "candidate-1", "summary": "candidate",
                                          "event_ids": ["event-1"], "independence_score": .8,
@@ -310,6 +330,7 @@ class PipelineTest(unittest.TestCase):
 
             def render_episode(plan, loudness_target):
                 self.assertEqual(plan.subtitle_path, str(subtitle))
+                self.assertIn("결과 장면", subtitle.read_text(encoding="utf-8-sig"))
                 self.assertEqual(plan.audio_mix[1]["role"], "GAME")
                 self.assertEqual(plan.ducking["foreground_track_index"], 0)
                 output = Path(plan.output_path)
@@ -368,8 +389,12 @@ class PipelineTest(unittest.TestCase):
             manager._run(project["project_id"], {
                 "discovery_executable": ["discovery"], "planner_executable": ["planner"],
                 "pacing_executable": ["pacing"], "render": True,
+                "output_directory": str(artifact_root),
                 "render_output_directory": str(Path(directory) / "renders"),
-                "subtitle_paths": {"episode-1": str(subtitle)},
+                "subtitle_style": {
+                    "font_name": "Open Sans", "font_size": 52,
+                    "primary_color": "&H00FFFFFF", "outline_color": "&H00000000", "margin_v": 80,
+                },
                 "render_audio_mix": [{"track_index": 0, "volume": 1, "role": "MIC"},
                                      {"track_index": 1, "volume": 0.4, "role": "GAME"}],
                 "render_ducking": {"foreground_track_index": 0, "threshold": 0.08, "ratio": 6,
@@ -383,6 +408,11 @@ class PipelineTest(unittest.TestCase):
             versions = database.analysis_input(project["project_id"])["planning_versions"]
             self.assertEqual(versions[0]["version_number"], 1)
             self.assertEqual(database.get_episode("episode-1")["render_status"], "COMPLETE")
+            self.assertEqual(
+                next(step for step in database.pipeline_steps(project["project_id"])
+                     if step["step"] == "SUBTITLES_episode-1")["output"]["cue_count"],
+                1,
+            )
             self.assertEqual(database.get_episode("episode-1")["metadata"]["title_options"][0], "제목 A")
             self.assertTrue(Path(database.get_episode("episode-1")["thumbnail_path"]).is_file())
             self.assertEqual(database.get_project(project["project_id"])["status"], "REVIEW_PENDING")
