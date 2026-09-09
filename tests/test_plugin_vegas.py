@@ -182,10 +182,22 @@ class TheBundleTests(unittest.TestCase):
 
     def test_it_is_the_same_file_wherever_it_was_built(self):
         """windows-latest built `plugin\\common\\aicut_model.js` into the header
-        and CRLF into every line, so the committed file and the built one
-        differed by the machine that ran the build."""
-        with open(BUNDLED, encoding="utf-8", newline="") as handle:
-            text = handle.read()
+        and CRLF into every line, so the file the builder wrote depended on the
+        machine that ran it.
+
+        The line endings are checked on what the builder writes, not on the
+        checked-out copy: git converts those on Windows by itself, and that is
+        the checkout's business rather than the builder's.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "aicut_vegas.js"
+            done = subprocess.run(
+                ["python", str(BUNDLE_PY), "--out", str(target)],
+                capture_output=True, text=True, encoding="utf-8", timeout=60,
+            )
+            self.assertEqual(done.returncode, 0, done.stderr)
+            with open(target, encoding="utf-8", newline="") as handle:
+                text = handle.read()
         self.assertNotIn("\r\n", text)
         header = text[:text.index("*/")]
         self.assertIn("plugin/common/aicut_model.js", header)
