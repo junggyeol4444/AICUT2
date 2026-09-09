@@ -48,7 +48,7 @@ def validated(model):
         raise ModelError(
             "this is an aicut edit plan, not a Common Edit Model. 37장 has the "
             "adapter read the model, so ask the running engine for it: "
-            "start it with `aicut ui` and fetch "
+            "start it with 'aicut ui' and fetch "
             "http://127.0.0.1:8765/api/episodes/<id>/edit-model."
         )
     if "sequences" not in model:
