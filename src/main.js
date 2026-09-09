@@ -6,6 +6,7 @@ const state = {
   view: 'workspace', selectedCandidate: '01', selectedProject: null, filter: '전체', modal: null,
   toastTimer: null, runtimeOnline: false, projects: null, candidates: null, episodes: [], logs: null,
   job: null, timeline: null, busy: false,
+  references: null, knowledge: null,
 };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -83,7 +84,7 @@ function workspaceView() {
       <article class="quick-upload" data-action="new-project"><span>＋</span><h3>새 방송 분석</h3><p>로컬 MP4 또는 MKV 경로를 입력하세요</p><small>최대 10시간 · 멀티트랙 지원</small></article></section>
     <div class="section-heading"><div><h2>최근 프로젝트</h2><p>진행 중이거나 최근 완료된 방송입니다</p></div><button data-view="projects">전체 보기 →</button></div>
     <section class="project-grid">${projects().map(projectCard).join('')}</section>
-    <section class="dashboard-grid"><article class="panel learning"><div class="panel-title"><div><span class="eyebrow">LEARNING LOOP</span><h3>제작 지식이 계속 개선되고 있어요</h3></div><span class="spark">✦</span></div><div class="loop-row"><div><b>146</b><small>분석 레퍼런스</small></div><i>→</i><div><b>23</b><small>원본↔완성본</small></div><i>→</i><div><b>18</b><small>성과 학습 영상</small></div></div></article>
+    <section class="dashboard-grid"><article class="panel learning"><div class="panel-title"><div><span class="eyebrow">LEARNING LOOP</span><h3>제작 지식이 계속 개선되고 있어요</h3></div><span class="spark">✦</span></div><div class="loop-row"><div><b>${state.references?.length??146}</b><small>분석 레퍼런스</small></div><i>→</i><div><b>${state.knowledge?.length??23}</b><small>제작 패턴</small></div><i>→</i><div><b>${projects().reduce((sum,item)=>sum+item.episodes,0)}</b><small>성과 학습 대상</small></div></div></article>
     <article class="panel metric-summary"><div class="panel-title"><div><span class="eyebrow">CHANNEL QUALITY</span><h3>최근 캘리브레이션</h3></div><button data-view="calibration">열기</button></div><strong>87.3</strong><span>/ 100</span><div class="quality-bar"><i></i></div><small>지난 측정 대비 +3.8</small></article></section>
   </div>`;
 }
@@ -128,10 +129,14 @@ function reviewView() {
 }
 
 function knowledgeView() {
+  const patterns = state.knowledge === null ? KNOWLEDGE : state.knowledge.map(pattern=>({
+    title:pattern.title, type:pattern.kind, confidence:Math.round(pattern.confidence*100),
+    references:Math.max(1,pattern.evidence?.length||0), trend:'실측', description:pattern.description,
+  }));
   return `<div class="page">${pageHeader('YOUTUBE CONTENT INTELLIGENCE','콘텐츠 지식','레퍼런스에서 추출한 제작 패턴입니다. 고정 규칙이 아니라 새 콘텐츠의 판단 근거로 사용됩니다.',`<button class="secondary-button">레퍼런스 가져오기</button>`)}
-    <section class="stat-grid"><article><span>분석 영상</span><b>146</b><small>이번 달 +21</small></article><article><span>유효 제작 패턴</span><b>38</b><small>신뢰도 75% 이상</small></article><article><span>최근 갱신</span><b>2h</b><small>4개 패턴 업데이트</small></article><article><span>미디어 보관</span><b>0</b><small>분석 후 자동 폐기</small></article></section>
+    <section class="stat-grid"><article><span>분석 영상</span><b>${state.references?.length??146}</b><small>${state.runtimeOnline?'저장된 공개 레퍼런스':'데모 데이터'}</small></article><article><span>유효 제작 패턴</span><b>${patterns.filter(pattern=>pattern.confidence>=75).length}</b><small>신뢰도 75% 이상</small></article><article><span>전체 패턴</span><b>${patterns.length}</b><small>근거와 함께 저장</small></article><article><span>미디어 보관</span><b>${state.references?.filter(item=>!item.media_discarded).length??0}</b><small>분석 후 폐기 원칙</small></article></section>
     <div class="toolbar"><div class="search-field">${icons.search}<input placeholder="패턴 검색" /></div><div class="segmented"><button class="active">전체</button><button>스토리텔링</button><button>편집</button><button>자막</button><button>패키징</button></div></div>
-    <section class="knowledge-grid">${KNOWLEDGE.map(k=>`<article class="knowledge-card"><div><span class="knowledge-type">${k.type}</span><span class="trend">${k.trend}</span></div><h3>${k.title}</h3><p>${k.description}</p><div class="confidence"><span>신뢰도</span><b>${k.confidence}%</b><i><em style="width:${k.confidence}%"></em></i></div><footer><span>레퍼런스 ${k.references}개</span><button>근거 보기 →</button></footer></article>`).join('')}</section>
+    <section class="knowledge-grid">${patterns.map(k=>`<article class="knowledge-card"><div><span class="knowledge-type">${escapeHtml(k.type)}</span><span class="trend">${escapeHtml(k.trend)}</span></div><h3>${escapeHtml(k.title)}</h3><p>${escapeHtml(k.description)}</p><div class="confidence"><span>신뢰도</span><b>${k.confidence}%</b><i><em style="width:${k.confidence}%"></em></i></div><footer><span>근거 ${k.references}개</span><button>근거 보기 →</button></footer></article>`).join('')||'<p class="empty-state">아직 분석된 제작 패턴이 없습니다.</p>'}</section>
   </div>`;
 }
 
@@ -248,8 +253,13 @@ withFallback(() => api.health(), null).then(async health => {
   if (status) status.textContent = health ? '로컬 런타임 온라인' : '데모 데이터 모드';
   if (detail) detail.textContent = health ? 'SQLite API · Ready' : 'API 미실행 · Fixtures';
   if (health) {
-    const rows = await withFallback(() => api.projects(), []);
+    const [rows,references,knowledge] = await Promise.all([
+      withFallback(() => api.projects(), []), withFallback(() => api.references(), []),
+      withFallback(() => api.knowledgePatterns(), []),
+    ]);
     state.projects = rows.map(normalizeProject);
+    state.references = references;
+    state.knowledge = knowledge;
     state.selectedProject = state.projects[0]?.id || null;
     setView(state.view);
   }

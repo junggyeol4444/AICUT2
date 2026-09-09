@@ -92,6 +92,41 @@ class ServerRuntimeTest(unittest.TestCase):
                 thread.join()
                 runtime.shutdown()
 
+    def test_reference_analysis_is_available_through_knowledge_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = create_runtime({
+                "AICUT_DB": str(Path(directory) / "runtime.db"),
+                "AICUT_BACKUP_DIR": str(Path(directory) / "backups"),
+            })
+            server = create_server("127.0.0.1", 0, runtime)
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_port}"
+            try:
+                payload = {
+                    "video_id": "reference-one", "channel_ref": "channel-one",
+                    "public_metrics": {"views": 1000}, "media_discarded": True,
+                    "patterns": [{
+                        "kind": "STORY", "title": "결과 선공개", "description": "결과를 먼저 보여준다.",
+                        "confidence": .8, "evidence": [],
+                    }],
+                }
+                request = urllib.request.Request(
+                    f"{base}/api/references", data=json.dumps(payload).encode(),
+                    headers={"Content-Type": "application/json"}, method="POST",
+                )
+                with urllib.request.urlopen(request) as response:
+                    saved = json.load(response)
+                with urllib.request.urlopen(f"{base}/api/knowledge/patterns?kind=STORY") as response:
+                    patterns = json.load(response)
+                self.assertEqual(saved["video_id"], "reference-one")
+                self.assertEqual(patterns[0]["reference_id"], saved["reference_id"])
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join()
+                runtime.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()

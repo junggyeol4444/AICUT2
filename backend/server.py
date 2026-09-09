@@ -21,6 +21,7 @@ from .token_store import EncryptedTokenStore
 from .analytics import AnalyticsCollectionManager, YouTubeAnalyticsClient
 from .strategy import aggregate_edit_strategies
 from .calibration import calibrate_pacing
+from .content_intelligence import validate_reference
 from .learning import analyze_source_output
 from .performance import attribute_retention_to_cuts, performance_insights, validate_metrics
 from .producer import run_producer
@@ -178,6 +179,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.json({"authorized": True, "expires_at": tokens.expires_at})
             elif path == "/api/calibrations":
                 self.json(self.runtime.database.list_calibrations())
+            elif path == "/api/references":
+                channel_ref = parse_qs(parsed.query).get("channel_ref", [None])[0]
+                self.json(self.runtime.database.list_youtube_references(channel_ref))
+            elif path == "/api/knowledge/patterns":
+                kind = parse_qs(parsed.query).get("kind", [None])[0]
+                self.json(self.runtime.database.list_production_patterns(kind))
             elif path == "/api/strategies":
                 channel_ref = parse_qs(parsed.query).get("channel_ref", [""])[0]
                 self.json(self.runtime.database.list_strategy_versions(channel_ref))
@@ -215,6 +222,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                     {"pacing": result.params, "evaluation": result.to_dict()}, result.f1 * 100,
                 )
                 self.json(profile, HTTPStatus.CREATED)
+            elif path == "/api/references":
+                self.json(
+                    self.runtime.database.save_youtube_reference(validate_reference(payload)),
+                    HTTPStatus.CREATED,
+                )
             elif path == "/api/learning/source-output":
                 cuts = payload.get("cuts")
                 episode = None
