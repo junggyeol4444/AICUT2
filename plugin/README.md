@@ -13,6 +13,7 @@
 | `plugin/premiere` (어댑터) | Premiere Pro 전용 | `plugin/common` + `plugin/premiere` 복사 | 판단·산술·엔진 호출은 테스트됨, **Premiere API 호출은 미검증** |
 | `plugin/finalcut` (어댑터) | Final Cut Pro 전용 | `plugin/common` + `plugin/finalcut` 복사 | 문서 생성·엔진 호출은 테스트됨, **Final Cut 임포트는 미검증** |
 | `plugin/vegas` (어댑터) | VEGAS Pro 전용 | `bundle.py` 로 파일 하나 만들어 복사 | 산술·번들은 테스트됨, **VEGAS API 호출은 미검증** |
+| `plugin/avid` (어댑터) | Avid Media Composer 전용 | `plugin/common` + `plugin/avid` 복사 | EDL 생성·엔진 호출은 테스트됨, **Avid 임포트는 미검증** |
 
 기획안 37장의 구조다:
 
@@ -356,3 +357,49 @@ VEGAS Pro는 윈도우 전용이고 이 환경에 없다. API 호출은 실행�
   적힌 대화상자로 뜬다.
 * `aicut_vegas_body.js` — `new VideoEvent`, `AddTake`, `WebClient` 등 API 호출만.
   **실행된 적 없다.**
+
+---
+
+## 6. Avid Media Composer — `plugin/avid`
+
+Avid도 실시간 스크립트 API가 없다. Final Cut과 같은 방식 — 문서를 쓰고 편집기가
+읽는다. 다만 문서가 **CMX 3600 EDL**이다.
+
+### 사용
+
+```bash
+python plugin/avid/aicut_avid.py <edit-model>.json
+python plugin/avid/aicut_avid.py --engine /방송/live.mkv    # 4장의 버튼
+```
+
+`--fps`(모델에 없으면 묻는다), `--out`, `--title`, `--mode`.
+
+### EDL이 못 담는 것 — 전부 말한다
+
+EDL은 **컷과 타임코드뿐**이다. 파일 경로도 없다 — 릴 이름만 있고 어느 클립인지는
+Avid가 임포트할 때 사람에게 묻는다. 그래서 스크립트가 매번 말해준다:
+
+```
+AI_ep-live -> .../AI_ep-live.edl
+  reel STREAM - Media Composer asks which clip that is on import; an EDL names no file
+  1 audio placement(s) the model asks for are not in the EDL:
+    BGM /music/bed.mp3 at 0.00s
+  3 marker(s) in the model are not in the EDL
+  1 caption(s) in the model; import an .srt for them
+  1 effect(s)/transition(s) in the model are not in the EDL
+```
+
+**AAF면 더 담을 수 있는데 왜 EDL이냐** — AAF를 쓰려면 표준 라이브러리 밖의
+패키지가 필요하다. 이 스크립트는 사람이 Avid 깔린 자기 컴퓨터에서 바로 돌리는
+거라, 설치를 요구하지 않는 쪽을 골랐다. 못 담는 건 위처럼 말한다.
+
+### 검증 상태
+
+Avid가 이 환경에 없다. 임포트는 해 본 적 없다. 대신:
+
+* 이 어댑터가 쓴 EDL을 **`aicut export --format edl` 이 같은 에피소드로 만든
+  문서와 줄 단위로 대조한다.** 타임코드가 한 프레임이라도 다르면 실패한다.
+* 릴 이름 정규화(8자, A-Z0-9)도 같이 대조한다. 릴이 다르면 사람이 릴링크를 두 번
+  한다. 한글만 있는 파일명은 양쪽 다 `AICUT` 으로 떨어진다.
+* 프레임 레이트 표도 대조한다 — 한쪽은 쓰고 한쪽은 거부하는 레이트가 있으면,
+  비교해 보라고 해 놓고 비교가 안 되는 상황이 된다.
