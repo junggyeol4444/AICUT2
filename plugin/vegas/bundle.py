@@ -91,8 +91,15 @@ def split_imports(source: str):
 
 
 def build() -> str:
+    # Forward slashes and nothing else: the file this builds is committed, and a
+    # build on Windows wrote `plugin\common\aicut_model.js` into the header -
+    # a file that differed from the one in the repository by the separator of
+    # whoever ran it last.
     listing = "\n".join(
-        " *   {}".format(os.path.relpath(part, os.path.dirname(os.path.dirname(HERE))))
+        " *   {}".format(
+            os.path.relpath(part, os.path.dirname(os.path.dirname(HERE)))
+            .replace(os.sep, "/")
+        )
         for part in PARTS
     )
     imports = []
@@ -124,7 +131,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     text = build()
-    with open(args.out, "w", encoding="utf-8") as handle:
+    # newline="" so Python does not translate the line endings: on Windows it
+    # would write CRLF, and the same reason applies - one generated file, the
+    # same bytes wherever it was built.
+    with open(args.out, "w", encoding="utf-8", newline="") as handle:
         handle.write(text)
     print("{} lines -> {}".format(len(text.splitlines()), args.out))
     print("copy it into VEGAS's Script Menu folder:")

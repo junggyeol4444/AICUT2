@@ -180,6 +180,17 @@ class TheBundleTests(unittest.TestCase):
         stops it being installed after the modules moved on."""
         self.assertEqual(BUNDLED.read_text(encoding="utf-8"), self._built())
 
+    def test_it_is_the_same_file_wherever_it_was_built(self):
+        """windows-latest built `plugin\\common\\aicut_model.js` into the header
+        and CRLF into every line, so the committed file and the built one
+        differed by the machine that ran the build."""
+        with open(BUNDLED, encoding="utf-8", newline="") as handle:
+            text = handle.read()
+        self.assertNotIn("\r\n", text)
+        header = text[:text.index("*/")]
+        self.assertIn("plugin/common/aicut_model.js", header)
+        self.assertNotIn("\\", header)
+
     def test_it_says_it_is_generated(self):
         self.assertIn("GENERATED - do not edit", BUNDLED.read_text(encoding="utf-8"))
 
