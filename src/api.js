@@ -63,6 +63,8 @@ export const api = {
   uploads: () => request('/uploads'),
   runUpload: uploadId => request(`/uploads/${uploadId}/run`, { method: 'POST', body: '{}' }),
   calibrations: () => request('/calibrations'),
+  references: () => request('/references'),
+  knowledgePatterns: kind => request(`/knowledge/patterns${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`),
   calibrate: payload => request('/calibrations', { method: 'POST', body: JSON.stringify(payload) }),
   sourceOutputPairs: () => request('/learning/source-output'),
   analyzeSourceOutput: payload => request('/learning/source-output', {

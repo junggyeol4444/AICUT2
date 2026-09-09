@@ -877,6 +877,77 @@ class Database:
         value["selection_analysis"] = json.loads(value.pop("selection_analysis_json"))
         return value
 
+    def save_youtube_reference(self, reference: dict[str, Any]) -> dict[str, Any]:
+        timestamp = now()
+        with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT reference_id FROM youtube_references WHERE video_id=?", (reference["video_id"],),
+            ).fetchone()
+            reference_id = existing["reference_id"] if existing else reference["reference_id"]
+            connection.execute(
+                """INSERT INTO youtube_references
+                (reference_id,video_id,channel_ref,metadata_json,public_metrics_json,media_discarded,analyzed_at)
+                VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(video_id) DO UPDATE SET channel_ref=excluded.channel_ref,
+                metadata_json=excluded.metadata_json,public_metrics_json=excluded.public_metrics_json,
+                media_discarded=excluded.media_discarded,analyzed_at=excluded.analyzed_at""",
+                (reference_id, reference["video_id"], reference.get("channel_ref"),
+                 json.dumps(reference["metadata"], ensure_ascii=False),
+                 json.dumps(reference["public_metrics"], ensure_ascii=False),
+                 int(reference["media_discarded"]), timestamp),
+            )
+            connection.execute("DELETE FROM production_patterns WHERE reference_id=?", (reference_id,))
+            connection.executemany(
+                """INSERT INTO production_patterns
+                (pattern_id,reference_id,kind,title,description,confidence,evidence_json,created_at)
+                VALUES(?,?,?,?,?,?,?,?)""",
+                [(item["pattern_id"], reference_id, item["kind"], item["title"], item["description"],
+                  item["confidence"], json.dumps(item["evidence"], ensure_ascii=False), timestamp)
+                 for item in reference["patterns"]],
+            )
+        return self.get_youtube_reference(reference_id)
+
+    def get_youtube_reference(self, reference_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM youtube_references WHERE reference_id=?", (reference_id,),
+            ).fetchone()
+            patterns = connection.execute(
+                "SELECT * FROM production_patterns WHERE reference_id=? ORDER BY confidence DESC,created_at",
+                (reference_id,),
+            ).fetchall()
+        if not row:
+            raise KeyError(reference_id)
+        value = self._decode(self._decode(dict(row), "metadata_json"), "public_metrics_json")
+        value["media_discarded"] = bool(value["media_discarded"])
+        value["patterns"] = [self._decode(dict(item), "evidence_json") for item in patterns]
+        return value
+
+    def list_youtube_references(self, channel_ref: str | None = None) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            if channel_ref:
+                rows = connection.execute(
+                    "SELECT reference_id FROM youtube_references WHERE channel_ref=? ORDER BY analyzed_at DESC",
+                    (channel_ref,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT reference_id FROM youtube_references ORDER BY analyzed_at DESC",
+                ).fetchall()
+        return [self.get_youtube_reference(row["reference_id"]) for row in rows]
+
+    def list_production_patterns(self, kind: str | None = None) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            if kind:
+                rows = connection.execute(
+                    "SELECT * FROM production_patterns WHERE kind=? ORDER BY confidence DESC,created_at DESC", (kind,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM production_patterns ORDER BY confidence DESC,created_at DESC",
+                ).fetchall()
+        return [self._decode(dict(row), "evidence_json") for row in rows]
+
     def list_source_output_pairs(self, project_id: str | None = None) -> list[dict[str, Any]]:
         with self.connect() as connection:
             if project_id:
