@@ -365,6 +365,10 @@ def build_report(ctx: RunContext, state: State, episodes: list[Episode]) -> dict
         # run replans, and the operator should see that what they were looking
         # at before is not what is here now.
         "episodes_superseded": ctx.report.get("episodes_superseded", 0),
+        # 30장's revisions: what was asked in words, and what it did to the
+        # timeline. A person reading the report should see that the plan they
+        # are looking at is not the one the analysis produced.
+        "revisions": ctx.report.get("revisions", []),
         # Measured signals thrown away rather than reused, and why. A resumed
         # run under a re-tuned profile has to decode the media again (17.1), and
         # the report is where the extra hours are accounted for.

@@ -273,6 +273,17 @@ class MockProducer(Producer):
     def _task_judge_pacing(self, payload: dict[str, Any]) -> dict[str, Any]:
         return {"pacing_mode": payload.get("rule_suggestion", "TRIM"), "reason": "mock: deferred to the rule layer"}
 
+    def _task_revise_timeline(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Changes nothing. Which twenty seconds to lose is the judgement 30장
+        asks for, and this stand-in makes none - so it refuses rather than
+        returning a timeline somebody might take for an answer."""
+        return {
+            "rationale": "mock: no revision judged",
+            "refusal": "the mock backend judges nothing; run with --producer "
+                       "ollama or anthropic to have this request carried out",
+            "cuts": payload.get("cuts", []),
+        }
+
     # -- 11장 ----------------------------------------------------------------
     def _task_package_metadata(self, payload: dict[str, Any]) -> dict[str, Any]:
         summary = (payload.get("core_summary") or "untitled").strip()

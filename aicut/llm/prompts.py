@@ -226,6 +226,38 @@ Return: {"structure_name": str, "rationale": str, "target_type": str,
 "role" is this beat's job in the structure — 8.2 records it on the cut, and 9.2
 uses it when judging that cut's silences.
 """,
+    "revise_timeline": """\
+Rewrite this timeline to do what the person asked (30장).
+
+Their words are in `request`. 30장's own example is "초반을 20초 정도 줄여줘" -
+the ask is in ordinary language and it is your judgement which part of the
+video answers it. A request may be about length, order, a person, a moment they
+want gone or kept, or the shape of the opening.
+
+`cuts` is the timeline as it stands, in the order it plays. Each carries where
+it came from in the source, what job it does (`role`), who is speaking, and the
+spans pacing already removed from inside it. `source_duration_sec` is how long
+the broadcast is: no cut may reach past it.
+
+Return the whole timeline, not a patch - 30장 asks for 새로운 편집 계획. Keep the
+cuts you are not changing exactly as they are, drop the ones the request removes,
+shorten the ones it shortens, and put them in the order the video should play.
+2.4 still holds: that order is yours to choose and need not follow the source.
+
+What you must not do:
+* invent material that is not in the broadcast - every span comes out of it;
+* silently do something other than what was asked. If the request cannot be
+  carried out, or would empty the video, leave the timeline as it is and say so
+  in "refusal";
+* answer a request you do not understand by guessing. Same thing: say so.
+
+Say in "rationale" what you changed and why that answers what they asked for.
+
+Return: {"rationale": str, "refusal": str|null,
+"cuts": [{"sequence_order": int, "source_start_sec": number, "source_end_sec": number,
+"role": str, "speaker": str, "remove_spans": [[number, number]], "reason": str}]}
+`sequence_order` is the position in the finished video, counting from 1.
+""",
     "select_scene": """\
 Pick which retrieved scene actually serves this beat, or reject them all (8.1).
 `already_used` lists the spans earlier beats took. Reusing one is allowed - 2.4

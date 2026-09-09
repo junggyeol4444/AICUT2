@@ -605,6 +605,34 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_revise(args) -> int:
+    """30장: change the timeline by asking for it in words."""
+    from aicut.pipeline import revision as revision_mod
+
+    store = _store(args)
+    episode = store.get_episode(args.episode)
+    if episode is None:
+        print(f"unknown episode {args.episode}", file=sys.stderr)
+        return 1
+    project = store.get_project(episode.project_id)
+    ctx = _context(args, project)
+    try:
+        result = revision_mod.revise(ctx, episode, args.request, plan_path=args.plan)
+    except revision_mod.RevisionRefused as exc:
+        # Nothing was touched. That is the answer, not an error to hide.
+        print(f"not changed: {exc}", file=sys.stderr)
+        return 1
+    print(f"{result['cuts_before']} cuts ({result['duration_before_sec']:.1f}s)"
+          f" -> {result['cuts_after']} cuts ({result['duration_after_sec']:.1f}s)")
+    if result["rationale"]:
+        print(f"  {result['rationale']}")
+    print(f"  plan: {result['plan']}")
+    print(f"  the plan as it was: {result['previous_plan']}")
+    if result["rendered_output_is_stale"]:
+        print("  the rendered file is now older than the plan; render again to see this")
+    return 0
+
+
 def cmd_review(args) -> int:
     """The mandatory gate of 11.3: nothing is published without passing here."""
     store = _store(args)
@@ -1680,6 +1708,12 @@ def build_parser() -> argparse.ArgumentParser:
                           help="the editor sequence's frame rate (24, 25, 30, 29.97, ...)")
     export_p.add_argument("--out", default=None, help="output file, or a directory for several")
     export_p.set_defaults(func=cmd_export)
+
+    revise = _sub("revise", help="30장: change a timeline by asking in words")
+    revise.add_argument("episode")
+    revise.add_argument("request", help='what to change, e.g. "초반을 20초 정도 줄여줘"')
+    revise.add_argument("--plan", help="a plan file to revise (default: this episode's)")
+    revise.set_defaults(func=cmd_revise)
 
     review = _sub("review", help="approve or reject an episode (11.3 gate)")
     review.add_argument("episode")

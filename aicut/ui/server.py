@@ -498,6 +498,25 @@ class UiServer:
         plan = EditPlan.load(path)
         return {"path": str(path), "readable": describe(plan), "plan": plan.to_dict()}
 
+    def revise(self, episode_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """30장: the person says what to change and the timeline changes.
+
+        The plugin's half of this is one call, so 26장's panel can offer it
+        beside the button that made the timeline in the first place.
+        """
+        from aicut.pipeline import revision as revision_mod
+
+        episode = self.store.get_episode(episode_id)
+        if episode is None:
+            raise KeyError(f"unknown episode {episode_id}")
+        ctx = self.context(episode.project_id)
+        try:
+            return revision_mod.revise(ctx, episode, str(body.get("request") or ""))
+        except revision_mod.RevisionRefused as exc:
+            # Nothing was touched, and the caller is told exactly that rather
+            # than being given a 500 to guess at.
+            return {"episode_id": episode_id, "changed": False, "refusal": str(exc)}
+
     def edit_model(self, episode_id: str, mode: str = "new_sequence") -> dict[str, Any]:
         """The Common Edit Model for one episode (플러그인 기획안 37장).
 
@@ -674,6 +693,9 @@ class _Handler(BaseHTTPRequestHandler):
              lambda eid: ui.edit_model(eid)),
             (re.compile(r"^/api/episodes/([\w-]+)/edit-model$"), "POST",
              lambda eid, body: ui.edit_model(eid, body.get("mode", "new_sequence"))),
+            # 30장 / MVP 7: change the timeline by asking for it in words.
+            (re.compile(r"^/api/episodes/([\w-]+)/revise$"), "POST",
+             lambda eid, body: ui.revise(eid, body)),
             (re.compile(r"^/api/episodes/([\w-]+)/review$"), "POST", lambda eid, body: ui.review(eid, body)),
             (re.compile(r"^/api/episodes/([\w-]+)/upload$"), "POST", lambda eid, body: ui.upload(eid, body)),
         ]

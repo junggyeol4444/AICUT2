@@ -105,6 +105,16 @@ class Engine(object):
             "POST", "/api/episodes/{}/edit-model".format(episode_id), {"mode": mode},
         )
 
+    def revise(self, episode_id, request):
+        """30장: change a timeline by asking in words.
+
+        The answer says what changed, or carries a `refusal` and changed
+        nothing - an editor plugin shows the person which of the two it was.
+        """
+        return self._call(
+            "POST", "/api/episodes/{}/revise".format(episode_id), {"request": request},
+        )
+
     # -- the wire ----------------------------------------------------------
     def _call(self, method, path, body=None):
         url = self.base_url + path

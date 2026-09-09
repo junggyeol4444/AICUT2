@@ -92,6 +92,17 @@ class Producer(ABC):
         """Comedic beat or dead air? KEEP / TRIM / CUT with a reason (9장)."""
         return self._object("judge_pacing", payload)
 
+    def revise_timeline(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Rewrite an existing timeline to do what the person asked (30장).
+
+        30장's example is "초반을 20초 정도 줄여줘": the request is in words, and
+        which twenty seconds to lose is a judgement about this video - which is
+        why it is asked here and not decided by a rule. The answer is a whole
+        timeline, as 30장 says (새로운 편집 계획 생성), and the program checks it
+        against the source before anything is written.
+        """
+        return self._object("revise_timeline", payload)
+
     # -- 11장: packaging -----------------------------------------------------
     def package_metadata(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Titles, description, tags, chapters written for this video (11.2)."""

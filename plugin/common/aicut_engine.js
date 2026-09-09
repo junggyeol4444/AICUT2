@@ -229,6 +229,13 @@ var aicutEngine = (function () {
                          {mode: mode || "new_sequence"});
     };
 
+    /* 30장: change a timeline by asking in words. The answer says what changed,
+     * or carries a `refusal` and changed nothing. */
+    Engine.prototype.revise = function (episodeId, request) {
+        return this.call("POST", "/api/episodes/" + String(episodeId) + "/revise",
+                         {request: request});
+    };
+
     return {
         DEFAULT_HOST: DEFAULT_HOST,
         DEFAULT_PORT: DEFAULT_PORT,
