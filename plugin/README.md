@@ -490,16 +490,42 @@ python plugin/uidrive/aicut_uidrive.py --editor shotcut --engine /방송/live.mk
  15. press ctrl+s - 저장
 ```
 
-### 이 키들 맞는지 — **확인 안 됐다**
+### 키는 알아서 배운다 — `--learn`
 
-`keymaps.json` 에 편집기별 키가 들어 있고, **전부 `confirmed: false` 다.** 이
-환경에 네 편집기가 하나도 없어서 어떤 단축키도 실제 앱에서 눌러본 적이 없다.
-문서에 나온 기본값을 적어놓은 것이고, 그건 측정한 게 아니다.
+키를 모른다고 끝나는 게 아니다. 알아낼 수 있는 데서 알아낸다:
 
-그래서:
-* `--dry-run` 이 먼저다. 누를 키를 전부 출력한다.
-* 틀린 게 있으면 **`keymaps.json` 을 고친다.** 코드가 아니라 그 파일이다.
-* 실행할 때마다 "확인 안 된 키 N개" 를 먼저 말한다.
+```bash
+python plugin/uidrive/aicut_uidrive.py --editor shotcut --learn
+```
+
+**1순위 — 니 컴퓨터에 깔린 편집기 본인.** 니가 단축키를 바꿔놨으면 그게 편집기가
+따르는 키다. Kdenlive는 `~/.config/kdenliveshortcutsrc`, Final Cut은 자기
+command set(plist)에 적어놓는다. 여기서 읽은 것만 `confirmed: true` 가 된다.
+
+**2순위 — 그 프로그램의 소스 코드.** Shotcut과 Kdenlive는 공개돼 있어서, 기본
+단축키가 **그걸 만든 코드 줄에** 적혀 있다. 문서 페이지가 아니라 실제 대입문이다.
+
+실제로 돌린 결과 (이 저장소의 `keymaps.json` 에 그렇게 들어가 있다):
+
+```
+Shotcut  mark_in  i       <- shotcut/src/player.cpp
+         mark_out o       <- shotcut/src/player.cpp
+         append   a       <- shotcut/src/docks/timelinedock.cpp
+         save     ctrl+s  <- shotcut/src/mainwindow.ui
+Kdenlive mark_in  i       <- kdenlive/src/monitor/monitormanager.cpp
+         mark_out o       <- kdenlive/src/monitor/monitormanager.cpp
+         append   v       <- kdenlive/src/mainwindow.cpp
+```
+
+**Avid**은 자기 설정을 읽을 수 없는 형식으로 저장해서 배울 데가 없다. 그렇게
+말한다. **Final Cut**은 공개 소스가 없어서 **니 맥에서** 배운다.
+
+키마다 상태가 셋이고, 실행 전에 그걸 먼저 말한다:
+* `confirmed` — 니 컴퓨터의 편집기에서 읽음
+* 소스에서 배움 — 그 편집기 기본값이지 니 설정은 아님
+* 손으로 적은 것 — 배울 데가 없어서 문서 보고 적은 추측
+
+`--dry-run` 이 먼저다. 틀린 게 있으면 `keymaps.json` 을 고친다 (코드 아님).
 
 ### 키를 실제로 누르는 부분은 검증했다
 

@@ -1,82 +1,261 @@
 {
   "_note": [
     "The keys each editor uses, as this program will press them.",
-    "NOTHING HERE IS CONFIRMED. Every entry is marked confirmed:false because",
-    "no copy of these editors exists on the machine this was written on, so no",
-    "shortcut in this file has ever been pressed in the application it names.",
-    "They are the documented defaults as far as they are known - which is not",
-    "the same as measured, and 17.1's habit is to say so rather than let a",
-    "number nobody checked look like a fact.",
-    "Run with --dry-run first: it prints every key before anything is pressed.",
-    "Correct what is wrong here; the file is the thing to edit, not the code."
+    "`confirmed` is what it says: true only where the key was read from the copy",
+    "installed on this machine, which is the one the editor actually obeys.",
+    "A key learned from the program's own source is what the editor ships with -",
+    "not what this person set it to - so it stays false until it is read here.",
+    "`source` says where each one came from. An entry with no source was never",
+    "learned at all: it is the documented default written down by hand, which is",
+    "not the same as measured.",
+    "Run `--learn` to fill this in, and `--dry-run` to see every key before one",
+    "is pressed. Correct what is wrong here; the file is the thing to edit."
   ],
   "shotcut": {
     "name": "Shotcut",
-    "window": ["Shotcut"],
+    "window": [
+      "Shotcut"
+    ],
     "settle_sec": 0.5,
     "keys": {
-      "new_timeline": {"key": "ctrl+n", "key_mac": "cmd+n", "confirmed": false,
-                       "note": "new project; Shotcut has one timeline per project"},
-      "confirm": {"key": "return", "confirmed": false},
-      "focus_source": {"key": "escape", "confirmed": false,
-                       "note": "leave whatever field has focus before the marks"},
-      "goto_timecode": {"key": "ctrl+g", "key_mac": "cmd+g", "confirmed": false,
-                        "note": "if there is no such shortcut the position field is clicked instead"},
-      "mark_in": {"key": "i", "confirmed": false},
-      "mark_out": {"key": "o", "confirmed": false},
-      "append": {"key": "a", "confirmed": false},
-      "save": {"key": "ctrl+s", "key_mac": "cmd+s", "confirmed": false}
+      "new_timeline": {
+        "key": "ctrl+n",
+        "key_mac": "cmd+n",
+        "confirmed": false,
+        "note": "new project; Shotcut has one timeline per project",
+        "source": "the program's own source: https://raw.githubusercontent.com/mltframework/shotcut/master/src/mainwindow.ui"
+      },
+      "confirm": {
+        "key": "return",
+        "confirmed": false
+      },
+      "focus_source": {
+        "key": "escape",
+        "confirmed": false,
+        "note": "leave whatever field has focus before the marks"
+      },
+      "goto_timecode": {
+        "key": "ctrl+g",
+        "key_mac": "cmd+g",
+        "confirmed": false,
+        "note": "if there is no such shortcut the position field is clicked instead"
+      },
+      "mark_in": {
+        "key": "i",
+        "confirmed": false,
+        "source": "the program's own source: https://raw.githubusercontent.com/mltframework/shotcut/master/src/player.cpp"
+      },
+      "mark_out": {
+        "key": "o",
+        "confirmed": false,
+        "source": "the program's own source: https://raw.githubusercontent.com/mltframework/shotcut/master/src/player.cpp"
+      },
+      "append": {
+        "key": "a",
+        "confirmed": false,
+        "source": "the program's own source: https://raw.githubusercontent.com/mltframework/shotcut/master/src/docks/timelinedock.cpp"
+      },
+      "save": {
+        "key": "ctrl+s",
+        "key_mac": "cmd+s",
+        "confirmed": false,
+        "source": "the program's own source: https://raw.githubusercontent.com/mltframework/shotcut/master/src/mainwindow.ui"
+      }
+    },
+    "learn": {
+      "map": {
+        "new_timeline": "actionNew",
+        "mark_in": "playerSetInAction",
+        "mark_out": "playerSetOutAction",
+        "append": "timelineAppendAction",
+        "save": "actionSave"
+      },
+      "sources": [
+        [
+          "https://raw.githubusercontent.com/mltframework/shotcut/master/src/mainwindow.ui",
+          "qt-ui"
+        ],
+        [
+          "https://raw.githubusercontent.com/mltframework/shotcut/master/src/player.cpp",
+          "qt-source"
+        ],
+        [
+          "https://raw.githubusercontent.com/mltframework/shotcut/master/src/docks/timelinedock.cpp",
+          "qt-source"
+        ]
+      ]
     }
   },
   "kdenlive": {
     "name": "Kdenlive",
-    "window": ["Kdenlive"],
+    "window": [
+      "Kdenlive"
+    ],
     "settle_sec": 0.5,
     "keys": {
-      "new_timeline": {"key": "ctrl+n", "key_mac": "cmd+n", "confirmed": false},
-      "confirm": {"key": "return", "confirmed": false},
-      "focus_source": {"key": "escape", "confirmed": false},
-      "goto_timecode": {"key": "ctrl+g", "key_mac": "cmd+g", "confirmed": false},
-      "mark_in": {"key": "i", "confirmed": false},
-      "mark_out": {"key": "o", "confirmed": false},
-      "append": {"key": "v", "confirmed": false,
-                 "note": "insert the marked zone into the timeline"},
-      "save": {"key": "ctrl+s", "key_mac": "cmd+s", "confirmed": false}
+      "new_timeline": {
+        "key": "ctrl+n",
+        "key_mac": "cmd+n",
+        "confirmed": false
+      },
+      "confirm": {
+        "key": "return",
+        "confirmed": false
+      },
+      "focus_source": {
+        "key": "escape",
+        "confirmed": false
+      },
+      "goto_timecode": {
+        "key": "ctrl+g",
+        "key_mac": "cmd+g",
+        "confirmed": false
+      },
+      "mark_in": {
+        "key": "i",
+        "confirmed": false,
+        "source": "the program's own source: https://raw.githubusercontent.com/KDE/kdenlive/master/src/monitor/monitormanager.cpp"
+      },
+      "mark_out": {
+        "key": "o",
+        "confirmed": false,
+        "source": "the program's own source: https://raw.githubusercontent.com/KDE/kdenlive/master/src/monitor/monitormanager.cpp"
+      },
+      "append": {
+        "key": "v",
+        "confirmed": false,
+        "note": "insert the marked zone into the timeline",
+        "source": "the program's own source: https://raw.githubusercontent.com/KDE/kdenlive/master/src/mainwindow.cpp"
+      },
+      "save": {
+        "key": "ctrl+s",
+        "key_mac": "cmd+s",
+        "confirmed": false
+      }
+    },
+    "learn": {
+      "map": {
+        "mark_in": "mark_in",
+        "mark_out": "mark_out",
+        "append": "insert_to_in_point"
+      },
+      "sources": [
+        [
+          "https://raw.githubusercontent.com/KDE/kdenlive/master/src/monitor/monitormanager.cpp",
+          "qt-source"
+        ],
+        [
+          "https://raw.githubusercontent.com/KDE/kdenlive/master/src/mainwindow.cpp",
+          "qt-source"
+        ]
+      ]
     }
   },
   "finalcut": {
     "name": "Final Cut Pro",
-    "window": ["Final Cut Pro"],
+    "window": [
+      "Final Cut Pro"
+    ],
     "settle_sec": 0.7,
     "keys": {
-      "new_timeline": {"key": "cmd+n", "confirmed": false,
-                       "note": "new project in the library"},
-      "confirm": {"key": "return", "confirmed": false},
-      "focus_source": {"key": "escape", "confirmed": false},
-      "goto_timecode": {"key": "control+p", "confirmed": false,
-                        "note": "type a timecode and press return"},
-      "mark_in": {"key": "i", "confirmed": false},
-      "mark_out": {"key": "o", "confirmed": false},
-      "append": {"key": "e", "confirmed": false,
-                 "note": "append to the end of the storyline"},
-      "save": {"key": "cmd+s", "confirmed": false,
-               "note": "Final Cut saves as it goes; this may do nothing"}
+      "new_timeline": {
+        "key": "cmd+n",
+        "confirmed": false,
+        "note": "new project in the library"
+      },
+      "confirm": {
+        "key": "return",
+        "confirmed": false
+      },
+      "focus_source": {
+        "key": "escape",
+        "confirmed": false
+      },
+      "goto_timecode": {
+        "key": "control+p",
+        "confirmed": false,
+        "note": "type a timecode and press return"
+      },
+      "mark_in": {
+        "key": "i",
+        "confirmed": false
+      },
+      "mark_out": {
+        "key": "o",
+        "confirmed": false
+      },
+      "append": {
+        "key": "e",
+        "confirmed": false,
+        "note": "append to the end of the storyline"
+      },
+      "save": {
+        "key": "cmd+s",
+        "confirmed": false,
+        "note": "Final Cut saves as it goes; this may do nothing"
+      }
+    },
+    "learn": {
+      "map": {
+        "mark_in": "MarkIn",
+        "mark_out": "MarkOut",
+        "append": "AppendToStoryline",
+        "save": "SaveProject"
+      },
+      "sources": [],
+      "note": "Final Cut is not open, so there is no source to read. Its command set is on the Mac it is installed on, and that is where these are learned - the ids above are what this expects to find there, and --learn prints what it actually found if they are not it."
     }
   },
   "avid": {
     "name": "Avid Media Composer",
-    "window": ["Media Composer", "Avid"],
+    "window": [
+      "Media Composer",
+      "Avid"
+    ],
     "settle_sec": 0.7,
     "keys": {
-      "new_timeline": {"key": "ctrl+shift+n", "key_mac": "cmd+shift+n", "confirmed": false,
-                       "note": "new sequence in the bin"},
-      "confirm": {"key": "return", "confirmed": false},
-      "focus_source": {"key": "escape", "confirmed": false},
-      "goto_timecode": {"key": "ctrl+g", "key_mac": "cmd+g", "confirmed": false},
-      "mark_in": {"key": "i", "confirmed": false},
-      "mark_out": {"key": "o", "confirmed": false},
-      "append": {"key": "v", "confirmed": false, "note": "splice-in"},
-      "save": {"key": "ctrl+s", "key_mac": "cmd+s", "confirmed": false}
+      "new_timeline": {
+        "key": "ctrl+shift+n",
+        "key_mac": "cmd+shift+n",
+        "confirmed": false,
+        "note": "new sequence in the bin"
+      },
+      "confirm": {
+        "key": "return",
+        "confirmed": false
+      },
+      "focus_source": {
+        "key": "escape",
+        "confirmed": false
+      },
+      "goto_timecode": {
+        "key": "ctrl+g",
+        "key_mac": "cmd+g",
+        "confirmed": false
+      },
+      "mark_in": {
+        "key": "i",
+        "confirmed": false
+      },
+      "mark_out": {
+        "key": "o",
+        "confirmed": false
+      },
+      "append": {
+        "key": "v",
+        "confirmed": false,
+        "note": "splice-in"
+      },
+      "save": {
+        "key": "ctrl+s",
+        "key_mac": "cmd+s",
+        "confirmed": false
+      }
+    },
+    "learn": {
+      "map": {},
+      "sources": [],
+      "note": "Avid keeps its keyboard settings in its own user profile, in a format this cannot read. Nothing here is learned: check the keys with --dry-run and fix them by hand."
     }
   }
 }

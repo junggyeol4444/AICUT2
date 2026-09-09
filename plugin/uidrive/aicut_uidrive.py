@@ -23,6 +23,7 @@ with the control modifier set.
 """
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -43,12 +44,79 @@ from aicut_model import (                                       # noqa: E402
     subtitles,
     validated,
 )
+from aicut_learn import (                                       # noqa: E402
+    learn as learn_keys,
+    merge_into_keymap,
+    save_keymaps,
+)
 from aicut_steps import (                                       # noqa: E402
+    KEYMAPS,
     build_steps,
     describe,
     load_keymap,
     unconfirmed,
+    unsourced,
 )
+
+
+def fetch_url(url, timeout=30):
+    """Read a page. Kept here so the learner does not reach the network itself -
+    a caller that must not (an offline machine, a run under test) simply does
+    not pass this."""
+    import urllib.request
+
+    request = urllib.request.Request(url, headers={"User-Agent": "aicut"})
+    handle = urllib.request.urlopen(request, timeout=timeout)
+    try:
+        return handle.read().decode("utf-8", "replace")
+    finally:
+        handle.close()
+
+
+def learn(editor, offline=False, keymap_path=None, out=None):
+    """Find out this editor's keys and write them into the keymap.
+
+    The installed copy first - that is the one the editor obeys - then the
+    program's own source for the two editors that are open. What could not be
+    learned keeps whatever was there and stays unconfirmed.
+    """
+    out = out or sys.stdout
+    path = keymap_path or KEYMAPS
+    with open(path, "r", encoding="utf-8") as handle:
+        maps = json.load(handle)
+    if editor not in maps:
+        raise ModelError("no keymap for {}".format(editor))
+
+    keymap = maps[editor]
+    settings = keymap.get("learn") or {}
+    wanted = settings.get("map") or {}
+    if not wanted:
+        out.write("{}: {}\n".format(keymap.get("name", editor),
+                                    settings.get("note", "there is nothing to learn from")))
+        return []
+
+    learned, notes = learn_keys(
+        editor, wanted,
+        fetch=None if offline else fetch_url,
+        sources=settings.get("sources") or [],
+    )
+    changed = merge_into_keymap(keymap, learned)
+    save_keymaps(path, maps)
+
+    for note in notes:
+        out.write("  {}\n".format(note))
+    for name, before, after, source in changed:
+        out.write("  {}: {} -> {}   ({})\n".format(
+            name, before or "-", after, source))
+    guessed = unsourced(keymap)
+    out.write("{}: learned {} key(s) from {}\n".format(
+        keymap.get("name", editor), len(learned),
+        "this machine and the program's own source" if not offline
+        else "the copy installed here"))
+    if guessed:
+        out.write("  still hand-written, nothing to learn them from: {}\n".format(
+            ", ".join(guessed)))
+    return changed
 
 
 def sequence_fps(sequence, stated=None):
@@ -72,15 +140,20 @@ def edit(model, sequence, editor, fps=None, mode="new_sequence",
     rate = sequence_fps(sequence, fps)
     steps = build_steps(model, sequence, rate, keymap, mode=mode)
 
+    guessed = unsourced(keymap)
     not_checked = unconfirmed(keymap)
-    if not_checked:
+    if guessed:
         # 17.1's habit: a value nobody measured is said out loud rather than
-        # left to look like a fact. These are somebody else's shortcuts.
-        print("  {} of {}'s keys have never been confirmed against a running "
-              "copy: {}".format(len(not_checked), keymap.get("name", editor),
-                                ", ".join(not_checked)))
-        print("  read the list below, fix keymaps.json, and only then run it "
-              "for real")
+        # left to look like a fact. These are somebody else's shortcuts, and
+        # these particular ones were never learned from anywhere.
+        print("  {} of {}'s keys are hand-written guesses: {}".format(
+            len(guessed), keymap.get("name", editor), ", ".join(guessed)))
+        print("  `--learn` fills in what can be found out; `--dry-run` prints "
+              "every key before one is pressed")
+    if not_checked:
+        print("  {} key(s) have not been read from the copy installed here, so "
+              "they are this editor's defaults rather than your settings".format(
+                  len(not_checked)))
 
     driver = driver or for_this_machine(dry_run=dry_run)
     if dry_run:
@@ -186,11 +259,24 @@ def main(argv=None):
     parser.add_argument("--mode", default="new_sequence",
                         choices=["new_sequence", "edit_current"],
                         help="25장's two modes")
+    parser.add_argument("--learn", action="store_true",
+                        help="find out this editor's keys and write them into keymaps.json")
+    parser.add_argument("--offline", action="store_true",
+                        help="learn only from the copy installed here; touch no network")
     parser.add_argument("--dry-run", action="store_true",
                         help="print every key and press nothing")
     parser.add_argument("--no-focus", action="store_true",
                         help="do not bring the editor forward; click it yourself first")
     args = parser.parse_args(argv)
+
+    if args.learn:
+        try:
+            learn(args.editor, offline=args.offline)
+        except ModelError as exc:
+            print("aicut: {}".format(exc), file=sys.stderr)
+            return 1
+        if not args.model and not args.engine:
+            return 0
 
     if not args.model and not args.engine:
         parser.error("give a model file, or --engine <broadcast> to have one made")

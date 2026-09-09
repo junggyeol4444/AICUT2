@@ -139,9 +139,11 @@ class TheKeymapTests(unittest.TestCase):
     """Somebody else's shortcuts, and this file says which it has checked."""
 
     def test_nothing_claims_to_be_confirmed_that_has_not_been(self):
-        """No copy of these editors exists here, so nothing can be confirmed.
+        """No copy of these editors exists here, so no key can be confirmed.
 
-        This test is what stops a later edit quietly marking one true.
+        Learning one from the program's own source does not confirm it: that is
+        the editor's default, not this person's setting. This test is what stops
+        a later edit quietly marking one true.
         """
         for editor in EDITORS:
             with self.subTest(editor=editor):
@@ -187,14 +189,19 @@ class TheDryRunTests(unittest.TestCase):
         self.assertIn("00:01:40:00", printed)
         self.assertIn("{} steps".format(len(steps)), printed)
 
-    def test_it_says_how_many_keys_are_unconfirmed(self):
+    def test_it_says_which_keys_are_guesses_and_which_are_defaults(self):
+        """Three states, and the run names two of them before it starts:
+        a hand-written guess, and a default that is not this person's setting."""
         model = _model([Cut(sequence_order=1, source_start_sec=0.0, source_end_sec=5.0)])
         out = io.StringIO()
         import contextlib
 
         with contextlib.redirect_stdout(out):
             uidrive.edit(model, model["sequences"][0], "shotcut", dry_run=True)
-        self.assertIn("never been confirmed", out.getvalue())
+        said = out.getvalue()
+        self.assertIn("hand-written guesses", said)
+        self.assertIn("goto_timecode", said)
+        self.assertIn("defaults rather than your settings", said)
 
     def test_a_model_with_no_rate_asks_rather_than_typing_a_guess(self):
         model = _model([Cut(sequence_order=1, source_start_sec=0.0, source_end_sec=5.0)])
@@ -357,6 +364,155 @@ json.dump(got, open(sys.argv[1], "w"))
             os.environ.pop("DISPLAY", None)
 
 
+class LearningTheKeysTests(unittest.TestCase):
+    """Finding the keys out rather than being told them.
+
+    The fixtures are excerpts of the editors' own source files, kept here so
+    this runs without a network. The keys they yield were checked against the
+    full files when they were fetched.
+    """
+
+    FIXTURES = Path(__file__).resolve().parent / "fixtures" / "uidrive"
+
+    def _read(self, name):
+        return (self.FIXTURES / name).read_text(encoding="utf-8")
+
+    def test_shotcuts_own_source_says_which_keys_mark_in_and_out(self):
+        import aicut_learn as learn
+
+        found = learn.from_qt_source(self._read("shotcut_player.cpp"),
+                                     ["playerSetInAction", "playerSetOutAction"])
+        self.assertEqual(found, {"playerSetInAction": "i", "playerSetOutAction": "o"})
+
+    def test_shotcuts_own_source_says_which_key_appends(self):
+        import aicut_learn as learn
+
+        found = learn.from_qt_source(self._read("shotcut_timelinedock.cpp"),
+                                     ["timelineAppendAction"])
+        self.assertEqual(found, {"timelineAppendAction": "a"})
+
+    def test_a_qt_designer_file_is_read_too(self):
+        import aicut_learn as learn
+
+        found = learn.from_qt_ui(self._read("shotcut_mainwindow.ui"),
+                                 ["actionSave", "actionNew"])
+        self.assertEqual(found, {"actionSave": "ctrl+s", "actionNew": "ctrl+n"})
+
+    def test_kdenlives_own_source_says_the_same_two_keys(self):
+        import aicut_learn as learn
+
+        found = learn.from_qt_source(self._read("kdenlive_monitormanager.cpp"),
+                                     ["mark_in", "mark_out", "seek_zone_start"])
+        self.assertEqual(found, {"mark_in": "i", "mark_out": "o",
+                                 "seek_zone_start": "shift+i"})
+
+    def test_a_qt_modifier_expression_becomes_a_chord(self):
+        import aicut_learn as learn
+
+        self.assertEqual(learn.qt_chord("Qt::CTRL | Qt::Key_I"), "ctrl+i")
+        self.assertEqual(learn.qt_chord("Qt::SHIFT | Qt::ALT | Qt::Key_Return"),
+                         "shift+alt+return")
+        self.assertIsNone(learn.qt_chord("QKeySequence()"))
+
+    def test_an_action_with_no_shortcut_is_not_given_one(self):
+        """Qt says "no default" by assigning nothing; inventing one here would
+        press a key the editor has not bound."""
+        import aicut_learn as learn
+
+        source = 'addAction(QStringLiteral("no_key"), thing, QKeySequence());'
+        self.assertEqual(learn.from_qt_source(source, ["no_key"]), {})
+
+    def test_a_persons_own_kde_override_is_read_and_wins(self):
+        """A shortcut they changed is the shortcut the editor obeys."""
+        import aicut_learn as learn
+
+        text = "[Shortcuts]\nmark_in=Ctrl+Shift+I\t\nmark_out=none\n"
+        self.assertEqual(learn.from_kde_shortcuts(text, ["mark_in", "mark_out"]),
+                         {"mark_in": "ctrl+shift+i"})
+
+    def test_final_cuts_command_set_is_read_as_a_plist(self):
+        import plistlib
+
+        import aicut_learn as learn
+
+        data = plistlib.dumps({
+            "MarkIn": {"characterString": "i", "modifiers": ""},
+            "AppendToStoryline": {"characterString": "e", "modifiers": "command"},
+            "Odd": {"nothing": 1},
+        })
+        found, unreadable = learn.from_final_cut_commandset(
+            data, ["MarkIn", "AppendToStoryline", "Odd"])
+        self.assertEqual(found, {"MarkIn": "i", "AppendToStoryline": "cmd+e"})
+        self.assertEqual(unreadable, ["Odd"])
+
+    def test_what_is_learned_carries_where_it_came_from(self):
+        import aicut_learn as learn
+
+        pages = {"src/player.cpp": self._read("shotcut_player.cpp")}
+        found, notes = learn.learn(
+            "shotcut", {"mark_in": "playerSetInAction"},
+            fetch=lambda url: pages[url],
+            sources=[["src/player.cpp", "qt-source"]],
+            home=str(self.FIXTURES),        # nothing of shotcut's is in there
+        )
+        self.assertEqual(found["mark_in"]["key"], "i")
+        self.assertIn("src/player.cpp", found["mark_in"]["source"])
+        self.assertEqual(notes, [])
+
+    def test_a_default_read_from_source_is_not_called_confirmed(self):
+        """It is what the editor ships with, not what this person set it to."""
+        import aicut_learn as learn
+
+        found, _notes = learn.learn(
+            "shotcut", {"mark_in": "playerSetInAction"},
+            fetch=lambda url: self._read("shotcut_player.cpp"),
+            sources=[["anywhere", "qt-source"]], home=str(self.FIXTURES),
+        )
+        self.assertFalse(found["mark_in"]["confirmed"])
+
+    def test_a_source_that_cannot_be_read_is_reported_not_swallowed(self):
+        import aicut_learn as learn
+
+        def refuse(url):
+            raise OSError("no network here")
+
+        found, notes = learn.learn(
+            "shotcut", {"mark_in": "playerSetInAction"}, fetch=refuse,
+            sources=[["https://example.invalid/x.cpp", "qt-source"]],
+            home=str(self.FIXTURES),
+        )
+        self.assertEqual(found, {})
+        self.assertTrue(any("no network here" in note for note in notes))
+
+    def test_merging_keeps_what_was_not_learned(self):
+        import aicut_learn as learn
+
+        keymap = {"keys": {"mark_in": {"key": "x", "confirmed": False},
+                           "confirm": {"key": "return", "confirmed": False}}}
+        changed = learn.merge_into_keymap(
+            keymap, {"mark_in": {"key": "i", "confirmed": True, "source": "here"}})
+        self.assertEqual(keymap["keys"]["mark_in"]["key"], "i")
+        self.assertTrue(keymap["keys"]["mark_in"]["confirmed"])
+        self.assertEqual(keymap["keys"]["confirm"]["key"], "return")
+        self.assertEqual(changed, [("mark_in", "x", "i", "here")])
+
+    def test_the_shipped_keymap_says_where_each_key_came_from(self):
+        """The two open editors' keys were learned from their own source; the
+        rest are still hand-written, and the file says which is which."""
+        shotcut = KEYMAPS["shotcut"]["keys"]
+        for name in ("mark_in", "mark_out", "append", "save"):
+            with self.subTest(key=name):
+                self.assertIn("source", shotcut[name])
+                self.assertIn("raw.githubusercontent.com", shotcut[name]["source"])
+        self.assertEqual(shotcut["mark_in"]["key"], "i")
+        self.assertEqual(shotcut["append"]["key"], "a")
+        self.assertEqual(KEYMAPS["kdenlive"]["keys"]["append"]["key"], "v")
+
+    def test_the_ones_that_could_not_be_learned_are_still_marked_as_guesses(self):
+        self.assertIn("goto_timecode", steps_mod.unsourced(KEYMAPS["shotcut"]))
+        self.assertNotIn("mark_in", steps_mod.unsourced(KEYMAPS["shotcut"]))
+
+
 class HonestyTests(unittest.TestCase):
     def test_the_driver_says_which_platforms_it_has_run_on(self):
         source = (UIDRIVE / "aicut_driver.py").read_text(encoding="utf-8")
@@ -367,9 +523,13 @@ class HonestyTests(unittest.TestCase):
         source = (UIDRIVE / "aicut_uidrive.py").read_text(encoding="utf-8")
         self.assertIn("NOT RUN AGAINST ANY OF THE FOUR EDITORS", source)
 
-    def test_the_keymap_file_says_nothing_in_it_is_confirmed(self):
+    def test_the_keymap_file_says_what_confirmed_means_in_it(self):
+        """Three states, and the file has to distinguish them or the word
+        `confirmed` quietly comes to mean "somebody wrote it down"."""
         note = " ".join(KEYMAPS["_note"])
-        self.assertIn("NOTHING HERE IS CONFIRMED", note)
+        self.assertIn("true only where the key was read from the copy", note)
+        self.assertIn("not what this person set it to", note)
+        self.assertIn("written down by hand", note)
 
 
 if __name__ == "__main__":

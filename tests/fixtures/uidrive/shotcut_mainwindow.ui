@@ -1,0 +1,33 @@
+<ui version="4.0"><widget class="QMainWindow" name="MainWindow" /><action name="actionSave">
+   <property name="icon">
+    <iconset theme="document-save" resource="../icons/resources.qrc">
+     <normaloff>:/icons/oxygen/32x32/actions/document-save.png</normaloff>:/icons/oxygen/32x32/actions/document-save.png</iconset>
+   </property>
+   <property name="text">
+    <string>&amp;Save</string>
+   </property>
+   <property name="toolTip">
+    <string>Save project as a MLT XML file</string>
+   </property>
+   <property name="whatsThis">
+    <string notr="true">https://forum.shotcut.org/t/file-save-and-save-as/12973/1</string>
+   </property>
+   <property name="shortcut">
+    <string notr="true">Ctrl+S</string>
+   </property>
+   <property name="iconVisibleInMenu">
+    <bool>false</bool>
+   </property>
+  </action>
+  <action name="actionNew">
+   <property name="text">
+    <string>Project</string>
+   </property>
+   <property name="toolTip">
+    <string>Project</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+N</string>
+   </property>
+  </action>
+  </ui>

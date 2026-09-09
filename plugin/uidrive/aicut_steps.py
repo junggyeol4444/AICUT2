@@ -81,14 +81,28 @@ def load_keymap(editor, path=None):
 
 
 def unconfirmed(keymap):
-    """Which of this editor's keys have not been confirmed against a real copy.
+    """Keys not read from the copy of the editor installed on this machine.
 
-    17.1's habit, applied to somebody else's application: a number - or a
-    shortcut - that nobody measured is marked as such rather than presented as
-    fact. The caller prints these before touching the keyboard.
+    17.1's habit, applied to somebody else's application. There are three states
+    a key can be in and they are not the same thing:
+
+    * confirmed - read from this machine's own settings, which is the shortcut
+      the editor obeys;
+    * sourced - read from the program's own source code, so it is what the
+      editor ships with, but not what this person may have changed it to;
+    * neither - written down by hand from documentation, which is a guess.
+
+    This answers the first question; :func:`unsourced` answers the third state,
+    and the caller prints both before touching the keyboard.
     """
     return sorted(name for name, key in keymap.get("keys", {}).items()
                   if not key.get("confirmed"))
+
+
+def unsourced(keymap):
+    """Keys that were never learned from anywhere - hand-written guesses."""
+    return sorted(name for name, key in keymap.get("keys", {}).items()
+                  if not key.get("source"))
 
 
 def timecode(seconds, fps):
