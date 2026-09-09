@@ -21,7 +21,6 @@ from .token_store import EncryptedTokenStore
 from .analytics import AnalyticsCollectionManager, YouTubeAnalyticsClient
 from .strategy import aggregate_edit_strategies
 from .calibration import calibrate_pacing
-from .content_intelligence import validate_reference
 from .learning import analyze_source_output
 from .performance import attribute_retention_to_cuts, performance_insights, validate_metrics
 from .producer import run_producer
@@ -179,12 +178,6 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.json({"authorized": True, "expires_at": tokens.expires_at})
             elif path == "/api/calibrations":
                 self.json(self.runtime.database.list_calibrations())
-            elif path == "/api/references":
-                channel_ref = parse_qs(parsed.query).get("channel_ref", [None])[0]
-                self.json(self.runtime.database.list_youtube_references(channel_ref))
-            elif path == "/api/knowledge/patterns":
-                kind = parse_qs(parsed.query).get("kind", [None])[0]
-                self.json(self.runtime.database.list_production_patterns(kind))
             elif path == "/api/strategies":
                 channel_ref = parse_qs(parsed.query).get("channel_ref", [""])[0]
                 self.json(self.runtime.database.list_strategy_versions(channel_ref))
@@ -222,30 +215,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                     {"pacing": result.params, "evaluation": result.to_dict()}, result.f1 * 100,
                 )
                 self.json(profile, HTTPStatus.CREATED)
-            elif path == "/api/references":
-                self.json(
-                    self.runtime.database.save_youtube_reference(validate_reference(payload)),
-                    HTTPStatus.CREATED,
-                )
             elif path == "/api/learning/source-output":
                 cuts = payload.get("cuts")
-                episode = None
-                if payload.get("episode_id"):
-                    episode = self.runtime.database.get_episode(payload["episode_id"])
-                    if cuts is None:
-                        cuts = self.runtime.database.get_timeline(payload["episode_id"])
-                    if payload.get("project_id") and payload["project_id"] != episode["project_id"]:
-                        raise ValueError("episode_id와 project_id가 같은 프로젝트를 참조해야 합니다.")
-                project_id = payload.get("project_id") or (episode and episode["project_id"])
-                project = self.runtime.database.get_project(project_id) if project_id else None
-                source_duration = payload.get("source_duration_sec") or (project and project["duration_sec"])
-                source_ref = payload.get("source_ref") or (episode and episode["file_path"])
-                output_ref = payload.get("output_ref") or (episode and episode.get("output_mp4_path"))
-                if not source_duration or not source_ref or not output_ref:
-                    raise ValueError("source_duration_sec, source_ref, output_ref 또는 완성된 episode_id가 필요합니다.")
-                analysis = analyze_source_output(source_duration, cuts or [])
+                if cuts is None and payload.get("episode_id"):
+                    cuts = self.runtime.database.get_timeline(payload["episode_id"])
+                analysis = analyze_source_output(payload["source_duration_sec"], cuts or [])
                 pair = self.runtime.database.save_source_output_pair(
-                    source_ref, output_ref, analysis, project_id,
+                    payload["source_ref"], payload["output_ref"], analysis, payload.get("project_id"),
                 )
                 self.json(pair, HTTPStatus.CREATED)
             elif path.startswith("/api/episodes/") and path.endswith("/performance"):

@@ -1,14 +1,11 @@
-import json
 import os
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
-import urllib.request
 from pathlib import Path
 
-from backend.server import create_runtime, create_server
+from backend.server import create_runtime
 
 
 class ServerRuntimeTest(unittest.TestCase):
@@ -50,81 +47,6 @@ class ServerRuntimeTest(unittest.TestCase):
                 self.assertEqual(runtime.max_request_bytes, 1024 * 1024)
                 self.assertEqual(runtime.uploads.client.access_token, "youtube-secret")
             finally:
-                runtime.shutdown()
-
-    def test_source_output_learning_can_use_a_rendered_episode(self):
-        with tempfile.TemporaryDirectory() as directory:
-            runtime = create_runtime({
-                "AICUT_DB": str(Path(directory) / "runtime.db"),
-                "AICUT_BACKUP_DIR": str(Path(directory) / "backups"),
-            })
-            project = runtime.database.create_project({"file_path": "/media/live.mkv", "duration_sec": 100})
-            manifest = {
-                "events": [], "candidates": [],
-                "episodes": [{
-                    "episode_id": "episode-one", "candidate_ids": [], "target_type": "LONG",
-                    "timeline": [{
-                        "source_start_sec": 10, "source_end_sec": 20, "scene_role": "context",
-                        "pacing_mode": "KEEP",
-                    }],
-                }],
-            }
-            runtime.database.import_analysis(project["project_id"], manifest)
-            runtime.database.set_render_status("episode-one", "COMPLETE", "/output/final.mp4")
-            server = create_server("127.0.0.1", 0, runtime)
-            thread = threading.Thread(target=server.serve_forever)
-            thread.start()
-            try:
-                request = urllib.request.Request(
-                    f"http://127.0.0.1:{server.server_port}/api/learning/source-output",
-                    data=json.dumps({"episode_id": "episode-one"}).encode(),
-                    headers={"Content-Type": "application/json"}, method="POST",
-                )
-                with urllib.request.urlopen(request) as response:
-                    saved = json.load(response)
-                self.assertEqual(saved["project_id"], project["project_id"])
-                self.assertEqual(saved["source_ref"], "/media/live.mkv")
-                self.assertEqual(saved["output_ref"], "/output/final.mp4")
-                self.assertEqual(saved["selection_analysis"]["selection_ratio"], .1)
-            finally:
-                server.shutdown()
-                server.server_close()
-                thread.join()
-                runtime.shutdown()
-
-    def test_reference_analysis_is_available_through_knowledge_api(self):
-        with tempfile.TemporaryDirectory() as directory:
-            runtime = create_runtime({
-                "AICUT_DB": str(Path(directory) / "runtime.db"),
-                "AICUT_BACKUP_DIR": str(Path(directory) / "backups"),
-            })
-            server = create_server("127.0.0.1", 0, runtime)
-            thread = threading.Thread(target=server.serve_forever)
-            thread.start()
-            base = f"http://127.0.0.1:{server.server_port}"
-            try:
-                payload = {
-                    "video_id": "reference-one", "channel_ref": "channel-one",
-                    "public_metrics": {"views": 1000}, "media_discarded": True,
-                    "patterns": [{
-                        "kind": "STORY", "title": "결과 선공개", "description": "결과를 먼저 보여준다.",
-                        "confidence": .8, "evidence": [],
-                    }],
-                }
-                request = urllib.request.Request(
-                    f"{base}/api/references", data=json.dumps(payload).encode(),
-                    headers={"Content-Type": "application/json"}, method="POST",
-                )
-                with urllib.request.urlopen(request) as response:
-                    saved = json.load(response)
-                with urllib.request.urlopen(f"{base}/api/knowledge/patterns?kind=STORY") as response:
-                    patterns = json.load(response)
-                self.assertEqual(saved["video_id"], "reference-one")
-                self.assertEqual(patterns[0]["reference_id"], saved["reference_id"])
-            finally:
-                server.shutdown()
-                server.server_close()
-                thread.join()
                 runtime.shutdown()
 
 
