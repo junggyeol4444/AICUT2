@@ -217,11 +217,23 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.json(profile, HTTPStatus.CREATED)
             elif path == "/api/learning/source-output":
                 cuts = payload.get("cuts")
-                if cuts is None and payload.get("episode_id"):
-                    cuts = self.runtime.database.get_timeline(payload["episode_id"])
-                analysis = analyze_source_output(payload["source_duration_sec"], cuts or [])
+                episode = None
+                if payload.get("episode_id"):
+                    episode = self.runtime.database.get_episode(payload["episode_id"])
+                    if cuts is None:
+                        cuts = self.runtime.database.get_timeline(payload["episode_id"])
+                    if payload.get("project_id") and payload["project_id"] != episode["project_id"]:
+                        raise ValueError("episode_id와 project_id가 같은 프로젝트를 참조해야 합니다.")
+                project_id = payload.get("project_id") or (episode and episode["project_id"])
+                project = self.runtime.database.get_project(project_id) if project_id else None
+                source_duration = payload.get("source_duration_sec") or (project and project["duration_sec"])
+                source_ref = payload.get("source_ref") or (episode and episode["file_path"])
+                output_ref = payload.get("output_ref") or (episode and episode.get("output_mp4_path"))
+                if not source_duration or not source_ref or not output_ref:
+                    raise ValueError("source_duration_sec, source_ref, output_ref 또는 완성된 episode_id가 필요합니다.")
+                analysis = analyze_source_output(source_duration, cuts or [])
                 pair = self.runtime.database.save_source_output_pair(
-                    payload["source_ref"], payload["output_ref"], analysis, payload.get("project_id"),
+                    source_ref, output_ref, analysis, project_id,
                 )
                 self.json(pair, HTTPStatus.CREATED)
             elif path.startswith("/api/episodes/") and path.endswith("/performance"):

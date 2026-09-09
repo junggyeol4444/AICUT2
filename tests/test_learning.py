@@ -23,6 +23,42 @@ class SourceOutputLearningTest(unittest.TestCase):
         self.assertEqual([item["effect"]["type"] for item in result["emphasized_cuts"]], ["zoom", "replay"])
         self.assertAlmostEqual(result["selection_ratio"], .3)
 
+    def test_uses_sequence_order_and_excludes_cut_decisions_from_training_output(self):
+        result = analyze_source_output(100, [
+            {"sequence_order": 3, "source_start_sec": 80, "source_end_sec": 90,
+             "scene_role": "discarded", "pacing_mode": "CUT"},
+            {"sequence_order": 2, "source_start_sec": 10, "source_end_sec": 20,
+             "scene_role": "context", "pacing_mode": "TRIM"},
+            {"sequence_order": 1, "source_start_sec": 50, "source_end_sec": 60,
+             "scene_role": "result", "pacing_mode": "KEEP", "speaker_tag": "HOST"},
+        ])
+        self.assertEqual(result["output_duration_sec"], 20)
+        self.assertEqual(result["selection_ratio"], .2)
+        self.assertEqual(result["removed_segments"], [
+            {"start_sec": 0, "end_sec": 10}, {"start_sec": 20, "end_sec": 50},
+            {"start_sec": 60, "end_sec": 100},
+        ])
+        self.assertEqual(result["scene_role_summary"], {"result": 1, "context": 1})
+        self.assertEqual(result["pacing_summary"], {"KEEP": 1, "TRIM": 1})
+        self.assertTrue(result["cut_decisions"][1]["is_reordered"])
+        self.assertNotIn("discarded", result["scene_role_summary"])
+        self.assertEqual(result["discarded_cuts"][0]["scene_role"], "discarded")
+
+    def test_all_cut_output_preserves_explicit_editor_rejections(self):
+        result = analyze_source_output(100, [{
+            "sequence_order": 1, "source_start_sec": 30, "source_end_sec": 40,
+            "scene_role": "repetition", "pacing_mode": "CUT", "pacing_reason": "중복 장면",
+        }])
+        self.assertEqual(result["output_duration_sec"], 0)
+        self.assertEqual(result["discarded_cuts"][0]["reason"], "중복 장면")
+
+    def test_rejects_duplicate_sequence_order(self):
+        with self.assertRaisesRegex(MappingError, "중복"):
+            analyze_source_output(100, [
+                {"sequence_order": 1, "source_start_sec": 10, "source_end_sec": 20},
+                {"sequence_order": 1, "source_start_sec": 30, "source_end_sec": 40},
+            ])
+
     def test_interval_merge_and_complement_preserve_source_coverage(self):
         selected = merge_intervals([Segment(20, 30), Segment(5, 10), Segment(8, 22)])
         self.assertEqual(selected, [Segment(5, 30)])
