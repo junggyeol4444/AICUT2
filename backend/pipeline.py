@@ -22,6 +22,7 @@ from .processes import ProcessSupervisor
 from .planning import run_dynamic_planner
 from .pacing import run_smart_pacing
 from .stt import transcribe_range, transcribe_tracks
+from .subtitles import build_output_cues, write_ass_subtitles
 from .understanding import PreprocessPlan, build_scan_plan, execute_preprocess, select_precision_ranges
 from .vision import run_vision_analyzer
 
@@ -113,8 +114,19 @@ class PipelineManager:
                 return False
             cancel = threading.Event()
             self._cancel[project_id] = cancel
-            self._jobs[project_id] = self.executor.submit(self._run, project_id, configuration, resume, cancel)
+            future = self.executor.submit(self._run, project_id, configuration, resume, cancel)
+            self._jobs[project_id] = future
+            future.add_done_callback(
+                lambda completed, project_id=project_id: self._forget_job(project_id, completed)
+            )
             return True
+
+    def _forget_job(self, project_id: str, completed: Future) -> None:
+        """Release completed futures and cancellation events from the long-lived manager."""
+        with self._lock:
+            if self._jobs.get(project_id) is completed:
+                self._jobs.pop(project_id, None)
+                self._cancel.pop(project_id, None)
 
     def run_sync(
         self, project_id: str, manifest_path: str | None = None, *,
@@ -130,7 +142,11 @@ class PipelineManager:
                 raise RuntimeError("프로젝트가 이미 실행 중입니다.")
             cancel = threading.Event()
             self._cancel[project_id] = cancel
-        self._run(project_id, configuration, resume, cancel)
+        try:
+            self._run(project_id, configuration, resume, cancel)
+        finally:
+            with self._lock:
+                self._cancel.pop(project_id, None)
         state = self.state(project_id)
         state["done"] = True
         state["failed"] = self.database.get_project(project_id)["status"] == "FAILED"
@@ -150,12 +166,15 @@ class PipelineManager:
         with self._lock:
             future = self._jobs.get(project_id)
             cancelling = bool(self._cancel.get(project_id) and self._cancel[project_id].is_set())
+        running = bool(future and not future.done())
+        project = self.database.get_project(project_id)
+        steps = self.database.pipeline_steps(project_id)
         return {
-            "project_id": project_id, "running": bool(future and not future.done()),
-            "done": bool(future and future.done()),
-            "failed": bool(future and future.done() and future.exception()),
+            "project_id": project_id, "running": running,
+            "done": not running and bool(steps),
+            "failed": project["status"] == "FAILED",
             "cancelling": cancelling, "active_pids": self.processes.pids(project_id),
-            "steps": self.database.pipeline_steps(project_id),
+            "steps": steps,
         }
 
     def _run(self, project_id: str, options: dict[str, Any], resume: bool, cancel: threading.Event) -> None:
@@ -402,16 +421,33 @@ class PipelineManager:
                 if any(int(item.get("track_index", -1)) >= available_tracks for item in audio_mix):
                     raise ValueError("render_audio_mix가 원본에 존재하지 않는 오디오 트랙을 참조합니다.")
                 render_root = Path(options.get("render_output_directory") or artifact_root / "renders").resolve()
+                subtitle_paths = dict(options.get("subtitle_paths") or {})
+                subtitle_styles = options.get("subtitle_styles") or {}
+                if not isinstance(subtitle_styles, dict):
+                    raise ValueError("subtitle_styles는 에피소드 ID를 키로 갖는 객체여야 합니다.")
+                transcript = self.database.analysis_input(project_id)["transcript"]
                 for index, episode in enumerate(episodes):
                     progress = self._chunk_progress(97, 100, index, len(episodes))
                     episode_id = episode["episode_id"]
                     output_path = render_root / f"{episode_id}.mp4"
+                    subtitle_style = subtitle_styles.get(episode_id) or options.get("subtitle_style")
+                    if episode_id not in subtitle_paths and subtitle_style:
+                        subtitle_result = self._step(
+                            project_id, f"SUBTITLES_{episode_id}", "RENDERING", 97, 97,
+                            cancel, resume, completed,
+                            lambda episode_id=episode_id, subtitle_style=subtitle_style: self._generate_subtitles(
+                                self.database.get_timeline(episode_id), transcript, subtitle_style,
+                                artifact_root / "subtitles" / f"{episode_id}.ass",
+                                int(options.get("render_width", 1920)), int(options.get("render_height", 1080)),
+                            ),
+                        )
+                        subtitle_paths[episode_id] = subtitle_result["path"]
                     plan = RenderPlan(
                         project["file_path"], str(output_path), tuple(self.database.get_timeline(episode_id)),
                         width=int(options.get("render_width", 1920)), height=int(options.get("render_height", 1080)),
                         video_codec=str(options.get("video_codec", "libx264")),
                         audio_codec=str(options.get("audio_codec", "aac")),
-                        subtitle_path=(options.get("subtitle_paths") or {}).get(episode_id),
+                        subtitle_path=subtitle_paths.get(episode_id),
                         audio_mix=audio_mix,
                         ducking=options.get("render_ducking"),
                     )
@@ -610,6 +646,12 @@ class PipelineManager:
         )
 
     @staticmethod
+    def _generate_subtitles(cuts, transcript, style, output_path, width, height) -> dict[str, Any]:
+        cues, duration = build_output_cues(cuts, transcript)
+        path = write_ass_subtitles(cues, style, output_path, duration, width=width, height=height)
+        return {"path": path, "cue_count": len(cues), "duration_sec": duration}
+
+    @staticmethod
     def _checkpoint_usable(step: str, checkpoint: dict[str, Any], input_hash: str) -> bool:
         if checkpoint.get("input_hash") != input_hash or checkpoint.get("corrupt_output"):
             return False
@@ -629,6 +671,8 @@ class PipelineManager:
             return isinstance(output.get("memory"), dict) and isinstance(output.get("precision_ranges"), list)
         if step.startswith(("AUDIO_ANALYSIS", "VISION_ANALYSIS", "PRECISION_ANALYSIS")):
             return isinstance(output.get("observations"), list)
+        if step.startswith("SUBTITLES_"):
+            return Path(output.get("path", "")).is_file() and isinstance(output.get("cue_count"), int)
         if step == "PRECISION_PLAN":
             return isinstance(output.get("ranges"), list)
         if step in {"AI_PRODUCER", "ANALYSIS_IMPORT"}:

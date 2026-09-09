@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "hosts": [
-    {"id": "davinci_resolve", "mode": "embedded_python", "adapter": "davinci_resolve/aicut_resolve.py"},
-    {"id": "blender_vse", "mode": "embedded_python", "adapter": "blender/aicut_blender.py"},
-    {"id": "adobe_premiere_pro", "mode": "cep_panel", "adapter": "premiere/CSXS/manifest.xml"},
+    {"id": "davinci_resolve", "mode": "embedded_python", "execution": "background_bridge", "adapter": "davinci_resolve/aicut_resolve.py"},
+    {"id": "blender_vse", "mode": "embedded_python", "execution": "background_bridge", "adapter": "blender/aicut_blender.py"},
+    {"id": "adobe_premiere_pro", "mode": "cep_panel", "execution": "background_bridge", "adapter": "premiere/CSXS/manifest.xml"},
     {"id": "final_cut_pro", "mode": "interchange", "formats": ["fcpxml"]},
     {"id": "avid_media_composer", "mode": "interchange", "formats": ["edl", "csv"]},
     {"id": "vegas_pro", "mode": "interchange", "formats": ["edl", "csv"]},

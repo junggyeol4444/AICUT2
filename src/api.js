@@ -1,18 +1,38 @@
 const API_ROOT = '/api';
 
-async function request(path, options = {}) {
-  const response = await fetch(`${API_ROOT}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...options.headers },
-    ...options,
-  });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.message || payload.error || `HTTP ${response.status}`);
+export class ApiError extends Error {
+  constructor(message, status = 0, code = 'network_error') {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+export async function request(path, options = {}) {
+  let response;
+  try {
+    response = await fetch(`${API_ROOT}${path}`, {
+      headers: { 'Content-Type': 'application/json', ...options.headers },
+      ...options,
+    });
+  } catch (error) {
+    throw new ApiError(`로컬 런타임에 연결할 수 없습니다: ${error.message}`);
+  }
+  const contentType = response.headers.get('content-type') || '';
+  const payload = contentType.includes('application/json')
+    ? await response.json()
+    : { error: 'invalid_response', message: await response.text() || `HTTP ${response.status}` };
+  if (!response.ok) {
+    throw new ApiError(payload.message || payload.error || `HTTP ${response.status}`, response.status, payload.error);
+  }
   return payload;
 }
 
 export const api = {
   health: () => request('/health'),
   projects: () => request('/projects'),
+  project: projectId => request(`/projects/${projectId}`),
   createProject: payload => request('/projects', { method: 'POST', body: JSON.stringify(payload) }),
   runProject: (projectId, options = {}) => request(`/projects/${projectId}/run`, {
     method: 'POST', body: JSON.stringify(options),

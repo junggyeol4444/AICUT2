@@ -9,7 +9,7 @@ import bpy
 if os.environ.get("AICUT_ROOT"):
     sys.path.insert(0, os.environ["AICUT_ROOT"])
 
-from backend.plugin_bridge import InEditorBridge, editor_environment
+from backend.editor_jobs import launch_editor_job
 
 
 class AICUT_OT_analyze_selected(bpy.types.Operator):
@@ -21,15 +21,19 @@ class AICUT_OT_analyze_selected(bpy.types.Operator):
         if not strips:
             self.report({"ERROR"}, "Select one movie strip")
             return {"CANCELLED"}
+        root = os.environ.get("AICUT_ROOT")
+        if not root:
+            self.report({"ERROR"}, "AICUT_ROOT environment variable is required")
+            return {"CANCELLED"}
         workspace = Path(os.environ.get("AICUT_EDITOR_WORKSPACE", Path.home() / ".aicut-editor"))
-        options, manifest = editor_environment()
-        options.setdefault("output_directory", str(workspace / "analysis"))
-        result = InEditorBridge(workspace).analyze_selected_media(
-            bpy.path.abspath(strips[0].filepath),
-            options=options, manifest_path=manifest,
+        result = launch_editor_job(
+            root, bpy.path.abspath(strips[0].filepath), workspace,
             fps=round(context.scene.render.fps / context.scene.render.fps_base),
+            python_executable=os.environ.get("AICUT_PYTHON", "python3"),
+            options_json=os.environ.get("AICUT_EDITOR_OPTIONS"),
+            manifest_path=os.environ.get("AICUT_EDITOR_MANIFEST"),
         )
-        self.report({"INFO"}, f"AICUT project {result['project_id']} complete")
+        self.report({"INFO"}, f"AICUT job {result['job_id']} queued (PID {result['pid']})")
         return {"FINISHED"}
 
 

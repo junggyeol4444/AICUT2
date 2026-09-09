@@ -23,6 +23,14 @@ class DatabaseTest(unittest.TestCase):
         self.assertEqual((updated["status"], updated["progress"]), ("PARSING", 12))
         self.assertEqual([log["stage"] for log in self.db.logs(project["project_id"])], ["PARSING", "QUEUED"])
 
+    def test_connections_use_wal_and_wait_for_short_write_contention(self):
+        with self.db.connect() as connection:
+            self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0].lower(), "wal")
+            self.assertEqual(
+                connection.execute("PRAGMA busy_timeout").fetchone()[0],
+                self.db.connection_timeout_sec * 1000,
+            )
+
     def test_candidate_review_and_non_linear_timeline(self):
         project = self.db.create_project({"file_path": "/media/live.mkv"})
         with self.db.connect() as connection:

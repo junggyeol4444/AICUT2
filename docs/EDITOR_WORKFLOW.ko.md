@@ -22,7 +22,7 @@
 | Kdenlive, Shotcut, OpenShot | EDL/CSV 또는 렌더 결과 교환 | 불필요 |
 | CapCut, Vrew, Filmora | 렌더 MP4 + SRT/ASS + CSV | 불필요 |
 
-여기서 “불필요”는 HTTP 서버나 AICUT GUI를 따로 켜지 않는다는 뜻입니다. 분석 자체에는 Python 런타임, AICUT 모델 실행기와 FFmpeg가 필요합니다. Premiere 패널은 편집기 내부 버튼이 bundled Python bridge를 자식 프로세스로 실행하고, Resolve와 Blender는 편집기 Python host가 bridge를 직접 import합니다.
+여기서 “불필요”는 HTTP 서버나 AICUT GUI를 따로 켜지 않는다는 뜻입니다. 분석 자체에는 Python 런타임, AICUT 모델 실행기와 FFmpeg가 필요합니다. Premiere·Resolve·Blender 어댑터는 편집기 프로세스에서 장시간 분석을 동기 실행하지 않고 bundled Python bridge를 별도 프로세스로 시작합니다. 작업 상태는 workspace의 `jobs/<job_id>.json`, 실행 로그는 `jobs/<job_id>.log`에서 확인할 수 있습니다.
 
 ### 설치·실행
 
@@ -34,7 +34,7 @@
 
 **Blender VSE:** Preferences > Add-ons > Install에서 `editor_plugins/blender/aicut_blender.py`를 설치하고 활성화합니다. Video Sequencer에서 Movie strip을 선택한 뒤 AICUT operator를 실행합니다.
 
-각 어댑터는 선택한 원본 경로를 `backend.plugin_bridge.InEditorBridge`에 전달합니다. bridge는 자체 SQLite workspace에서 pipeline을 동기 실행하고, 생성된 에피소드마다 FCPXML·EDL·CSV를 내보냅니다. 즉 별도 프로그램 창을 함께 켜는 구조가 아닙니다.
+각 어댑터는 선택한 원본 경로로 비동기 editor job을 등록합니다. 별도 bridge 프로세스가 자체 SQLite workspace에서 pipeline을 실행하고, 생성된 에피소드마다 FCPXML·EDL·CSV를 내보냅니다. Resolve와 Blender에는 job ID와 PID가 즉시 반환되어 편집기 UI가 분석 완료까지 멈추지 않습니다. 즉 별도 프로그램 창을 함께 켜는 구조가 아닙니다.
 
 ## 지원하는 교환 파일
 

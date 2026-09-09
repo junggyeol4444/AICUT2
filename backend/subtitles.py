@@ -36,6 +36,43 @@ def _time(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{secs:02d}.{fraction:02d}"
 
 
+def build_output_cues(cuts: list[dict], transcript: list[dict]) -> tuple[list[dict], float]:
+    """Map source-timeline transcript segments onto a non-linear output timeline."""
+    cues: list[dict] = []
+    output_offset = 0.0
+    ordered_cuts = sorted(cuts, key=lambda item: int(item["sequence_order"]))
+    ordered_transcript = sorted(
+        transcript, key=lambda item: (float(item["start_sec"]), int(item.get("track_index", 0))),
+    )
+    for cut in ordered_cuts:
+        if cut.get("pacing_mode") == "CUT":
+            continue
+        cut_start, cut_end = float(cut["source_start_sec"]), float(cut["source_end_sec"])
+        if cut_start < 0 or cut_end <= cut_start:
+            raise SubtitleError("자막을 배치할 컷의 원본 시간 범위가 올바르지 않습니다.")
+        for segment in ordered_transcript:
+            segment_start = float(segment["start_sec"])
+            segment_end = float(segment["end_sec"])
+            overlap_start, overlap_end = max(cut_start, segment_start), min(cut_end, segment_end)
+            if overlap_end <= overlap_start:
+                continue
+            text = str(segment.get("text", "")).strip()
+            if not text:
+                continue
+            cues.append({
+                "start_sec": output_offset + overlap_start - cut_start,
+                "end_sec": output_offset + overlap_end - cut_start,
+                "speaker_tag": segment.get("speaker_tag", "UNKNOWN"),
+                "text": text,
+                "source_start_sec": overlap_start,
+                "source_end_sec": overlap_end,
+                "cut_id": cut.get("cut_id"),
+            })
+        output_offset += cut_end - cut_start
+    cues.sort(key=lambda item: (item["start_sec"], item["end_sec"]))
+    return cues, output_offset
+
+
 def write_ass_subtitles(
     cues: list[dict], style_profile: dict, output_path: str | Path, duration_sec: float,
     width: int = 1920, height: int = 1080,
@@ -56,6 +93,7 @@ def write_ass_subtitles(
         dialogue.append(f"Dialogue: 0,{_time(start)},{_time(end)},Default,{speaker},0,0,0,,{text}")
     output = Path(output_path).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
+    dialogue_text = "\n".join(dialogue)
     content = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {int(width)}
@@ -67,7 +105,7 @@ Style: Default,{style.font_name},{style.font_size},{style.primary_color},{style.
 
 [Events]
 Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
-{"\n".join(dialogue)}
+{dialogue_text}
 """
     output.write_text(content, encoding="utf-8-sig")
     return str(output)

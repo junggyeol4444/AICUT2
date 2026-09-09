@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import os
+import tempfile
 from pathlib import Path
 
 from .upload import UploadError
@@ -32,10 +33,18 @@ class EncryptedTokenStore:
             "ciphertext": self._encode(ciphertext), "tag": self._encode(tag),
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
-        os.chmod(temporary, 0o600)
-        temporary.replace(self.path)
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=self.path.parent, prefix=f".{self.path.name}.", suffix=".tmp", text=True,
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(json.dumps(payload, separators=(",", ":")))
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def load(self) -> dict | None:
         if not self.path.is_file():

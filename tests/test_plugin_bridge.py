@@ -35,6 +35,10 @@ class PluginBridgeTest(unittest.TestCase):
         hosts = {item["id"]: item for item in registry["hosts"]}
         self.assertEqual(hosts["davinci_resolve"]["mode"], "embedded_python")
         self.assertEqual(hosts["adobe_premiere_pro"]["mode"], "cep_panel")
+        self.assertTrue(all(
+            hosts[host]["execution"] == "background_bridge"
+            for host in ("davinci_resolve", "blender_vse", "adobe_premiere_pro")
+        ))
         self.assertEqual(hosts["capcut"]["mode"], "render_and_caption")
         for host in registry["hosts"]:
             if host.get("adapter"):
