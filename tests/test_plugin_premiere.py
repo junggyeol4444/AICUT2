@@ -65,7 +65,7 @@ class NodeTests(unittest.TestCase):
                  build=json.dumps(str(BUILD_JS)), body=body)
         done = subprocess.run(
             [NODE, "-e", script, json.dumps(names)],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, encoding="utf-8", timeout=60,
         )
         self.assertEqual(done.returncode, 0, done.stderr)
         return json.loads(done.stdout)
@@ -379,7 +379,12 @@ class NodeTests(unittest.TestCase):
             "JSON = JSONbackup;\n"
             "process.stdout.write(written);\n"
         ).format(engine=json.dumps(str(ENGINE_JS)))
-        done = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=60)
+        # utf-8 explicitly: node writes UTF-8 and Windows decodes a subprocess
+        # in the console codepage, which turned the Korean path in this very
+        # test into three characters per syllable - and then measured its own
+        # mojibake as 36 bytes against the 29 the request correctly stated.
+        done = subprocess.run([NODE, "-e", script], capture_output=True, text=True,
+                              encoding="utf-8", timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(json.loads(done.stdout),
                          {"source": "/방송/live.mkv", "keep": True})
