@@ -22,6 +22,7 @@ from .processes import ProcessSupervisor
 from .planning import run_dynamic_planner
 from .pacing import run_smart_pacing
 from .stt import transcribe_range, transcribe_tracks
+from .subtitles import build_output_cues, write_ass_subtitles
 from .understanding import PreprocessPlan, build_scan_plan, execute_preprocess, select_precision_ranges
 from .vision import run_vision_analyzer
 
@@ -420,16 +421,33 @@ class PipelineManager:
                 if any(int(item.get("track_index", -1)) >= available_tracks for item in audio_mix):
                     raise ValueError("render_audio_mix가 원본에 존재하지 않는 오디오 트랙을 참조합니다.")
                 render_root = Path(options.get("render_output_directory") or artifact_root / "renders").resolve()
+                subtitle_paths = dict(options.get("subtitle_paths") or {})
+                subtitle_styles = options.get("subtitle_styles") or {}
+                if not isinstance(subtitle_styles, dict):
+                    raise ValueError("subtitle_styles는 에피소드 ID를 키로 갖는 객체여야 합니다.")
+                transcript = self.database.analysis_input(project_id)["transcript"]
                 for index, episode in enumerate(episodes):
                     progress = self._chunk_progress(97, 100, index, len(episodes))
                     episode_id = episode["episode_id"]
                     output_path = render_root / f"{episode_id}.mp4"
+                    subtitle_style = subtitle_styles.get(episode_id) or options.get("subtitle_style")
+                    if episode_id not in subtitle_paths and subtitle_style:
+                        subtitle_result = self._step(
+                            project_id, f"SUBTITLES_{episode_id}", "RENDERING", 97, 97,
+                            cancel, resume, completed,
+                            lambda episode_id=episode_id, subtitle_style=subtitle_style: self._generate_subtitles(
+                                self.database.get_timeline(episode_id), transcript, subtitle_style,
+                                artifact_root / "subtitles" / f"{episode_id}.ass",
+                                int(options.get("render_width", 1920)), int(options.get("render_height", 1080)),
+                            ),
+                        )
+                        subtitle_paths[episode_id] = subtitle_result["path"]
                     plan = RenderPlan(
                         project["file_path"], str(output_path), tuple(self.database.get_timeline(episode_id)),
                         width=int(options.get("render_width", 1920)), height=int(options.get("render_height", 1080)),
                         video_codec=str(options.get("video_codec", "libx264")),
                         audio_codec=str(options.get("audio_codec", "aac")),
-                        subtitle_path=(options.get("subtitle_paths") or {}).get(episode_id),
+                        subtitle_path=subtitle_paths.get(episode_id),
                         audio_mix=audio_mix,
                         ducking=options.get("render_ducking"),
                     )
@@ -628,6 +646,12 @@ class PipelineManager:
         )
 
     @staticmethod
+    def _generate_subtitles(cuts, transcript, style, output_path, width, height) -> dict[str, Any]:
+        cues, duration = build_output_cues(cuts, transcript)
+        path = write_ass_subtitles(cues, style, output_path, duration, width=width, height=height)
+        return {"path": path, "cue_count": len(cues), "duration_sec": duration}
+
+    @staticmethod
     def _checkpoint_usable(step: str, checkpoint: dict[str, Any], input_hash: str) -> bool:
         if checkpoint.get("input_hash") != input_hash or checkpoint.get("corrupt_output"):
             return False
@@ -647,6 +671,8 @@ class PipelineManager:
             return isinstance(output.get("memory"), dict) and isinstance(output.get("precision_ranges"), list)
         if step.startswith(("AUDIO_ANALYSIS", "VISION_ANALYSIS", "PRECISION_ANALYSIS")):
             return isinstance(output.get("observations"), list)
+        if step.startswith("SUBTITLES_"):
+            return Path(output.get("path", "")).is_file() and isinstance(output.get("cue_count"), int)
         if step == "PRECISION_PLAN":
             return isinstance(output.get("ranges"), list)
         if step in {"AI_PRODUCER", "ANALYSIS_IMPORT"}:
