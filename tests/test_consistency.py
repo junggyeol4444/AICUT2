@@ -246,15 +246,27 @@ class DeadCodeTests(unittest.TestCase):
         tests_source = "\n".join(
             p.read_text(encoding="utf-8") for p in pathlib.Path(__file__).parent.rglob("*.py")
         )
+        # The editor plugins are code in this repository too, and they are the
+        # only caller of some of it: an adapter calls the editor's API by name,
+        # and the stand-in that stands for that editor in the tests is defined
+        # here. Leaving plugin/ out reported those as dead.
+        plugin_dir = PACKAGE.parent / "plugin"
+        plugin_source = "\n".join(
+            p.read_text(encoding="utf-8") for p in plugin_dir.rglob("*.py")
+        ) + "\n".join(
+            p.read_text(encoding="utf-8") for p in plugin_dir.rglob("*.js*")
+        )
         page = (PACKAGE / "ui" / "static" / "index.html").read_text(encoding="utf-8")
-        everything = SOURCE + tests_source + page
+        everything = SOURCE + tests_source + plugin_source + page
 
         # Framework entry points are called by name from outside Python we can see.
         exempt = {"main", "do_GET", "do_POST", "emit", "log_message", "setUp", "tearDown",
                   "setUpClass", "tearDownClass", "transcribe", "detect", "complete_json"}
         defined: dict[str, str] = {}
         references: dict[str, int] = {}
-        for path in list(PACKAGE.rglob("*.py")) + list(pathlib.Path(__file__).parent.rglob("*.py")):
+        for path in (list(PACKAGE.rglob("*.py"))
+                     + list(pathlib.Path(__file__).parent.rglob("*.py"))
+                     + list(plugin_dir.rglob("*.py"))):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):

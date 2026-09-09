@@ -9,8 +9,18 @@
 | 방법 | 대상 | 설치 | 검증 상태 |
 |---|---|---|---|
 | `aicut export` (교환 파일) | Premiere Pro, Final Cut Pro, Resolve, Avid 등 **전부** | 불필요 | 실제 영상의 계획으로 생성·검증 완료 |
-| `plugin/resolve` (스크립트) | DaVinci Resolve 전용 | 파일 2개 복사 | 산술은 테스트됨, **Resolve API 호출은 미검증** |
+| `plugin/resolve` (어댑터) | DaVinci Resolve 전용 | `plugin/common` + `plugin/resolve` 복사 | 판단·산술·엔진 호출은 테스트됨, **Resolve API 호출은 미검증** |
 | `plugin/premiere` (스크립트) | Premiere Pro 전용 | 파일 2개 복사 | 산술은 테스트됨, **Premiere API 호출은 미검증** |
+
+기획안 37장의 구조다:
+
+```
+AI Engine  →  Common Edit Model  →  Editor Adapter  →  편집기
+```
+
+어댑터는 **Common Edit Model**을 읽는다. 편집 계획을 직접 읽지 않는다 —
+계획의 의미가 두 번 구현되면 둘이 어긋난다. 계획을 주면 어댑터가 이름을
+붙여서 거부하고 어디서 모델을 받는지 알려준다.
 
 ---
 
@@ -49,7 +59,8 @@ macOS    ~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/
 Linux    ~/.local/share/DaVinciResolve/Fusion/Scripts/Utility
 ```
 
-`aicut_plan.py`도 같이 복사해야 한다. 결정은 전부 그쪽에 있다.
+`plugin/common/` 폴더도 같이 복사해야 한다 (`aicut_model.py`, `aicut_engine.py`).
+결정은 전부 그쪽에 있다.
 
 ### 사용
 
