@@ -5,6 +5,7 @@ import { api, withFallback } from './api.js';
 const state = {
   view: 'workspace', selectedCandidate: '01', selectedProject: null, filter: '전체', modal: null,
   toastTimer: null, runtimeOnline: false, projects: null, candidates: null, episodes: [], logs: null,
+  job: null, timeline: null, busy: false,
 };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -32,6 +33,9 @@ function pageHeader(eyebrow, title, copy, actions='') {
 
 const projects = () => state.projects || PROJECTS;
 const candidates = () => state.candidates || CANDIDATES;
+const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, character => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
+})[character]);
 
 function formatDuration(seconds) {
   const value = Math.max(0, Math.floor(Number(seconds) || 0));
@@ -46,7 +50,8 @@ function normalizeProject(project) {
     duration: formatDuration(project.duration_sec),
     size: media.size_bytes ? `${(media.size_bytes / 1073741824).toFixed(1)} GB` : '크기 확인 전',
     tracks: media.audio_tracks || 0, status: project.status, progress: project.progress,
-    candidates: project.candidate_count || 0, episodes: project.episode_count || 0,
+    candidates: project.candidate_count ?? project.candidates ?? 0,
+    episodes: project.episode_count ?? project.episodes ?? 0,
     updated: new Date(project.updated_at).toLocaleString('ko-KR'), raw: project,
   };
 }
@@ -67,13 +72,15 @@ function normalizeCandidate(candidate, index) {
 
 function projectCard(project) {
   const label = PIPELINE.find(x=>x.key===project.status)?.label || (project.status==='NO_CONTENT'?'콘텐츠 없음':project.status);
-  return `<article class="project-card" data-project="${project.id}"><div class="project-thumb"><i>▶</i><span>${project.duration}</span></div><div class="project-body"><div class="project-title"><h3>${project.name}</h3><span class="status ${project.status.toLowerCase()}">${label}</span></div><p>${project.file} · ${project.size} · 오디오 ${project.tracks}트랙</p><div class="project-numbers"><span><b>${project.candidates}</b> 후보</span><span><b>${project.episodes}</b> 에피소드</span><small>${project.updated}</small></div><div class="mini-progress"><i style="width:${project.progress}%"></i></div></div></article>`;
+  return `<article class="project-card" data-project="${escapeHtml(project.id)}"><div class="project-thumb"><i>▶</i><span>${project.duration}</span></div><div class="project-body"><div class="project-title"><h3>${escapeHtml(project.name)}</h3><span class="status ${project.status.toLowerCase()}">${escapeHtml(label)}</span></div><p>${escapeHtml(project.file)} · ${project.size} · 오디오 ${project.tracks}트랙</p><div class="project-numbers"><span><b>${project.candidates}</b> 후보</span><span><b>${project.episodes}</b> 에피소드</span><small>${escapeHtml(project.updated)}</small></div><div class="mini-progress"><i style="width:${project.progress}%"></i></div></div></article>`;
 }
 
 function workspaceView() {
+  const active = projects().find(project=>!['NO_CONTENT','PUBLISHED','REVIEW_PENDING'].includes(project.status));
+  const activeSummary = active ? `<article class="active-project"><div class="active-top"><div><span class="pulse"></span><b>현재 처리 중</b></div><button data-project="${escapeHtml(active.id)}">상세 보기 →</button></div><h2>${escapeHtml(active.name)}</h2><p>${escapeHtml(PIPELINE.find(stage=>stage.key===active.status)?.description||active.status)}</p><div class="active-progress"><i style="width:${active.progress}%"></i></div><div class="active-meta"><span><b>${active.progress}%</b> 전체 진행률</span><span><b>${active.candidates}</b> 발견 후보</span><span><b>${active.episodes}</b> 에피소드</span></div></article>` : `<article class="active-project"><div class="active-top"><div><b>대기 중</b></div></div><h2>실행 중인 분석이 없습니다</h2><p>새 방송을 등록하면 실제 처리 상태가 여기에 표시됩니다.</p></article>`;
   return `<div class="page">${pageHeader('AUTONOMOUS CONTENT PRODUCER','좋은 방송을, 완성된 콘텐츠로.','긴 생방송에서 사건을 이해하고 독립적인 YouTube 콘텐츠를 발견합니다.',`<button class="accent-button large" data-action="new-project">${icons.plus} 방송 가져오기</button>`)}
-    <section class="hero-grid"><article class="active-project"><div class="active-top"><div><span class="pulse"></span><b>현재 분석 중</b></div><button data-action="open-review">상세 보기 →</button></div><h2>2026-08-19 생방송</h2><p>가치 평가를 마치고 후보별 편집 구조와 장면을 계획하고 있습니다.</p><div class="active-progress"><i></i></div><div class="active-meta"><span><b>68%</b> 전체 진행률</span><span><b>04</b> 발견 후보</span><span><b>37</b> 정밀 분석 구간</span><span><b>01:18:22</b> 처리 시간</span></div></article>
-      <article class="quick-upload" data-action="new-project"><span>＋</span><h3>새 방송 분석</h3><p>MP4 또는 MKV 파일을 놓으세요</p><small>최대 10시간 · 멀티트랙 지원</small></article></section>
+    <section class="hero-grid">${activeSummary}
+      <article class="quick-upload" data-action="new-project"><span>＋</span><h3>새 방송 분석</h3><p>로컬 MP4 또는 MKV 경로를 입력하세요</p><small>최대 10시간 · 멀티트랙 지원</small></article></section>
     <div class="section-heading"><div><h2>최근 프로젝트</h2><p>진행 중이거나 최근 완료된 방송입니다</p></div><button data-view="projects">전체 보기 →</button></div>
     <section class="project-grid">${projects().map(projectCard).join('')}</section>
     <section class="dashboard-grid"><article class="panel learning"><div class="panel-title"><div><span class="eyebrow">LEARNING LOOP</span><h3>제작 지식이 계속 개선되고 있어요</h3></div><span class="spark">✦</span></div><div class="loop-row"><div><b>146</b><small>분석 레퍼런스</small></div><i>→</i><div><b>23</b><small>원본↔완성본</small></div><i>→</i><div><b>18</b><small>성과 학습 영상</small></div></div></article>
@@ -88,18 +95,25 @@ function projectsView() {
   </div>`;
 }
 
-function pipeline() {
-  return `<section class="pipeline panel"><div class="pipeline-row">${PIPELINE.map((s,i)=>`<div class="stage ${i<4?'done':i===4?'current':''}"><i>${i<4?'✓':i+1}</i><span>${s.label}</span></div>${i<PIPELINE.length-1?'<hr>':''}`).join('')}</div><div class="progress-copy"><span><b>가치 평가 완료</b> · 4개의 후보를 찾았습니다</span><span>전체 진행률 <b>68%</b></span></div><div class="progress"><i></i></div></section>`;
+function pipeline(project) {
+  const index = PIPELINE.findIndex(stage => stage.key === project.status);
+  const terminal = ['NO_CONTENT', 'PUBLISHED'].includes(project.status);
+  const current = index >= 0 ? index : terminal ? PIPELINE.length : -1;
+  const message = state.job?.steps?.at(-1)?.error_message
+    || project.raw?.error_message
+    || state.job?.steps?.at(-1)?.step
+    || (project.status === 'NO_CONTENT' ? '제작 가치가 있는 콘텐츠가 없어 정상 종료되었습니다.' : `현재 상태 · ${project.status}`);
+  return `<section class="pipeline panel"><div class="pipeline-row">${PIPELINE.map((s,i)=>`<div class="stage ${i<current||terminal?'done':i===current?'current':''}"><i>${i<current||terminal?'✓':i+1}</i><span>${s.label}</span></div>${i<PIPELINE.length-1?'<hr>':''}`).join('')}</div><div class="progress-copy"><span><b>${escapeHtml(message)}</b></span><span>전체 진행률 <b>${project.progress}%</b></span></div><div class="progress"><i style="width:${project.progress}%"></i></div>${state.job?.running?'<button class="secondary-button cancel-job" data-action="cancel-analysis">분석 취소</button>':''}</section>`;
 }
 
 function candidateCard(c) {
-  return `<article class="candidate ${state.selectedCandidate===c.id?'selected':''}" data-candidate="${c.id}" tabindex="0"><div class="candidate-head"><span class="candidate-no">${c.displayId || c.id}</span><span class="decision" style="--tone:${c.color}"><i></i>${c.decision}</span><span class="score">독립성 <b>${c.score}</b></span></div><h3>${c.title}</h3><p>${c.summary}</p><div class="candidate-meta"><span>◷ ${c.time}</span><span>▱ 장면 ${c.scenes}개</span>${c.tags.map(t=>`<em>${t}</em>`).join('')}</div></article>`;
+  return `<article class="candidate ${state.selectedCandidate===c.id?'selected':''}" data-candidate="${escapeHtml(c.id)}" tabindex="0"><div class="candidate-head"><span class="candidate-no">${escapeHtml(c.displayId || c.id)}</span><span class="decision" style="--tone:${c.color}"><i></i>${escapeHtml(c.decision)}</span><span class="score">독립성 <b>${c.score}</b></span></div><h3>${escapeHtml(c.title)}</h3><p>${escapeHtml(c.summary)}</p><div class="candidate-meta"><span>◷ ${escapeHtml(c.time)}</span><span>▱ 장면 ${c.scenes}개</span>${c.tags.map(t=>`<em>${escapeHtml(t)}</em>`).join('')}</div></article>`;
 }
 
 function candidateDetail(c) {
-  return `<div class="detail-top"><div><span class="eyebrow">SELECTED CANDIDATE · ${c.id}</span><h2>${c.title}</h2></div><button>•••</button></div><div class="preview"><div class="preview-glow"></div><button class="play">▶</button><div class="preview-caption">“잠깐만, 이게 왜 여기 있어?”</div><div class="timecode">${c.time.slice(0,8)}</div></div>
+  return `<div class="detail-top"><div><span class="eyebrow">SELECTED CANDIDATE · ${escapeHtml(c.id)}</span><h2>${escapeHtml(c.title)}</h2></div><button>•••</button></div><div class="preview"><div class="preview-glow"></div><button class="play">▶</button><div class="preview-caption">분석된 원본 장면 프리뷰</div><div class="timecode">${escapeHtml(c.time.slice(0,8))}</div></div>
   <div class="section-title"><span>사건 타임라인</span><b>${c.scenes} SCENES</b></div><div class="eventline">${EVENTS.map((e,i)=>`<i style="left:${7+i*21}%;--c:${i===0?'#d6ff4b':i===4?'#a28bff':'#7c8797'}"><small>${e.type}</small></i>`).join('')}</div>
-  <div class="fact-row"><span>주요 인물</span><b>${c.people.join(' · ')}</b></div><div class="fact-row"><span>필요 맥락</span><b>${c.context}</b></div><div class="insight"><span>✦</span><div><b>AI 판단 근거</b><p>${c.reason}</p></div></div><div class="detail-actions"><button class="secondary" data-action="edit-plan">편집 계획 보기</button><button class="accent-button" data-action="approve">후보 승인 <span>→</span></button></div>`;
+  <div class="fact-row"><span>주요 인물</span><b>${escapeHtml(c.people.join(' · '))}</b></div><div class="fact-row"><span>필요 맥락</span><b>${escapeHtml(c.context)}</b></div><div class="insight"><span>✦</span><div><b>AI 판단 근거</b><p>${escapeHtml(c.reason)}</p></div></div><div class="detail-actions"><button class="secondary" data-action="edit-plan">편집 계획 보기</button><button class="accent-button" data-action="approve">후보 승인 <span>→</span></button></div>`;
 }
 
 function reviewView() {
@@ -107,8 +121,8 @@ function reviewView() {
   const visibleCandidates = candidates();
   const c=visibleCandidates.find(x=>x.id===state.selectedCandidate) || visibleCandidates[0];
   if (!project) return `<div class="page">${pageHeader('BROADCAST ANALYSIS','프로젝트 없음','먼저 방송 프로젝트를 등록하세요.')}</div>`;
-  if (!c) return `<div class="page">${pageHeader('BROADCAST ANALYSIS','콘텐츠 후보 검토','아직 발견된 콘텐츠 후보가 없습니다. 분석 완료 후 다시 확인하세요.')}${pipeline()}</div>`;
-  return `<div class="page review-page">${pageHeader('BROADCAST ANALYSIS','콘텐츠 후보 검토','AI가 방송 전체에서 발견한 사건을 검토하고 제작 여부를 결정하세요.',`<div class="source"><span>▶</span><div><b>${project.file}</b><small>${project.duration} · ${project.size} · ${project.tracks} audio tracks</small></div><button>•••</button></div>`)}${pipeline()}
+  if (!c) return `<div class="page">${pageHeader('BROADCAST ANALYSIS','콘텐츠 후보 검토','아직 발견된 콘텐츠 후보가 없습니다. 분석 완료 후 다시 확인하세요.')}${pipeline(project)}</div>`;
+  return `<div class="page review-page">${pageHeader('BROADCAST ANALYSIS','콘텐츠 후보 검토','AI가 방송 전체에서 발견한 사건을 검토하고 제작 여부를 결정하세요.',`<div class="source"><span>▶</span><div><b>${escapeHtml(project.file)}</b><small>${project.duration} · ${project.size} · ${project.tracks} audio tracks</small></div><button>•••</button></div>`)}${pipeline(project)}
     <section class="workspace"><div class="list-pane panel"><div class="list-header"><div><h2>발견된 후보 <span>${visibleCandidates.length}</span></h2><p>화면이 아니라 사건 단위로 분류했습니다</p></div><div class="filters">${['전체','제작','결합 검토','보류','제작 안함'].map(x=>`<button class="${state.filter===x?'active':''}" data-filter="${x}">${x}</button>`).join('')}</div></div><div id="candidate-list">${visibleCandidates.filter(c=>state.filter==='전체'||c.decision===state.filter).map(candidateCard).join('')}</div></div><aside class="candidate-detail panel">${candidateDetail(c)}</aside></section>
   </div>`;
 }
@@ -129,11 +143,19 @@ function calibrationView() {
 }
 
 function logsView() {
-  return `<div class="page">${pageHeader('PROCESS OBSERVABILITY','처리 로그','멀티모달 분석과 콘텐츠 제작 파이프라인의 실행 기록입니다.',`<div class="live-indicator"><i></i>LIVE</div>`)}<div class="toolbar"><div class="search-field wide">${icons.search}<input placeholder="메시지 또는 상태 검색" /></div><div class="segmented"><button class="active">전체</button><button>정보</button><button>경고</button><button>오류</button></div><button class="secondary-button">로그 내보내기</button></div><section class="log-console"><header><span>TIME</span><span>STAGE</span><span>MESSAGE</span></header>${LOGS.map((l,i)=>`<div><time>${l[0]}</time><b>${l[1]}</b><p>${l[2]}</p><span class="log-level ${i===2?'warn':''}">${i===2?'WARN':'INFO'}</span></div>`).join('')}<footer><i></i> 새 이벤트를 기다리는 중...</footer></section></div>`;
+  const rows = state.logs === null ? LOGS.map(([time,stage,message])=>({time,stage,message,level:'INFO'})) : state.logs.map(log=>({time:new Date(log.created_at).toLocaleTimeString('ko-KR'),stage:log.stage,message:log.message,level:log.level||'INFO'}));
+  return `<div class="page">${pageHeader('PROCESS OBSERVABILITY','처리 로그','멀티모달 분석과 콘텐츠 제작 파이프라인의 실행 기록입니다.',`<div class="live-indicator"><i></i>${state.runtimeOnline?'LIVE':'DEMO'}</div>`)}<div class="toolbar"><div class="search-field wide">${icons.search}<input placeholder="메시지 또는 상태 검색" /></div><div class="segmented"><button class="active">전체</button><button>정보</button><button>경고</button><button>오류</button></div><button class="secondary-button">로그 내보내기</button></div><section class="log-console"><header><span>TIME</span><span>STAGE</span><span>MESSAGE</span></header>${rows.map(log=>`<div><time>${escapeHtml(log.time)}</time><b>${escapeHtml(log.stage)}</b><p>${escapeHtml(log.message)}</p><span class="log-level ${log.level==='ERROR'?'error':log.level==='WARN'?'warn':''}">${escapeHtml(log.level)}</span></div>`).join('')}${rows.length?'':'<div class="empty-log">아직 기록된 작업 로그가 없습니다.</div>'}<footer><i></i> ${state.runtimeOnline?'새 이벤트를 기다리는 중...':'데모 로그를 표시하고 있습니다.'}</footer></section></div>`;
 }
 
 function editPlanModal() {
-  return `<div class="modal-backdrop"><section class="modal editor-modal"><header><div><span class="eyebrow">EDIT PLAN · EPISODE 01</span><h2>비선형 편집 계획</h2><p>원본 시점과 관계없이 완성본 순서대로 구성됩니다.</p></div><button class="close" data-close>×</button></header><div class="editor-layout"><aside><h3>사건 구조</h3>${EVENTS.map(e=>`<div class="event-item"><time>${e.time}</time><span><b>${e.type}</b><small>${e.text}</small></span></div>`).join('')}</aside><div class="timeline-editor"><div class="timeline-head"><span>순서</span><span>원본 구간</span><span>역할 / 대사</span><span>호흡</span><span>연출</span></div>${TIMELINE.map(t=>`<article draggable="true"><i>⠿</i><b>${String(t.order).padStart(2,'0')}</b><time>${t.source}<small>${t.end}</small></time><span><b>${t.role}</b><small>${t.text}</small></span><em class="pacing ${t.pacing.toLowerCase()}">${t.pacing}</em><span class="effect">${t.effect}</span><button>•••</button></article>`).join('')}</div></div><footer><div><span>예상 길이</span><b>08:42</b><span>사용 장면</span><b>6 / 12</b></div><button class="secondary-button" data-action="export-json">JSON 내보내기</button><button class="accent-button" data-action="package">렌더링 시뮬레이션 →</button></footer></section></div>`;
+  const source = state.runtimeOnline ? (state.timeline || []) : TIMELINE;
+  const timeline = source.map((cut,index)=>state.runtimeOnline?{
+    order:cut.sequence_order, source:formatDuration(cut.source_start_sec), end:formatDuration(cut.source_end_sec),
+    role:cut.scene_role, pacing:cut.pacing_mode, text:cut.pacing_reason||cut.speaker_tag,
+    effect:cut.visual_effect?.type||'none', duration:cut.source_end_sec-cut.source_start_sec,
+  }:cut);
+  const duration = timeline.reduce((total,cut)=>cut.pacing==='CUT'?total:total+(cut.duration||0),0);
+  return `<div class="modal-backdrop"><section class="modal editor-modal"><header><div><span class="eyebrow">EDIT PLAN · ${escapeHtml(currentEpisodeId())}</span><h2>비선형 편집 계획</h2><p>원본 시점과 관계없이 완성본 순서대로 구성됩니다.</p></div><button class="close" data-close>×</button></header><div class="editor-layout"><aside><h3>사건 구조</h3>${EVENTS.map(e=>`<div class="event-item"><time>${e.time}</time><span><b>${e.type}</b><small>${e.text}</small></span></div>`).join('')}</aside><div class="timeline-editor"><div class="timeline-head"><span>순서</span><span>원본 구간</span><span>역할 / 대사</span><span>호흡</span><span>연출</span></div>${timeline.map(t=>`<article><i>⠿</i><b>${String(t.order).padStart(2,'0')}</b><time>${t.source}<small>${t.end}</small></time><span><b>${escapeHtml(t.role)}</b><small>${escapeHtml(t.text)}</small></span><em class="pacing ${t.pacing.toLowerCase()}">${t.pacing}</em><span class="effect">${escapeHtml(t.effect)}</span><button>•••</button></article>`).join('')||'<p class="empty-state">생성된 편집 계획이 없습니다.</p>'}</div></div><footer><div><span>예상 길이</span><b>${state.runtimeOnline?formatDuration(duration):EPISODE.duration}</b><span>사용 장면</span><b>${timeline.filter(c=>c.pacing!=='CUT').length} / ${timeline.length}</b></div><button class="secondary-button" data-action="export-json">JSON 내보내기</button><button class="accent-button" data-action="package">렌더링 시뮬레이션 →</button></footer></section></div>`;
 }
 
 function packageModal() {
@@ -141,21 +163,51 @@ function packageModal() {
 }
 
 function newProjectModal() {
-  return `<div class="modal-backdrop"><section class="modal new-project-modal"><header><div><span class="eyebrow">NEW BROADCAST</span><h2>새 방송 분석</h2><p>원본은 로컬에서 처리되며 편집 계획과 분석 결과가 보존됩니다.</p></div><button class="close" data-close>×</button></header><div class="dropzone"><span>＋</span><h3>생방송 파일을 선택하거나 놓으세요</h3><p>MP4, MKV · 최대 10시간 · 멀티 오디오 트랙 지원</p><button class="secondary-button">파일 선택</button><input type="file" accept="video/mp4,video/x-matroska"></div><div class="form-grid"><label>목표 길이 힌트<small>강제값이 아닙니다</small><select><option>AI가 결정</option><option>10분 내외</option><option>20분 내외</option><option>Shorts</option></select></label><label>채널 프로파일<select><option>JUNE Studio</option></select></label><label>캘리브레이션<select><option>게임/합방 · 2026-08-17</option></select></label><label class="toggle-label">완료 후 알림<span class="toggle on"><i></i></span></label></div><footer><button class="secondary-button" data-close>취소</button><button class="accent-button" data-action="start-analysis">전체 방송 분석 시작 →</button></footer></section></div>`;
+  return `<div class="modal-backdrop"><section class="modal new-project-modal"><header><div><span class="eyebrow">NEW BROADCAST</span><h2>새 방송 분석</h2><p>원본은 로컬에서 처리되며 편집 계획과 분석 결과가 보존됩니다.</p></div><button class="close" data-close>×</button></header><div class="source-path-panel"><label>로컬 원본 절대 경로<small>API 서버가 접근할 수 있는 경로를 입력하세요</small><input class="source-path" type="text" placeholder="/media/recordings/2026-08-19-live.mkv" autocomplete="off"></label><p>일반 브라우저는 보안상 선택한 파일의 실제 경로를 전달하지 않습니다. 편집기 플러그인에서는 선택 클립의 경로가 자동으로 입력됩니다.</p></div><div class="form-grid"><label>목표 길이 힌트<small>강제값이 아닙니다</small><select><option>AI가 결정</option><option>10분 내외</option><option>20분 내외</option><option>Shorts</option></select></label><label>채널 프로파일<select><option>JUNE Studio</option></select></label><label>캘리브레이션<select><option>게임/합방 · 2026-08-17</option></select></label><label class="toggle-label">완료 후 알림<span class="toggle on"><i></i></span></label></div><div class="modal-error" role="alert"></div><footer><button class="secondary-button" data-close>취소</button><button class="accent-button" data-action="start-analysis">전체 방송 분석 시작 →</button></footer></section></div>`;
 }
 
 function showModal(type) { state.modal=type; $('#modal-root').innerHTML=type==='edit'?editPlanModal():type==='package'?packageModal():newProjectModal(); bindCommon(); }
 function toast(message) { const el=$('#toast'); el.textContent=message; el.classList.add('show'); clearTimeout(state.toastTimer); state.toastTimer=setTimeout(()=>el.classList.remove('show'),2800); }
+function showActionError(error) {
+  const target = $('.modal-error');
+  if (target) { target.textContent = error.message; target.classList.add('show'); }
+  else toast(`오류 · ${error.message}`);
+}
+
+async function mutate(action, success) {
+  if (state.busy) return null;
+  state.busy = true;
+  try {
+    const result = await action();
+    if (success) toast(success);
+    return result;
+  } catch (error) {
+    showActionError(error);
+    return null;
+  } finally {
+    state.busy = false;
+  }
+}
 
 async function openProject(projectId) {
   state.selectedProject = projectId;
-  const [candidateRows, episodeRows, logRows] = await Promise.all([
+  const [projectRow, candidateRows, episodeRows, logRows, job] = await Promise.all([
+    withFallback(() => api.project(projectId), null),
     withFallback(() => api.candidates(projectId), []), withFallback(() => api.episodes(projectId), []),
-    withFallback(() => api.logs(projectId), []),
+    withFallback(() => api.logs(projectId), []), withFallback(() => api.job(projectId), null),
   ]);
+  if (projectRow) {
+    const normalized = normalizeProject(projectRow);
+    const existing = projects().find(project => project.id === projectId);
+    normalized.candidates = existing?.candidates ?? normalized.candidates;
+    normalized.episodes = existing?.episodes ?? normalized.episodes;
+    state.projects = projects().map(project => project.id === projectId ? normalized : project);
+  }
   state.candidates = candidateRows.map(normalizeCandidate);
   state.episodes = episodeRows;
   state.logs = logRows;
+  state.job = job;
+  state.timeline = episodeRows[0] ? await withFallback(() => api.timeline(episodeRows[0].episode_id), []) : [];
   state.selectedCandidate = state.candidates[0]?.id || null;
   setView('review');
 }
@@ -178,13 +230,13 @@ function bindCommon() {
   $$('[data-filter]').forEach(el=>el.onclick=()=>{state.filter=el.dataset.filter;setView('review')});
   $$('[data-close]').forEach(el=>el.onclick=()=>{state.modal=null;$('#modal-root').innerHTML=''});
   $$('[data-action="edit-plan"]').forEach(el=>el.onclick=()=>showModal('edit'));
-  $$('[data-action="approve"]').forEach(el=>el.onclick=async()=>{await withFallback(()=>api.reviewCandidate(state.selectedCandidate,'MAKE'),null);toast('후보를 승인하고 편집 기획 큐에 추가했습니다.');showModal('edit')});
-  $$('[data-action="package"]').forEach(el=>el.onclick=async()=>{const episodeId=currentEpisodeId();await withFallback(async()=>{await api.renderEpisode(episodeId,{execute:false});return api.packageEpisode(episodeId,{execute:false,metadata:{title_options:EPISODE.titleOptions,description:EPISODE.description,tags:EPISODE.tags,chapters:[]},thumbnail_timestamps:[12,94,252]})},null);showModal('package')});
+  $$('[data-action="approve"]').forEach(el=>el.onclick=async()=>{const result=await mutate(()=>api.reviewCandidate(state.selectedCandidate,'MAKE'),'후보를 승인하고 편집 기획 큐에 추가했습니다.');if(result)showModal('edit')});
+  $$('[data-action="package"]').forEach(el=>el.onclick=async()=>{const episodeId=currentEpisodeId();const result=await mutate(async()=>{await api.renderEpisode(episodeId,{execute:false});return api.packageEpisode(episodeId,{execute:false,metadata:{title_options:EPISODE.titleOptions,description:EPISODE.description,tags:EPISODE.tags,chapters:[]},thumbnail_timestamps:[12,94,252]})});if(result)showModal('package')});
   $$('[data-action="export-json"]').forEach(el=>el.onclick=()=>toast('편집 계획 JSON을 내보냈습니다.'));
-  $$('[data-action="publish"]').forEach(el=>el.onclick=async()=>{const episodeId=currentEpisodeId();await withFallback(async()=>{await api.reviewEpisode(episodeId,true);return api.publishEpisode(episodeId,'PRIVATE')},null);state.modal=null;$('#modal-root').innerHTML='';toast('검수 승인 완료 · 비공개 업로드 큐에 등록했습니다.')});
-  $$('[data-action="start-analysis"]').forEach(el=>el.onclick=async()=>{const input=$('.dropzone input');const file=input?.files?.[0];const project=await withFallback(()=>api.createProject({file_path:file?.path||file?.name||'selected_broadcast.mkv',name:file?.name?.replace(/\.[^.]+$/,'')||'새 생방송',target_duration_hint:'AI',channel_ref:'JUNE Studio'}),null);if(project)await withFallback(()=>api.runProject(project.project_id),null);state.modal=null;$('#modal-root').innerHTML='';toast('프로젝트를 만들고 미디어 파싱을 시작했습니다.')});
+  $$('[data-action="publish"]').forEach(el=>el.onclick=async()=>{const episodeId=currentEpisodeId();const result=await mutate(async()=>{await api.reviewEpisode(episodeId,true);return api.publishEpisode(episodeId,'PRIVATE')},'검수 승인 완료 · 비공개 업로드 큐에 등록했습니다.');if(result){state.modal=null;$('#modal-root').innerHTML=''}});
+  $$('[data-action="cancel-analysis"]').forEach(el=>el.onclick=async()=>{const result=await mutate(()=>api.cancelProject(state.selectedProject),'분석 취소 요청을 전달했습니다.');if(result)await openProject(state.selectedProject)});
+  $$('[data-action="start-analysis"]').forEach(el=>el.onclick=async()=>{const path=$('.source-path')?.value.trim();if(!path){showActionError(new Error('API 서버가 접근할 수 있는 원본의 절대 경로를 입력하세요.'));return}const name=path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/,'')||'새 생방송';const project=await mutate(()=>api.createProject({file_path:path,name,target_duration_hint:'AI',channel_ref:'JUNE Studio'}));if(!project)return;const run=await mutate(()=>api.runProject(project.project_id));if(!run)return;state.modal=null;$('#modal-root').innerHTML='';toast('프로젝트를 만들고 미디어 파싱을 시작했습니다.');const rows=await api.projects();state.projects=rows.map(normalizeProject);await openProject(project.project_id)});
   $$('[data-action="calibrate"]').forEach(el=>el.onclick=()=>toast('원본↔완성본 데이터셋 선택 창을 준비했습니다.'));
-  const drop=$('.dropzone'); if(drop){const input=$('input',drop);drop.onclick=e=>{if(e.target.tagName!=='INPUT')input.click()};input.onchange=()=>{if(input.files[0]){$('h3',drop).textContent=input.files[0].name;$('p',drop).textContent=`${(input.files[0].size/1073741824).toFixed(2)} GB · 분석 준비 완료`;drop.classList.add('ready')}};}
 }
 
 document.querySelector('#app').innerHTML=shell();
