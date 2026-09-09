@@ -12,6 +12,7 @@
 | `plugin/resolve` (어댑터) | DaVinci Resolve 전용 | `plugin/common` + `plugin/resolve` 복사 | 판단·산술·엔진 호출은 테스트됨, **Resolve API 호출은 미검증** |
 | `plugin/premiere` (어댑터) | Premiere Pro 전용 | `plugin/common` + `plugin/premiere` 복사 | 판단·산술·엔진 호출은 테스트됨, **Premiere API 호출은 미검증** |
 | `plugin/finalcut` (어댑터) | Final Cut Pro 전용 | `plugin/common` + `plugin/finalcut` 복사 | 문서 생성·엔진 호출은 테스트됨, **Final Cut 임포트는 미검증** |
+| `plugin/vegas` (어댑터) | VEGAS Pro 전용 | `bundle.py` 로 파일 하나 만들어 복사 | 산술·번들은 테스트됨, **VEGAS API 호출은 미검증** |
 
 기획안 37장의 구조다:
 
@@ -291,3 +292,67 @@ Final Cut Pro는 macOS 전용이고 이 환경에 없다. 임포트 자체는 �
   붙여 보니 STT가 없어서 실패한 작업이 `state: FAILED`, `error: ""` 로 오는데
   `error`만 보던 어댑터 셋 다 그걸 16장(제작 가치 있는 콘텐츠 없음)으로 보고했다.
   이제 셋 다 공통 판정(`failure_reason`)을 쓰고, 서버도 이유를 `error`에 채운다.
+
+---
+
+## 5. VEGAS Pro — `plugin/vegas`
+
+VEGAS는 **파이썬이 아니라 .NET 스크립트**를 돌린다 (`.js`는 JScript.NET, `.cs`는
+C#). 그래서 Premiere와 같은 JS 모듈을 쓰되, 한 가지가 다르다 — VEGAS는 **파일
+하나만 컴파일한다.** `#include`도 `require`도 없다.
+
+그렇다고 모델 읽는 코드를 이 편집기용으로 또 한 벌 쓰면, 그게 바로 37장이 가운데
+층을 둬서 막으려던 것이다. 그래서 **공용 모듈 + VEGAS 본체를 하나로 합쳐서**
+설치 파일을 만든다:
+
+```bash
+python plugin/vegas/bundle.py
+# -> plugin/vegas/aicut_vegas.js (1000줄 남짓, 이거 하나만 복사하면 됨)
+```
+
+합쳐진 파일은 저장소에도 들어 있고, **테스트가 매번 다시 만들어서 커밋된 것과
+같은지 대조한다** — 생성 파일이 조용히 낡는 걸 막는 유일한 방법이다.
+
+### 설치
+
+```
+C:\Program Files\VEGAS\VEGAS Pro <버전>\Script Menu
+```
+
+`aicut_vegas.js` 하나만 넣으면 `Tools > Scripting` 메뉴에 뜬다.
+
+### 사용 — 두 갈래
+
+1. **모델 파일을 고른다** — 그 모델로 트랙을 만든다.
+2. **취소한다** — 4장의 버튼. 이어서 방송 파일을 고르면 엔진에 넘기고, 기다렸다가,
+   돌아온 걸로 만든다. 진행 상황은 스크립트 로그 창에 찍힌다 (26장).
+
+엔진 주소는 `AICUT_ENGINE_HOST` / `AICUT_ENGINE_PORT`, 키는 `AICUT_API_KEY`,
+모드는 `AICUT_TIMELINE_MODE` (`new_sequence` 기본 / `edit_current`).
+
+### VEGAS라서 다른 것
+
+* **끝 프레임 문제가 없다.** VEGAS 이벤트는 시작 + 길이 + 소스 오프셋이라 끝
+  프레임을 안 쓴다. Resolve(마지막 프레임)와 Premiere(그 다음 프레임)가 서로
+  반대라 상수로 못 박아둔 그 문제가 여기선 안 생긴다. 대신 **전부 프레임 단위로**
+  계산해서 넣는다 — VEGAS는 초로 주면 프레임 사이에 이벤트를 놓고, 그게 쌓이면
+  타임라인 끝에서 아무도 못 찾는 어긋남이 된다.
+* **영상과 소리를 따로 놓는다.** Resolve·Premiere는 A/V가 링크된 클립 하나를
+  놓지만 VEGAS는 그렇지 않아서, 24장의 원본 음성 트랙을 실제로 만들어서 같이
+  깐다.
+* **버전마다 생성자가 다르다.** `Sony.Vegas`가 14부터 `ScriptPortal.Vegas`가
+  됐고 `new VideoTrack(...)` 인자도 달라졌다. 그래서 두 형태를 다 시도한다.
+
+### 검증 상태
+
+VEGAS Pro는 윈도우 전용이고 이 환경에 없다. API 호출은 실행된 적 없다.
+
+* `aicut_vegas_time.js` — VEGAS를 안 건드린다. node로 돌고
+  `tests/test_plugin_vegas.py`가 검사한다. 그중 하나는 같은 모델을 **파이썬
+  리더(Resolve가 쓰는 것)와 대조**해서, 살아남는 구간과 길이가 같은지 본다.
+* 번들 — 다시 만들어서 커밋된 파일과 대조, node 전용 줄(`require`, `module`)이
+  안 남았는지 확인, `import` 가 맨 위에 몰려 있는지 확인. JScript.NET은 import가
+  먼저 안 나오면 컴파일 자체가 안 되고, 그 실패는 사람이 알아볼 수 없는 줄 번호가
+  적힌 대화상자로 뜬다.
+* `aicut_vegas_body.js` — `new VideoEvent`, `AddTake`, `WebClient` 등 API 호출만.
+  **실행된 적 없다.**
