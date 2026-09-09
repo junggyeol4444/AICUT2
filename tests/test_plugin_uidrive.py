@@ -513,6 +513,177 @@ class LearningTheKeysTests(unittest.TestCase):
         self.assertNotIn("mark_in", steps_mod.unsourced(KEYMAPS["shotcut"]))
 
 
+#: A real window, made with the same user32 calls an application uses, so
+#: SendInput has something to deliver to. Test-only: the plugin drives editors
+#: that already exist, and this is the editor's stand-in on Windows.
+WINDOWS_RECEIVER = r"""
+import ctypes, ctypes.wintypes as w, json, sys, time
+
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+WM_KEYDOWN, WM_CHAR, WM_QUIT = 0x0100, 0x0102, 0x0012
+got = []
+
+WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, w.HWND, ctypes.c_uint,
+                             ctypes.c_ulonglong, ctypes.c_longlong)
+
+def proc(hwnd, message, wparam, lparam):
+    if message in (WM_KEYDOWN, WM_CHAR):
+        got.append({"message": message, "wparam": int(wparam),
+                    "ctrl": bool(user32.GetKeyState(0x11) & 0x8000),
+                    "shift": bool(user32.GetKeyState(0x10) & 0x8000)})
+    return user32.DefWindowProcW(hwnd, message, wparam, lparam)
+
+class WNDCLASS(ctypes.Structure):
+    _fields_ = [("style", ctypes.c_uint), ("lpfnWndProc", WNDPROC),
+                ("cbClsExtra", ctypes.c_int), ("cbWndExtra", ctypes.c_int),
+                ("hInstance", w.HINSTANCE), ("hIcon", w.HICON),
+                ("hCursor", w.HANDLE), ("hbrBackground", w.HBRUSH),
+                ("lpszMenuName", w.LPCWSTR), ("lpszClassName", w.LPCWSTR)]
+
+callback = WNDPROC(proc)
+cls = WNDCLASS()
+cls.lpfnWndProc = callback
+cls.hInstance = ctypes.windll.kernel32.GetModuleHandleW(None)
+cls.lpszClassName = "AicutStandIn"
+if not user32.RegisterClassW(ctypes.byref(cls)):
+    print("NOWINDOW register", flush=True); sys.exit(0)
+
+user32.CreateWindowExW.restype = w.HWND
+hwnd = user32.CreateWindowExW(0, "AicutStandIn", "Shotcut", 0x00CF0000,
+                              10, 10, 300, 200, None, None, cls.hInstance, None)
+if not hwnd:
+    print("NOWINDOW create", flush=True); sys.exit(0)
+user32.ShowWindow(hwnd, 5)
+user32.SetForegroundWindow(hwnd)
+user32.SetFocus(hwnd)
+print("FOREGROUND" if user32.GetForegroundWindow() == hwnd else "NOFOCUS", flush=True)
+
+wanted = int(sys.argv[2])
+message = w.MSG()
+deadline = time.time() + 20
+while time.time() < deadline and len(got) < wanted:
+    while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
+        user32.TranslateMessage(ctypes.byref(message))
+        user32.DispatchMessageW(ctypes.byref(message))
+    time.sleep(0.01)
+json.dump(got, open(sys.argv[1], "w"))
+print("DONE", len(got), flush=True)
+"""
+
+
+@unittest.skipUnless(sys.platform == "win32", "the Windows driver needs Windows")
+class TheWindowsDriverReallyTypesTests(unittest.TestCase):
+    """The Windows driver against a real window, on a real Windows machine.
+
+    The same shape as the X11 test: a window is created with the user32 calls an
+    application uses, the driver sends keys with SendInput, and the window
+    reports what its message loop received. It runs where Windows is - the CI
+    matrix has a windows-latest job - and nowhere else.
+    """
+
+    def _received(self, presses, expected):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "receiver.py"
+            script.write_text(WINDOWS_RECEIVER, encoding="utf-8")
+            target = Path(tmp) / "got.json"
+            with subprocess.Popen(
+                [sys.executable, str(script), str(target), str(expected)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            ) as receiver:
+                first = receiver.stdout.readline().strip()
+                if first.startswith("NOWINDOW"):
+                    receiver.wait(timeout=10)
+                    self.skipTest("this Windows session cannot create a window ({})"
+                                  .format(first))
+                if first == "NOFOCUS":
+                    # Nothing can be delivered to a window that is not in front,
+                    # and that is the session's doing rather than the driver's.
+                    receiver.kill()
+                    self.skipTest("this Windows session would not bring the "
+                                  "window to the foreground")
+                time.sleep(0.5)
+                driver = driver_mod.WindowsDriver()
+                presses(driver)
+                receiver.wait(timeout=25)
+            return json.loads(target.read_text(encoding="utf-8"))
+
+    def test_a_timecode_arrives_as_a_timecode(self):
+        got = self._received(lambda d: d.write("00:01:40:00"), 11)
+        typed = "".join(chr(row["wparam"]) for row in got if row["message"] == 0x0102)
+        self.assertEqual(typed, "00:01:40:00")
+
+    def test_a_chord_arrives_with_its_modifier_held(self):
+        got = self._received(lambda d: d.press("ctrl+s"), 1)
+        self.assertTrue(got, "nothing arrived")
+        self.assertTrue(any(row["ctrl"] for row in got), "ctrl was not held")
+
+    def test_the_marks_a_cut_needs_arrive_as_themselves(self):
+        got = self._received(lambda d: (d.press("i"), d.press("o")), 2)
+        keys = [chr(row["wparam"]).lower() for row in got
+                if row["message"] == 0x0100]
+        self.assertEqual(keys[:2], ["i", "o"])
+
+
+class TheMacCommandTests(unittest.TestCase):
+    """What the Mac driver says to System Events, checked without a Mac.
+
+    The part that needs macOS is running the script; writing it does not, so it
+    is a function of its own and this reads what it writes.
+    """
+
+    def test_a_chord_becomes_a_keystroke_with_its_modifier(self):
+        self.assertEqual(
+            driver_mod.mac_command("cmd+s"),
+            'tell application "System Events" to keystroke "s" using {command down}')
+
+    def test_a_named_key_becomes_a_key_code(self):
+        """`keystroke "return"` types the word; the key is a number there."""
+        self.assertEqual(driver_mod.mac_command("return"),
+                         'tell application "System Events" to key code 36')
+
+    def test_two_modifiers_are_both_named(self):
+        self.assertIn("{command down, shift down}", driver_mod.mac_command("cmd+shift+n"))
+
+    def test_a_timecode_is_typed_as_itself(self):
+        self.assertEqual(
+            driver_mod.mac_type_command("00:01:40:00"),
+            'tell application "System Events" to keystroke "00:01:40:00"')
+
+    def test_a_quote_in_the_text_does_not_end_the_script(self):
+        """A sequence name is the model's, and AppleScript is a string here."""
+        self.assertEqual(driver_mod.mac_type_command('AI "best of"'),
+                         'tell application "System Events" to keystroke '
+                         '"AI \\"best of\\""')
+
+    def test_an_unknown_modifier_is_refused_rather_than_dropped(self):
+        with self.assertRaises(driver_mod.DriverError):
+            driver_mod.mac_command("hyper+s")
+
+
+@unittest.skipUnless(sys.platform == "darwin", "osascript is macOS's")
+class TheMacScriptIsAcceptedTests(unittest.TestCase):
+    """osascript reading the commands, on a real Mac.
+
+    System Events refuses to type without Accessibility permission, which CI
+    does not grant - so what is checked here is that the script itself is
+    accepted: a syntax error and a permission error are different answers, and
+    only the second is the machine's rather than this program's.
+    """
+
+    def _compile(self, script):
+        return subprocess.run(["osascript", "-e", script],
+                              capture_output=True, text=True, timeout=30)
+
+    def test_the_commands_are_syntactically_accepted(self):
+        for script in (driver_mod.mac_command("cmd+s"),
+                       driver_mod.mac_command("return"),
+                       driver_mod.mac_type_command("00:01:40:00")):
+            with self.subTest(script=script):
+                done = self._compile(script)
+                self.assertNotIn("syntax error", done.stderr.lower(), done.stderr)
+                self.assertNotIn("expected", done.stderr.lower(), done.stderr)
+
+
 class HonestyTests(unittest.TestCase):
     def test_the_driver_says_which_platforms_it_has_run_on(self):
         source = (UIDRIVE / "aicut_driver.py").read_text(encoding="utf-8")

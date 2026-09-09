@@ -122,6 +122,19 @@ jobs:
           fi
           node --version
           tail -n 3 "$RUNNER_TEMP/plugin.txt"
+      - name: Say whether this platform's key driver was really exercised
+        # `tests/test_plugin_uidrive.py` drives a real window on this platform
+        # and skips when the session will not give it one. A skip is silent, and
+        # a driver nobody ran is a driver nobody has checked - so the reason is
+        # printed here rather than left in a log nobody opens.
+        shell: bash
+        run: |
+          python -m unittest tests.test_plugin_uidrive -v 2> "$RUNNER_TEMP/ui.txt" || {
+            cat "$RUNNER_TEMP/ui.txt"; exit 1; }
+          echo "--- what ran on ${{ matrix.os }} ---"
+          grep -E "ReallyTypes|ScriptIsAccepted|skipped" "$RUNNER_TEMP/ui.txt" || true
+          tail -n 3 "$RUNNER_TEMP/ui.txt"
+
       - name: A Korean path must survive this platform's console
         run: |
           python -c "

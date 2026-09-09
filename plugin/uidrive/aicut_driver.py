@@ -314,6 +314,48 @@ class WindowsDriver(Driver):
 
 
 # -- macOS ------------------------------------------------------------------
+#: The keys System Events names by number rather than types as characters.
+MAC_KEY_CODES = {"return": 36, "enter": 36, "escape": 53, "tab": 48,
+                 "space": 49, "delete": 51, "up": 126, "down": 125,
+                 "left": 123, "right": 124}
+
+#: Modifiers, as System Events spells them.
+MAC_MODIFIERS = {"cmd": "command down", "command": "command down",
+                 "ctrl": "control down", "control": "control down",
+                 "shift": "shift down", "alt": "option down",
+                 "option": "option down"}
+
+
+def mac_command(chord):
+    """The AppleScript for one chord.
+
+    Built by a function of its own so it can be read and tested without a Mac:
+    the part that needs macOS is running it, not writing it.
+    """
+    parts = [p for p in str(chord).split("+") if p] or ["+"]
+    unknown = [p for p in parts[:-1] if p.lower() not in MAC_MODIFIERS]
+    if unknown:
+        raise DriverError("unknown modifier(s) {} in {!r}".format(unknown, chord))
+    key = parts[-1].lower()
+    modifiers = [MAC_MODIFIERS[p.lower()] for p in parts[:-1]]
+    using = " using {{{}}}".format(", ".join(modifiers)) if modifiers else ""
+    if key in MAC_KEY_CODES:
+        return 'tell application "System Events" to key code {}{}'.format(
+            MAC_KEY_CODES[key], using)
+    return 'tell application "System Events" to keystroke "{}"{}'.format(
+        _mac_quote(parts[-1]), using)
+
+
+def mac_type_command(text):
+    """The AppleScript for literal text, with the quoting AppleScript needs."""
+    return 'tell application "System Events" to keystroke "{}"'.format(
+        _mac_quote(text))
+
+
+def _mac_quote(text):
+    return str(text).replace("\\", "\\\\").replace('"', '\\"')
+
+
 class MacDriver(Driver):
     """macOS, through System Events - how a Mac scripts an app that does not
     script itself.
@@ -323,15 +365,6 @@ class MacDriver(Driver):
     """
 
     name = "macos"
-
-    #: The keys System Events names rather than types.
-    KEY_CODES = {"return": 36, "enter": 36, "escape": 53, "tab": 48,
-                 "space": 49, "delete": 51, "up": 126, "down": 125,
-                 "left": 123, "right": 124}
-    MODIFIERS = {"cmd": "command down", "command": "command down",
-                 "ctrl": "control down", "control": "control down",
-                 "shift": "shift down", "alt": "option down",
-                 "option": "option down"}
 
     def __init__(self):
         if platform.system() != "Darwin":        # pragma: no cover - platform gate
@@ -356,22 +389,10 @@ class MacDriver(Driver):
         raise DriverError("none of {} is running".format(" / ".join(window_names)))
 
     def press(self, chord):                      # pragma: no cover - needs macOS
-        parts = [p for p in str(chord).split("+") if p]
-        key = parts[-1].lower()
-        modifiers = [self.MODIFIERS[p.lower()] for p in parts[:-1]
-                     if p.lower() in self.MODIFIERS]
-        using = " using {{{}}}".format(", ".join(modifiers)) if modifiers else ""
-        if key in self.KEY_CODES:
-            self._osascript('tell application "System Events" to key code {}{}'.format(
-                self.KEY_CODES[key], using))
-        else:
-            self._osascript('tell application "System Events" to keystroke "{}"{}'.format(
-                key, using))
+        self._osascript(mac_command(chord))
 
     def write(self, text):                       # pragma: no cover - needs macOS
-        escaped = str(text).replace("\\", "\\\\").replace('"', '\\"')
-        self._osascript(
-            'tell application "System Events" to keystroke "{}"'.format(escaped))
+        self._osascript(mac_type_command(text))
 
     def menu(self, path):                        # pragma: no cover - needs macOS
         raise DriverError("menus are not driven here; every step is a key")
