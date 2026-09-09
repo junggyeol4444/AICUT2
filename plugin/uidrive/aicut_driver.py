@@ -263,8 +263,10 @@ def _raise_window(tool, name):
 class WindowsDriver(Driver):
     """Windows, through user32: FindWindow to raise the editor, SendInput to type.
 
-    NOT RUN ON WINDOWS YET. This is written against the documented user32 calls
-    and has not been executed on a Windows machine with an editor open.
+    Run on Windows by the test suite, which makes a real window and checks what
+    its message loop receives - that is how the structure below `SendInput` was
+    found to be the wrong size. Not yet run against any of the four editors: no
+    copy of them is on the machine this was written on.
     """
 
     name = "windows"

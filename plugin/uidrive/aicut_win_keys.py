@@ -31,32 +31,72 @@ MODIFIERS = {"ctrl": 0x11, "control": 0x11, "shift": 0x10,
              "alt": 0x12, "meta": 0x5B, "win": 0x5B, "cmd": 0x5B}
 
 
+#: Windows' own widths, written as fixed-width types rather than as `c_ulong`.
+#: `DWORD` is four bytes on Windows; `ctypes.c_ulong` is eight on 64-bit Linux,
+#: so a structure declared with it has a different shape depending on where the
+#: file is read - and then it cannot be checked anywhere but Windows.
+_DWORD = ctypes.c_uint32
+_WORD = ctypes.c_uint16
+_LONG = ctypes.c_int32
+
+#: `ULONG_PTR`: 8 bytes where the process is 64-bit, 4 where it is not. Getting
+#: this wrong changes the size of every structure below it.
+_ULONG_PTR = ctypes.c_void_p
+
+
 class _KeyboardInput(ctypes.Structure):
-    _fields_ = [("wVk", ctypes.c_ushort), ("wScan", ctypes.c_ushort),
-                ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong),
-                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+    _fields_ = [("wVk", _WORD), ("wScan", _WORD),
+                ("dwFlags", _DWORD), ("time", _DWORD),
+                ("dwExtraInfo", _ULONG_PTR)]
+
+
+class _MouseInput(ctypes.Structure):
+    """Not used, and it has to be here.
+
+    `INPUT` is a union of three, and the union is as big as its largest member -
+    the mouse one. A union declared with only the keyboard member is 8 bytes
+    short on a 64-bit machine, and `SendInput` is told the size: it answered
+    ERROR_INVALID_PARAMETER (87) and refused every keystroke. Windows CI caught
+    exactly that.
+    """
+
+    _fields_ = [("dx", _LONG), ("dy", _LONG),
+                ("mouseData", _DWORD), ("dwFlags", _DWORD),
+                ("time", _DWORD), ("dwExtraInfo", _ULONG_PTR)]
+
+
+class _HardwareInput(ctypes.Structure):
+    _fields_ = [("uMsg", _DWORD), ("wParamL", _WORD), ("wParamH", _WORD)]
 
 
 class _InputUnion(ctypes.Union):
-    _fields_ = [("ki", _KeyboardInput)]
+    _fields_ = [("mi", _MouseInput), ("ki", _KeyboardInput), ("hi", _HardwareInput)]
 
 
 class _Input(ctypes.Structure):
-    _fields_ = [("type", ctypes.c_ulong), ("union", _InputUnion)]
+    _anonymous_ = ()
+    _fields_ = [("type", _DWORD), ("union", _InputUnion)]
+
+
+#: What Windows expects `sizeof(INPUT)` to be, which is what it is told below.
+#: 40 bytes on a 64-bit process, 28 on a 32-bit one.
+INPUT_SIZE = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28
 
 
 def _key_event(vk, scan, flags):
     return _Input(type=INPUT_KEYBOARD,
                   union=_InputUnion(ki=_KeyboardInput(
-                      wVk=vk, wScan=scan, dwFlags=flags, time=0,
-                      dwExtraInfo=ctypes.pointer(ctypes.c_ulong(0)))))
+                      wVk=vk, wScan=scan, dwFlags=flags, time=0, dwExtraInfo=None)))
 
 
 def _send(user32, events):
     array = (_Input * len(events))(*events)
-    sent = user32.SendInput(len(events), ctypes.byref(array), ctypes.sizeof(_Input))
+    user32.SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(_Input), ctypes.c_int]
+    user32.SendInput.restype = ctypes.c_uint
+    sent = user32.SendInput(len(events), array, ctypes.sizeof(_Input))
     if sent != len(events):
-        raise OSError(ctypes.get_last_error(), "SendInput refused the keystroke")
+        raise OSError(ctypes.get_last_error(),
+                      "SendInput sent {} of {} events".format(sent, len(events)))
 
 
 def send_chord(user32, chord):

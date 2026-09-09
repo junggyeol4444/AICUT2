@@ -624,6 +624,53 @@ class TheWindowsDriverReallyTypesTests(unittest.TestCase):
         self.assertEqual(keys[:2], ["i", "o"])
 
 
+class TheWindowsStructuresTests(unittest.TestCase):
+    """`SendInput` is told how big its argument is, and refuses a wrong answer.
+
+    Windows CI caught this the hard way: every keystroke came back as
+    ERROR_INVALID_PARAMETER (87) because the union had only its keyboard member
+    in it and the structure was eight bytes short. These sizes are Windows'
+    own and are checkable anywhere, now that the fields are declared in
+    fixed-width types rather than in `c_ulong` - which is four bytes on Windows
+    and eight on 64-bit Linux.
+    """
+
+    def setUp(self):
+        import aicut_win_keys
+
+        self.keys = aicut_win_keys
+
+    def test_the_structure_is_the_size_windows_expects(self):
+        import ctypes
+
+        self.assertEqual(ctypes.sizeof(self.keys._Input), self.keys.INPUT_SIZE)
+        self.assertEqual(self.keys.INPUT_SIZE,
+                         40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28)
+
+    def test_the_members_are_the_sizes_windows_documents(self):
+        import ctypes
+
+        if ctypes.sizeof(ctypes.c_void_p) != 8:
+            self.skipTest("these are the 64-bit sizes")
+        self.assertEqual(ctypes.sizeof(self.keys._KeyboardInput), 24)
+        self.assertEqual(ctypes.sizeof(self.keys._MouseInput), 32)
+
+    def test_the_union_is_as_big_as_its_largest_member(self):
+        """Which is the mouse one, and the reason it is declared at all."""
+        import ctypes
+
+        self.assertEqual(ctypes.sizeof(self.keys._InputUnion),
+                         ctypes.sizeof(self.keys._MouseInput))
+
+    def test_a_dword_field_is_four_bytes_wherever_this_is_read(self):
+        """`c_ulong` would be eight here and four on Windows, so the shape of
+        the structure would depend on the machine reading the file."""
+        import ctypes
+
+        self.assertEqual(ctypes.sizeof(self.keys._DWORD), 4)
+        self.assertEqual(ctypes.sizeof(self.keys._WORD), 2)
+
+
 class TheMacCommandTests(unittest.TestCase):
     """What the Mac driver says to System Events, checked without a Mac.
 
@@ -686,9 +733,12 @@ class TheMacScriptIsAcceptedTests(unittest.TestCase):
 
 class HonestyTests(unittest.TestCase):
     def test_the_driver_says_which_platforms_it_has_run_on(self):
+        """macOS is still unrun; Windows is not, and the file must not keep
+        saying it is."""
         source = (UIDRIVE / "aicut_driver.py").read_text(encoding="utf-8")
-        self.assertIn("NOT RUN ON WINDOWS YET", source)
         self.assertIn("NOT RUN ON MACOS YET", source)
+        self.assertNotIn("NOT RUN ON WINDOWS YET", source)
+        self.assertIn("Run on Windows by the test suite", source)
 
     def test_the_entry_point_says_no_editor_has_seen_it(self):
         source = (UIDRIVE / "aicut_uidrive.py").read_text(encoding="utf-8")
