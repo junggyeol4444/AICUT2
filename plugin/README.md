@@ -8,6 +8,7 @@
 
 | 방법 | 대상 | 설치 | 검증 상태 |
 |---|---|---|---|
+| `plugin/uidrive` (편집기 직접 조작) | Final Cut · Avid · Shotcut · Kdenlive | `plugin/common` + `plugin/uidrive` 복사 | 키 입력은 리눅스에서 실제 창에 대고 검증, **네 편집기 자체는 미검증** |
 | `aicut export` (교환 파일) | Premiere Pro, Final Cut Pro, Resolve, Avid 등 **전부** | 불필요 | 실제 영상의 계획으로 생성·검증 완료 |
 | `plugin/resolve` (어댑터) | DaVinci Resolve 전용 | `plugin/common` + `plugin/resolve` 복사 | 판단·산술·엔진 호출은 테스트됨, **Resolve API 호출은 미검증** |
 | `plugin/premiere` (어댑터) | Premiere Pro 전용 | `plugin/common` + `plugin/premiere` 복사 | 판단·산술·엔진 호출은 테스트됨, **Premiere API 호출은 미검증** |
@@ -441,3 +442,81 @@ Shotcut도 Kdenlive도 이 환경에 없다. **열어본 적 없다.** 확인한
 * 문서 안에서 가리키는 게 전부 실재하는지 — 없는 걸 가리키면 파일이 아예 안 열린다
 * 원본 경로를 이 컴퓨터 기준으로 바꾸지 않는지 (Final Cut 어댑터가 그걸로 한 번
   깨졌다)
+
+---
+
+## 8. 플러그인이 없는 편집기 — `plugin/uidrive`
+
+기획안 2장은 사람이 하는 일을 넷으로 못박는다:
+
+```
+1. 영상 편집기 실행
+2. 생방송 영상 가져오기
+3. 플러그인 실행
+4. "AI 자동 편집" 버튼 클릭
+```
+
+Resolve·Premiere·VEGAS는 편집기가 플러그인을 받아준다. 나머지 넷(Final Cut,
+Avid, Shotcut, Kdenlive)은 안 받아준다. 그렇다고 **파일 만들어 주고 사람보고
+열라고 하면 2장이 아니다.** 그래서 이쪽은 편집기를 사람이 하듯 직접 조작한다 —
+열려 있는 편집기 창을 앞으로 가져오고, 키를 눌러서 컷을 딴다.
+
+```bash
+# 먼저 이거부터. 아무것도 안 누르고 뭘 누를지만 보여준다
+python plugin/uidrive/aicut_uidrive.py --editor shotcut --dry-run <model>.json
+
+# 진짜로
+python plugin/uidrive/aicut_uidrive.py --editor shotcut <model>.json
+
+# 4장의 버튼
+python plugin/uidrive/aicut_uidrive.py --editor shotcut --engine /방송/live.mkv
+```
+
+### 무슨 키를 누르는데
+
+사람이 소스에서 컷 딸 때 하는 그대로다:
+
+```
+  1. wait 0.5s - 편집기가 하던 거 끝내게
+  2. press ctrl+n - 25장 A: 새 타임라인, 원본은 안 건드림
+  3. type 'AI_ep123456' - 나중에 찾을 이름
+  5. press escape - 소스 뷰어로
+  6. press ctrl+g / type '00:01:40:00' / press return - 시작 지점으로
+  9. press i - 인점
+ 10~12. 끝 지점으로
+ 13. press o - 아웃점
+ 14. press a - 타임라인에 붙임
+ ... 컷마다 반복 ...
+ 15. press ctrl+s - 저장
+```
+
+### 이 키들 맞는지 — **확인 안 됐다**
+
+`keymaps.json` 에 편집기별 키가 들어 있고, **전부 `confirmed: false` 다.** 이
+환경에 네 편집기가 하나도 없어서 어떤 단축키도 실제 앱에서 눌러본 적이 없다.
+문서에 나온 기본값을 적어놓은 것이고, 그건 측정한 게 아니다.
+
+그래서:
+* `--dry-run` 이 먼저다. 누를 키를 전부 출력한다.
+* 틀린 게 있으면 **`keymaps.json` 을 고친다.** 코드가 아니라 그 파일이다.
+* 실행할 때마다 "확인 안 된 키 N개" 를 먼저 말한다.
+
+### 키를 실제로 누르는 부분은 검증했다
+
+리눅스 드라이버(XTEST)는 **진짜 X 창에 대고 눌러봤다.** 창을 하나 띄우고, 그
+창이 받은 키를 기록하게 하고, 드라이버로 눌렀다:
+
+* `00:01:40:00` → 그 11글자가 그대로 도착. **콜론 3개 전부 shift가 눌린 상태로.**
+  (콜론은 키가 아니라 shift+세미콜론이다. shift를 안 잡으면 편집기 시간 칸에
+  `00;01;40;00` 이 들어간다)
+* `ctrl+s` → s 가 control 눌린 상태로 도착
+* `i`, `o` → 그대로 도착
+
+윈도우(SendInput)와 맥(System Events) 드라이버는 **그 OS에서 돌려본 적 없다.**
+파일에 그렇게 적혀 있다.
+
+### 파일로 받는 방식은 남겨뒀다
+
+위 3~7절의 파일 생성 방식(FCPXML, EDL, MLT)은 지우지 않았다. 편집기를 조작하는
+게 기획안대로지만, 파일이 필요할 때가 있으면 그쪽도 그대로 있다. 필요 없으면
+말해라, 지운다.
