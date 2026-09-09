@@ -1,0 +1,194 @@
+"""The analyses look at the videos (4.2, 5.2, 12.3 B), and the media is dropped (4.6).
+
+4.2 lists 영상 first among what loop A collects, and every item 4.3 asks about —
+컷 / 평균 장면 길이 / 화면 전환 / 자막 / 강조 / 효과 — is on the screen. 1.2 names
+depending on speech alone as the third failure of the tools this replaces, and 5.2
+says the passes do not separate 화면 from 소리.
+
+18장 puts the line: the program decodes and samples, and the AI says what the
+editing is. Nothing here counts a cut.
+"""
+
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from aicut.db.store import Store
+from aicut.intelligence import reference as reference_mod
+from aicut.intelligence.source_output import align_by_transcript, learn
+from aicut.llm.mock import MockProducer
+from aicut.models import Utterance
+
+
+def touch(directory: Path, *names: str) -> list[str]:
+    made = []
+    for name in names:
+        path = directory / name
+        path.write_bytes(b"not really a jpeg")
+        made.append(str(path))
+    return made
+
+
+class ReferenceWatchingTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.producer = MockProducer()
+        self.store = Store(":memory:")
+        self.addCleanup(self.store.close)
+
+    def _reference(self):
+        return [{"video_id": "abc", "channel_id": "chan", "title": "합방 하이라이트",
+                 "description": "", "tags": [], "public_metrics": {"views": 10}}]
+
+    def test_the_frames_are_shown_to_the_analysis(self):
+        frames = touch(self.dir, "ref_000.jpg", "ref_001.jpg")
+        reference_mod.analyze(
+            self.producer, self.store, self._reference(),
+            watched={"abc": {"frames": list(frames), "duration_sec": 600.0}},
+        )
+        self.assertEqual(self.producer.seen_images.get("analyze_reference"), frames,
+                         "loop A analysed a video it never looked at")
+
+    def test_the_media_is_kept(self):
+        """4.6 leaves the media policy to the operator, and they decided: keep it."""
+        frames = touch(self.dir, "ref_000.jpg")
+        reference_mod.analyze(
+            self.producer, self.store, self._reference(),
+            watched={"abc": {"frames": list(frames), "duration_sec": 600.0}},
+        )
+        self.assertTrue(Path(frames[0]).exists(), "a reference frame was deleted")
+
+    def test_a_reference_with_no_file_still_analyses_from_metadata(self):
+        analyses = reference_mod.analyze(self.producer, self.store, self._reference())
+        self.assertEqual(len(analyses), 1)
+        self.assertFalse(self.producer.seen_images.get("analyze_reference"))
+
+    def test_nothing_in_the_module_counts_cuts(self):
+        """18장: 편집 의도 is the AI's. Code that scores scenes took it back."""
+        source = Path(reference_mod.__file__).read_text(encoding="utf-8")
+        for banned in ("cut_count", "detect_cuts", "fingerprint"):  # noqa: E501
+            self.assertNotIn(banned, source, f"{banned} is code deciding the edit")
+
+
+class PairWatchingTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.producer = MockProducer()
+        self.store = Store(":memory:")
+        self.addCleanup(self.store.close)
+
+    def _alignment(self):
+        source = [Utterance(0, 10, "보스한테 계속 죽네"), Utterance(500, 510, "드디어 잡았다")]
+        output = [Utterance(0, 10, "드디어 잡았다")]
+        return align_by_transcript(source, output, source_duration_sec=600.0)
+
+    def test_both_videos_reach_the_analysis_source_first(self):
+        """5.2: 화면과 소리를 분리하지 않고 같이 본다."""
+        source_frames = touch(self.dir, "s0.jpg", "s1.jpg")
+        output_frames = touch(self.dir, "o0.jpg")
+        learn(self.producer, self.store, self._alignment(),
+              source_ref="s", output_ref="o",
+              source_frames=source_frames, output_frames=output_frames)
+        self.assertEqual(self.producer.seen_images.get("compare_source_output"),
+                         source_frames + output_frames)
+
+    def test_the_payload_says_which_frames_are_which(self):
+        source_frames = touch(self.dir, "s0.jpg", "s1.jpg")
+        output_frames = touch(self.dir, "o0.jpg")
+        learn(self.producer, self.store, self._alignment(),
+              source_ref="s", output_ref="o",
+              source_frames=source_frames, output_frames=output_frames)
+        sent = self.producer.seen_payloads["compare_source_output"]
+        self.assertEqual(sent["frames"]["source"], 2)
+        self.assertEqual(sent["frames"]["output"], 1)
+
+    def test_a_pair_given_no_files_still_runs_on_the_transcripts(self):
+        analysis = learn(self.producer, self.store, self._alignment(),
+                         source_ref="s", output_ref="o")
+        self.assertIn("measured", analysis)
+        self.assertFalse(self.producer.seen_images.get("compare_source_output"))
+
+    def test_code_does_not_label_what_was_emphasised(self):
+        """12.3 B asks the analysis what was 강조. A margin in the source is not that."""
+        analysis = learn(self.producer, self.store, self._alignment(),
+                         source_ref="s", output_ref="o")
+        self.assertNotIn("emphasised_spans", analysis["measured"])
+        sent = self.producer.seen_payloads["compare_source_output"]
+        self.assertNotIn("emphasis", sent["kept"][0])
+        self.assertIn("compression", sent["kept"][0])
+        self.assertIn("repeated", sent["kept"][0])
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class CommentAndDatasetTests(unittest.TestCase):
+    """4.2 collects 댓글; 17.2 says a loop B run is also the labelling."""
+
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.producer = MockProducer()
+        self.store = Store(":memory:")
+        self.addCleanup(self.store.close)
+
+    def test_the_comments_reach_the_analysis(self):
+        """원본 8장 asks about 시청자 반응과 영상 구성의 관계, which needs the text."""
+        reference_mod.analyze(
+            self.producer, self.store,
+            [{"video_id": "abc", "channel_id": "c", "title": "t", "description": "",
+              "tags": [], "public_metrics": {"views": 10, "comments": 2}}],
+            watched={"abc": {"comments": [
+                {"text": "초반부터 몰입됨", "likes": "42"},
+                {"text": "이 장면 다시 봄", "likes": "7"},
+            ]}},
+        )
+        sent = self.producer.seen_payloads["analyze_reference"]
+        self.assertEqual(sent["comments"]["count_read"], 2)
+        self.assertEqual(sent["comments"]["comments"][0]["text"], "초반부터 몰입됨")
+
+    def test_a_reference_with_no_comments_carries_no_comment_block(self):
+        reference_mod.analyze(
+            self.producer, self.store,
+            [{"video_id": "abc", "channel_id": "c", "title": "t", "description": "",
+              "tags": [], "public_metrics": {}}],
+        )
+        self.assertNotIn("comments", self.producer.seen_payloads["analyze_reference"])
+
+    def test_a_pair_becomes_the_17_2_dataset_entry(self):
+        from aicut.calibration.dataset import from_pair
+
+        source = [Utterance(0, 10, "보스한테 계속 죽네"), Utterance(500, 510, "드디어 잡았다")]
+        output = [Utterance(0, 10, "드디어 잡았다")]
+        alignment = align_by_transcript(source, output, source_duration_sec=600.0)
+        dataset = from_pair("/x/source.mp4", "/x/output.mp4", alignment)
+        self.assertEqual(dataset.output_path, "/x/output.mp4")
+        self.assertTrue(dataset.content_spans, "the editor's own selection was not recorded")
+        self.assertEqual(
+            [(s.start_sec, s.end_sec) for s in dataset.content_spans], [(500.0, 510.0)],
+        )
+
+    def test_relabelling_the_same_pair_does_not_duplicate_spans(self):
+        from aicut.calibration.dataset import from_pair
+
+        source = [Utterance(0, 10, "한 마디"), Utterance(500, 510, "다른 마디")]
+        output = [Utterance(0, 10, "다른 마디")]
+        alignment = align_by_transcript(source, output, source_duration_sec=600.0)
+        first = from_pair("/x/s.mp4", "/x/o.mp4", alignment)
+        again = from_pair("/x/s.mp4", "/x/o.mp4", alignment, existing=first)
+        self.assertEqual(len(again.content_spans), 1)
+
+    def test_silence_verdicts_are_not_guessed_from_a_pair(self):
+        """17.5: an unmeasured value does not get written down as measured."""
+        from aicut.calibration.dataset import from_pair
+
+        alignment = align_by_transcript(
+            [Utterance(0, 10, "말")], [Utterance(0, 10, "말")], source_duration_sec=600.0,
+        )
+        self.assertEqual(from_pair("/x/s.mp4", "/x/o.mp4", alignment).silence_verdicts, [])

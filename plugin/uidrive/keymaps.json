@@ -1,0 +1,82 @@
+{
+  "_note": [
+    "The keys each editor uses, as this program will press them.",
+    "NOTHING HERE IS CONFIRMED. Every entry is marked confirmed:false because",
+    "no copy of these editors exists on the machine this was written on, so no",
+    "shortcut in this file has ever been pressed in the application it names.",
+    "They are the documented defaults as far as they are known - which is not",
+    "the same as measured, and 17.1's habit is to say so rather than let a",
+    "number nobody checked look like a fact.",
+    "Run with --dry-run first: it prints every key before anything is pressed.",
+    "Correct what is wrong here; the file is the thing to edit, not the code."
+  ],
+  "shotcut": {
+    "name": "Shotcut",
+    "window": ["Shotcut"],
+    "settle_sec": 0.5,
+    "keys": {
+      "new_timeline": {"key": "ctrl+n", "key_mac": "cmd+n", "confirmed": false,
+                       "note": "new project; Shotcut has one timeline per project"},
+      "confirm": {"key": "return", "confirmed": false},
+      "focus_source": {"key": "escape", "confirmed": false,
+                       "note": "leave whatever field has focus before the marks"},
+      "goto_timecode": {"key": "ctrl+g", "key_mac": "cmd+g", "confirmed": false,
+                        "note": "if there is no such shortcut the position field is clicked instead"},
+      "mark_in": {"key": "i", "confirmed": false},
+      "mark_out": {"key": "o", "confirmed": false},
+      "append": {"key": "a", "confirmed": false},
+      "save": {"key": "ctrl+s", "key_mac": "cmd+s", "confirmed": false}
+    }
+  },
+  "kdenlive": {
+    "name": "Kdenlive",
+    "window": ["Kdenlive"],
+    "settle_sec": 0.5,
+    "keys": {
+      "new_timeline": {"key": "ctrl+n", "key_mac": "cmd+n", "confirmed": false},
+      "confirm": {"key": "return", "confirmed": false},
+      "focus_source": {"key": "escape", "confirmed": false},
+      "goto_timecode": {"key": "ctrl+g", "key_mac": "cmd+g", "confirmed": false},
+      "mark_in": {"key": "i", "confirmed": false},
+      "mark_out": {"key": "o", "confirmed": false},
+      "append": {"key": "v", "confirmed": false,
+                 "note": "insert the marked zone into the timeline"},
+      "save": {"key": "ctrl+s", "key_mac": "cmd+s", "confirmed": false}
+    }
+  },
+  "finalcut": {
+    "name": "Final Cut Pro",
+    "window": ["Final Cut Pro"],
+    "settle_sec": 0.7,
+    "keys": {
+      "new_timeline": {"key": "cmd+n", "confirmed": false,
+                       "note": "new project in the library"},
+      "confirm": {"key": "return", "confirmed": false},
+      "focus_source": {"key": "escape", "confirmed": false},
+      "goto_timecode": {"key": "control+p", "confirmed": false,
+                        "note": "type a timecode and press return"},
+      "mark_in": {"key": "i", "confirmed": false},
+      "mark_out": {"key": "o", "confirmed": false},
+      "append": {"key": "e", "confirmed": false,
+                 "note": "append to the end of the storyline"},
+      "save": {"key": "cmd+s", "confirmed": false,
+               "note": "Final Cut saves as it goes; this may do nothing"}
+    }
+  },
+  "avid": {
+    "name": "Avid Media Composer",
+    "window": ["Media Composer", "Avid"],
+    "settle_sec": 0.7,
+    "keys": {
+      "new_timeline": {"key": "ctrl+shift+n", "key_mac": "cmd+shift+n", "confirmed": false,
+                       "note": "new sequence in the bin"},
+      "confirm": {"key": "return", "confirmed": false},
+      "focus_source": {"key": "escape", "confirmed": false},
+      "goto_timecode": {"key": "ctrl+g", "key_mac": "cmd+g", "confirmed": false},
+      "mark_in": {"key": "i", "confirmed": false},
+      "mark_out": {"key": "o", "confirmed": false},
+      "append": {"key": "v", "confirmed": false, "note": "splice-in"},
+      "save": {"key": "ctrl+s", "key_mac": "cmd+s", "confirmed": false}
+    }
+  }
+}

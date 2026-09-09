@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aicut</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --line: #2c313b; --ink: #e6e9ef;
+    --dim: #969db0; --accent: #6ea8fe; --ok: #5fd08a; --warn: #e5c07b; --bad: #e06c75;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.55 ui-sans-serif, "Pretendard", "Noto Sans KR", system-ui, sans-serif; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex;
+           align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 16px; margin: 0; letter-spacing: .04em; }
+  .muted { color: var(--dim); font-size: 12px; }
+  nav { display: flex; gap: 4px; padding: 10px 20px 0; border-bottom: 1px solid var(--line); }
+  nav button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--dim);
+               padding: 8px 14px; cursor: pointer; font: inherit; }
+  nav button.on { color: var(--ink); border-bottom-color: var(--accent); }
+  main { padding: 20px; max-width: 1100px; }
+  section { display: none; } section.on { display: block; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+          padding: 14px 16px; margin-bottom: 12px; }
+  label { display: block; font-size: 12px; color: var(--dim); margin: 10px 0 4px; }
+  input, select, textarea { width: 100%; background: #12141a; color: var(--ink);
+          border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit; }
+  button.go { background: var(--accent); color: #10131a; border: 0; border-radius: 6px;
+              padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer; margin-top: 14px; }
+  button.small { background: none; border: 1px solid var(--line); color: var(--ink);
+                 border-radius: 5px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+  button.small:hover { border-color: var(--accent); }
+  pre { background: #101318; border: 1px solid var(--line); border-radius: 6px; padding: 12px;
+        overflow: auto; max-height: 380px; font-size: 12px; margin: 8px 0 0; white-space: pre-wrap; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .grow { flex: 1; min-width: 200px; }
+  .tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
+  .produce { color: var(--ok); border-color: var(--ok); }
+  .reject { color: var(--bad); border-color: var(--bad); }
+  .combine, .hold { color: var(--warn); border-color: var(--warn); }
+  .banner { border-left: 3px solid var(--warn); background: #221f16; padding: 10px 14px;
+            border-radius: 4px; margin-bottom: 14px; font-size: 13px; }
+  .log { font-size: 11.5px; max-height: 300px; }
+  .bar { height: 6px; border-radius: 3px; background: #0002; overflow: hidden; margin: 8px 0; }
+  .bar > div { height: 100%; width: 0; background: var(--accent, #4c8); transition: width .3s; }
+  .summary { border-collapse: collapse; font-size: 12.5px; }
+  .summary th { text-align: left; padding: 2px 12px 2px 0; font-weight: 600; opacity: .7; }
+  .reasons { margin: 4px 0 0 16px; padding: 0; font-size: 12px; opacity: .85; }
+  .warn { color: var(--warn); font-size: 12px; }
+  .log .error { color: var(--bad); } .log .warn { color: var(--warn); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td, th { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 500; font-size: 12px; }
+  a { color: var(--accent); }
+  .drop { border: 1px dashed var(--line); border-radius: 6px; padding: 14px; text-align: center;
+          color: var(--dim); font-size: 12.5px; margin-bottom: 10px; transition: .12s; }
+  .drop.over { border-color: var(--accent); color: var(--accent); background: #10161d; }
+  .thumbs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .thumbs img { height: 84px; border-radius: 4px; border: 1px solid var(--line); cursor: zoom-in;
+                background: #000; }
+  .thumbs img:hover { border-color: var(--accent); }
+  video { width: 100%; max-height: 340px; border-radius: 4px; background: #000; margin-top: 10px; }
+  .titles { margin-top: 8px; }
+  .titles li { font-size: 13px; margin: 3px 0; }
+  .titles li span { color: var(--dim); margin-right: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>aicut</h1>
+  <span class="muted" id="profile-line">…</span>
+</header>
+<nav>
+  <button data-tab="input" class="on">1. 입력</button>
+  <button data-tab="monitor">2. 진행</button>
+  <button data-tab="candidates">3. 콘텐츠 후보</button>
+  <button data-tab="results">4. 결과</button>
+</nav>
+<main>
+  <div id="provisional-banner"></div>
+
+  <!-- 15.2 -->
+  <section id="input" class="on">
+    <div class="card">
+      <label>원본 파일 경로 (.mp4 / .mkv)</label>
+      <div class="drop" id="drop">파일을 여기에 끌어다 놓거나, 아래에 전체 경로를 입력한다</div>
+      <input id="source" placeholder="/media/stream_2026-08-19.mkv">
+      <label>기존 트랜스크립트 (선택, WhisperX JSON) — 없으면 저장된 발화를 쓴다</label>
+      <input id="transcript" placeholder="/media/stream.transcript.json">
+      <div class="row">
+        <div class="grow">
+          <label>목표 길이 힌트 (초) — 강제가 아니다 (2.6)</label>
+          <input id="hint" type="number" placeholder="600">
+        </div>
+        <div class="grow">
+          <label>채널</label>
+          <input id="channel" placeholder="mychannel">
+        </div>
+        <div class="grow">
+          <label>캘리브레이션 프로파일 (17장)</label>
+          <select id="profile-pick"></select>
+        </div>
+        <div class="grow">
+          <label>어디까지</label>
+          <select id="mode">
+            <option value="plan">편집 계획까지 (MVP 5)</option>
+            <option value="render">렌더링까지 (MVP 6)</option>
+          </select>
+        </div>
+      </div>
+      <button class="go" id="submit">분석 시작</button>
+      <div class="muted" id="submit-msg" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div class="muted">프로젝트</div>
+      <table id="projects"><tbody></tbody></table>
+    </div>
+  </section>
+
+  <!-- 15.3 -->
+  <section id="monitor">
+    <div class="card">
+      <div class="row">
+        <div class="grow"><b id="job-state">—</b> <span class="muted" id="job-source"></span></div>
+        <span class="muted" id="job-elapsed"></span>
+      </div>
+      <!-- 15.3: 현재 상태(14장)와 진행률. The percentage is where in the walk
+           of 14장 the run is, not a guess at remaining time. -->
+      <div class="bar"><div id="job-bar"></div></div>
+      <pre class="log" id="job-log"></pre>
+    </div>
+    <div class="card" id="job-report-card" style="display:none">
+      <div class="muted">작업 리포트 (15.5)</div>
+      <div id="job-summary"></div>
+      <details><summary class="muted">전체 리포트</summary><pre id="job-report"></pre></details>
+    </div>
+  </section>
+
+  <!-- 15.4 -->
+  <section id="candidates">
+    <div class="card">
+      <div class="row">
+        <select id="cand-project" class="grow"></select>
+        <button class="small" id="cand-load">불러오기</button>
+      </div>
+      <div class="muted" id="agreement" style="margin-top:10px"></div>
+      <!-- 19장 MVP 3 관문: 네 항목이 각각 어디까지 왔는지. -->
+      <div class="muted" id="assessment" style="margin-top:4px"></div>
+    </div>
+    <div id="cand-list"></div>
+  </section>
+
+  <!-- 15.5 -->
+  <section id="results">
+    <div class="card">
+      <div class="row">
+        <select id="ep-project" class="grow"></select>
+        <button class="small" id="ep-load">불러오기</button>
+        <input id="reviewer" placeholder="검수자 이름" style="max-width:180px">
+      </div>
+    </div>
+    <!-- 15.5: 작업 리포트는 결과 패널에 있다. 진행 모니터에만 두면 작업이
+         끝난 뒤, 특히 프로그램을 다시 켠 뒤에는 볼 방법이 없다 - 작업 객체는
+         프로세스 안에만 있고 리포트는 프로젝트 폴더에 있다. -->
+    <div class="card" id="ep-report-card" style="display:none">
+      <div class="muted">작업 리포트 (22.6)</div>
+      <div id="ep-summary"></div>
+      <details><summary class="muted">전체 리포트</summary><pre id="ep-report"></pre></details>
+    </div>
+    <div id="ep-list"></div>
+    <div class="card" id="plan-card" style="display:none">
+      <div class="muted">편집 계획 — 이것만 읽고 결과물을 예상할 수 있어야 한다 (MVP 5)</div>
+      <pre id="plan-body"></pre>
+    </div>
+  </section>
+</main>
+
+<script>
+// The server requires a Bearer key on /api/* only when one is configured
+// (AICUT_UI_API_KEY or `aicut ui --api-key`). Keep it per-browser rather than
+// baking it into the page: the page is served before any header can be sent,
+// and a key in the URL would land in history and in the server log.
+const KEY_STORE = "aicut.apiKey";
+const apiKey = () => { try { return localStorage.getItem(KEY_STORE) || ""; } catch { return ""; } };
+const setApiKey = (key) => { try { localStorage.setItem(KEY_STORE, key); } catch { /* private mode */ } };
+
+const api = async (path, options = {}, retried = false) => {
+  const key = apiKey();
+  const headers = { ...(options.headers || {}) };
+  if (key) headers["Authorization"] = `Bearer ${key}`;
+  const res = await fetch(path, { ...options, headers });
+  if (res.status === 401 && !retried) {
+    const entered = window.prompt("이 서버는 API 키를 요구한다 (AICUT_UI_API_KEY):", "");
+    if (entered) { setApiKey(entered.trim()); return api(path, options, true); }
+  }
+  const data = await res.json().catch(() => ({ error: "응답이 JSON이 아니다" }));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+};
+const post = (path, body) => api(path, {
+  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+});
+const el = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const hms = (sec) => {
+  const s = Math.max(0, Math.round(sec || 0));
+  return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map((n) => String(n).padStart(2, "0")).join(":");
+};
+
+let currentJob = null;
+
+document.querySelectorAll("nav button").forEach((b) => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach((x) => x.classList.toggle("on", x === b));
+  document.querySelectorAll("main section").forEach((s) => s.classList.toggle("on", s.id === b.dataset.tab));
+  if (b.dataset.tab === "candidates" || b.dataset.tab === "results") loadProjects();
+});
+
+async function loadProfile() {
+  const p = await api("/api/profile");
+  el("profile-line").textContent = `profile ${p.name} · producer ${p.producer}`
+    + (p.measured_at ? ` · measured ${p.measured_at}` : " · 미측정");
+  if (p.warning) {
+    el("provisional-banner").innerHTML = `<div class="banner"><b>미측정 파라미터 사용 중 (17.5)</b><br>`
+      + `${esc(p.provisional.join(", "))}<br>`
+      + `<span class="muted">이 값들은 추측이다. 17.4 스윕을 돌리기 전까지 결과를 신뢰하지 말 것.</span></div>`;
+  }
+}
+
+async function loadProjects() {
+  const rows = await api("/api/projects");
+  el("projects").querySelector("tbody").innerHTML = rows.length ? rows.map((r) => `
+    <tr><td><code>${esc(r.project_id.slice(0, 8))}</code></td>
+    <td>${esc(r.file_path)}</td><td>${esc(r.status)}</td>
+    <td class="muted">${r.episodes} 편</td></tr>`).join("")
+    : `<tr><td class="muted">아직 없다</td></tr>`;
+  for (const id of ["cand-project", "ep-project"]) {
+    const sel = el(id), keep = sel.value;
+    sel.innerHTML = rows.map((r) =>
+      `<option value="${esc(r.project_id)}">${esc(r.file_path)} — ${esc(r.status)}</option>`).join("");
+    if (keep) sel.value = keep;
+  }
+}
+
+el("submit").onclick = async () => {
+  el("submit-msg").textContent = "…";
+  try {
+    const res = await post("/api/projects", {
+      source: el("source").value,
+      transcript: el("transcript").value || null,
+      length_hint_sec: el("hint").value || null,
+      channel_ref: el("channel").value,
+      profile_id: el("profile-pick").value || null,
+      render: el("mode").value === "render",
+    });
+    currentJob = res.job_id;
+    el("submit-msg").textContent = `시작됨 · project ${res.project_id.slice(0, 8)}`;
+    document.querySelector('nav button[data-tab="monitor"]').click();
+    loadProjects();
+  } catch (e) { el("submit-msg").textContent = `오류: ${e.message}`; }
+};
+
+async function pollJob() {
+  if (!currentJob) return;
+  try {
+    const job = await api(`/api/jobs/${currentJob}`);
+    el("job-state").textContent = job.state;
+    el("job-source").textContent = job.source;
+    el("job-elapsed").textContent = `${job.elapsed_sec}s${job.running ? " (진행 중)" : ""}`;
+    el("job-bar").style.width = `${Math.round((job.progress || 0) * 100)}%`;
+    el("job-log").innerHTML = job.log.map((l) =>
+      `<div class="${esc(l.level)}">${esc(l.message)}</div>`).join("");
+    if (!job.running && job.report && Object.keys(job.report).length) {
+      el("job-report-card").style.display = "";
+      el("job-summary").innerHTML = reportSummary(job.report);
+      el("job-report").textContent = JSON.stringify(job.report, null, 2);
+    }
+    if (job.error) el("job-log").innerHTML += `<div class="error">${esc(job.error)}</div>`;
+  } catch (e) { /* job not ready yet */ }
+}
+setInterval(pollJob, 1500);
+
+// 15.5's 작업 리포트: 발견 후보 수 / 제작 결정 수 / 제외 사유 / 처리 시간.
+// The raw JSON stays under the fold; these four are what the clause asks for.
+function reportSummary(r) {
+  const decisions = r.decisions || {};
+  const made = Number(decisions.produce || 0) + Number(decisions.combine || 0);
+  const rejections = r.rejections || [];
+  const rows = [
+    ["발견 후보", `${r.candidates_found ?? 0}개`],
+    ["제작 결정", `${made}개 (제작 ${decisions.produce || 0} · 결합 ${decisions.combine || 0}
+       · 보류 ${decisions.hold || 0} · 제외 ${decisions.reject || 0})`],
+    ["처리 시간", r.elapsed_sec != null ? hms(r.elapsed_sec) : "—"],
+  ];
+  // R3 makes 처리 시간 an open risk about one stage in particular, so the
+  // breakdown goes next to the total rather than only into report.json.
+  const stages = r.stage_seconds || {};
+  if (Object.keys(stages).length) {
+    rows.push(["단계별", Object.entries(stages)
+      .map(([name, sec]) => `${name} ${Number(sec).toFixed(1)}s`).join(" · ")]);
+  }
+  const drift = (r.environment_drift || []);
+  return `<table class="summary">${rows.map(([k, v]) =>
+      `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</table>
+    ${rejections.length ? `<div class="muted" style="margin-top:8px">제외 사유</div>
+      <ul class="reasons">${rejections.map((x) =>
+        `<li>${esc(x.summary || "")} — ${esc(x.reason || "")}</li>`).join("")}</ul>` : ""}
+    ${r.no_content_reason ? `<div class="muted">제작할 것이 없었던 이유: ${esc(r.no_content_reason)}</div>` : ""}
+    ${drift.length ? `<div class="warn" style="margin-top:8px">프로파일 재측정 필요 (17.4):
+      <ul class="reasons">${drift.map((d) => `<li>${esc(d)}</li>`).join("")}</ul></div>` : ""}
+    ${r.warning ? `<div class="warn">${esc(r.warning)}</div>` : ""}`;
+}
+
+// 19장 MVP 3은 항목별로 채점된다. 항목마다 몇 건 답했고 그 중 몇 %가 yes인지
+// 그대로 적는다 - 통과 여부는 19장이 사람에게 맡긴 판단이라 여기서 정하지 않는다.
+const describeAssessment = (a, items) => {
+  if (!a || !a.assessed) return items.length
+    ? `항목별 평가 0/${a ? a.candidates : 0}건 — 19장 MVP 3 관문은 아직 측정되지 않았다`
+    : "";
+  return `항목별 평가 ${a.assessed}/${a.candidates}건 · ` + items.map((item, i) => {
+    const row = a.items[item] || {};
+    return row.rate == null
+      ? `${i + 1} 미답`
+      : `${i + 1} ${(row.rate * 100).toFixed(0)}% (${row.answered}건${row.unclear ? `, 판단보류 ${row.unclear}` : ""})`;
+  }).join(" · ");
+};
+
+el("cand-load").onclick = async () => {
+  const pid = el("cand-project").value;
+  if (!pid) return;
+  const data = await api(`/api/projects/${pid}/candidates`);
+  const a = data.agreement;
+  const items = data.assessment_items || [];
+  const verdicts = data.assessment_verdicts || [];
+  el("assessment").textContent = describeAssessment(data.assessment, items);
+  el("agreement").textContent = a.reviewed
+    ? `검토 ${a.reviewed}건 · 동의율 ${(a.agreement * 100).toFixed(0)}% · 오탐율 ${(a.false_positive_rate * 100).toFixed(0)}%`
+    : "아직 사람의 판단이 입력되지 않았다 — 동의/반대는 12.3 B 학습 데이터가 된다";
+  el("cand-list").innerHTML = data.candidates.map((c) => `
+    <div class="card">
+      <div class="row">
+        <span class="tag ${esc(c.decision)}">${esc(c.decision)}</span>
+        <b class="grow">${esc(c.core_summary || "(요약 없음)")}</b>
+        ${c.suggested_form ? `<span class="tag">${esc(c.suggested_form)}</span>` : ""}
+        <span class="muted">독립성 ${c.independence_score.toFixed(2)} · 밀도 ${c.density_score.toFixed(2)}
+          · 결말 ${c.has_resolution ? "있음" : "없음"}</span>
+      </div>
+      <div class="muted" style="margin-top:6px">판단 근거: ${esc(c.reason)}</div>
+      <!-- 6.1: 후보는 단순한 클립이 아니다. MVP 3 is scored on whether a person
+           agrees with these decisions, and they cannot judge two scores. -->
+      <table class="summary" style="margin-top:6px">
+        ${c.people && c.people.length ? `<tr><th>관련 인물</th><td>${esc(c.people.join(", "))}</td></tr>` : ""}
+        ${c.start_point ? `<tr><th>시작 지점</th><td>${
+            c.start_sec != null ? `${hms(c.start_sec)} — ` : ""}${esc(c.start_point)}</td></tr>` : ""}
+        ${c.key_changes && c.key_changes.length
+            ? `<tr><th>주요 변화</th><td>${esc(c.key_changes.join(" / "))}</td></tr>` : ""}
+        ${c.outcome ? `<tr><th>결과</th><td>${esc(c.outcome)}</td></tr>` : ""}
+        ${c.required_context ? `<tr><th>필요한 맥락</th><td>${esc(c.required_context)}</td></tr>` : ""}
+        ${c.event_relations && c.event_relations.length
+            ? `<tr><th>다른 사건과의 관계</th><td>${c.event_relations.length}건</td></tr>` : ""}
+        ${c.scenes && c.scenes.length
+            ? `<tr><th>관련 장면</th><td>${c.scenes.map((v) =>
+                `${hms(v.start_sec)}–${hms(v.end_sec)}`).join(", ")}</td></tr>` : ""}
+      </table>
+      <div class="row" style="margin-top:10px">
+        <button class="small" data-v="agree" data-c="${esc(c.candidate_id)}">동의</button>
+        <button class="small" data-v="disagree" data-c="${esc(c.candidate_id)}">반대</button>
+        <span class="muted">${c.human_verdict ? esc(c.human_verdict) : ""}</span>
+      </div>
+      <!-- 19장 MVP 3 / 원본 32장: 후보 하나를 네 항목으로 평가한다. 동의/반대
+           하나로는 어느 항목이 틀렸는지 알 수 없다. -->
+      <table class="summary" style="margin-top:8px">
+        ${items.map((item, i) => `<tr><th>${esc(item)}</th><td>${
+            verdicts.map((v) => `<button class="small" data-item="${i}" data-a="${esc(v)}"
+              data-c="${esc(c.candidate_id)}"${
+              (c.human_assessment || {})[item] === v ? ' aria-pressed="true"' : ""
+            }>${esc(v)}</button>`).join(" ")
+          }</td></tr>`).join("")}
+      </table>
+    </div>`).join("") || `<div class="card muted">후보가 없다. 이 방송에는 만들 것이 없다는 판단일 수 있다 (정상).</div>`;
+  el("cand-list").querySelectorAll("button[data-v]").forEach((b) => b.onclick = async () => {
+    await post(`/api/projects/${pid}/candidates`, { candidate_id: b.dataset.c, verdict: b.dataset.v });
+    el("cand-load").click();
+  });
+  el("cand-list").querySelectorAll("button[data-item]").forEach((b) => b.onclick = async () => {
+    await post(`/api/projects/${pid}/candidates`, {
+      candidate_id: b.dataset.c,
+      assessment: { [items[Number(b.dataset.item)]]: b.dataset.a },
+    });
+    el("cand-load").click();
+  });
+};
+
+el("ep-load").onclick = async () => {
+  const pid = el("ep-project").value;
+  if (!pid) return;
+  // A project that finished before this page was opened still has its report on
+  // disk; the job that produced it does not survive a restart.
+  try {
+    const report = await api(`/api/projects/${pid}/report`);
+    el("ep-report-card").style.display = "";
+    el("ep-summary").innerHTML = reportSummary(report);
+    el("ep-report").textContent = JSON.stringify(report, null, 2);
+  } catch {
+    el("ep-report-card").style.display = "none";
+  }
+  const rows = await api(`/api/projects/${pid}/episodes`);
+  el("ep-list").innerHTML = rows.map((e) => `
+    <div class="card">
+      <div class="row">
+        <span class="tag">${esc(e.target_type || "?")}</span>
+        <b class="grow">${esc(e.titles[0] || "(제목 후보 없음)")}</b>
+        <span class="muted">${hms(e.duration_sec)} · ${e.cuts} 컷 · ${esc(e.render_status)}</span>
+      </div>
+      <div class="muted" style="margin-top:6px">구조 ${esc(e.structure)} — ${esc(e.rationale)}</div>
+      ${e.notes ? `<div class="muted">${esc(e.notes)}</div>` : ""}
+      ${e.titles.length ? `<ol class="titles">${e.titles.map((t) =>
+          `<li><span>후보</span>${esc(t)}</li>`).join("")}</ol>` : ""}
+      ${(e.thumbnails || []).length ? `<div class="thumbs">${e.thumbnails.map((_, i) =>
+          `<img loading="lazy" alt="썸네일 후보 ${i + 1}" data-thumb="${esc(e.episode_id)}" data-i="${i}"
+            title="이걸로 고르기" style="cursor:pointer${e.thumbnail_chosen === i
+              ? ";outline:3px solid currentColor" : ""}">`
+        ).join("")}</div><div class="muted">썸네일 후보 — 템플릿 없이 사람이 고른다 (11.1). ${
+          e.thumbnail_chosen == null ? "눌러서 고른다. 안 고르면 1번이 올라간다"
+            : `${e.thumbnail_chosen + 1}번 선택됨`}</div>` : ""}
+      ${e.output ? `<video controls preload="none" data-video="${esc(e.episode_id)}"></video>
+        <div class="muted">출력: ${esc(e.output)}</div>` : ""}
+      <div class="row" style="margin-top:10px">
+        <button class="small" data-plan="${esc(e.episode_id)}">편집 계획 보기</button>
+        ${e.output ? `<button class="small" data-reveal="${esc(e.episode_id)}">폴더 열기</button>` : ""}
+        ${e.output && !e.youtube_video_id
+            ? `<button class="small" data-upload="${esc(e.episode_id)}">비공개 업로드</button>` : ""}
+        ${e.youtube_video_id ? `<span class="muted">업로드됨 ${esc(e.youtube_video_id)}</span>` : ""}
+        ${e.review_status === "approved"
+            ? `<button class="small" data-publish="${esc(e.episode_id)}">공개</button>` : ""}
+        <button class="small" data-review="approve" data-e="${esc(e.episode_id)}">승인</button>
+        <button class="small" data-review="reject" data-e="${esc(e.episode_id)}">반려</button>
+        <span class="tag">${esc(e.review_status)}</span>
+      </div>
+    </div>`).join("") || `<div class="card muted">에피소드가 없다.</div>`;
+
+  // Media rides on the API, so it needs the same key. Fetch as a blob rather
+  // than pointing src at the URL: an <img src>/<video src> cannot carry a
+  // header, and putting the key in the query string would land it in the log.
+  const mediaUrl = async (path) => {
+    const key = apiKey();
+    const res = await fetch(path, key ? { headers: { Authorization: `Bearer ${key}` } } : {});
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return URL.createObjectURL(await res.blob());
+  };
+  el("ep-list").querySelectorAll("img[data-thumb]").forEach(async (img) => {
+    // 11.1: the candidates are offered so a person picks one. Clicking is that
+    // pick, and the upload uses it instead of always taking the first frame.
+    img.onclick = async () => {
+      await post(`/api/episodes/${img.dataset.thumb}/review`,
+                 { action: "thumbnail", index: Number(img.dataset.i) });
+      el("ep-load").click();
+    };
+    try { img.src = await mediaUrl(`/api/episodes/${img.dataset.thumb}/thumbnail/${img.dataset.i}`); }
+    catch { img.replaceWith(Object.assign(document.createElement("span"),
+      { className: "muted", textContent: "썸네일 파일이 없다" })); }
+  });
+  el("ep-list").querySelectorAll("video[data-video]").forEach((v) => {
+    // Loaded on demand: a rendered episode is hundreds of MB and the operator
+    // may only want the plan.
+    v.onplay = v.onclick = async () => {
+      if (v.src) return;
+      try { v.src = await mediaUrl(`/api/episodes/${v.dataset.video}/video`); v.play(); }
+      catch (e) { alert(`재생할 수 없다: ${e.message}`); }
+    };
+  });
+  el("ep-list").querySelectorAll("button[data-reveal]").forEach((b) => b.onclick = async () => {
+    try { const r = await post(`/api/episodes/${b.dataset.reveal}/reveal`, {});
+          b.textContent = "열었다"; setTimeout(() => b.textContent = "폴더 열기", 1500);
+          console.info(r.opened); }
+    catch (e) { alert(e.message); }
+  });
+  // 15.5's 업로드. 11.3 splits it in two: uploading is always private, and
+  // going public is a separate action that only an approved episode offers.
+  el("ep-list").querySelectorAll("button[data-upload]").forEach((b) => b.onclick = async () => {
+    b.disabled = true; b.textContent = "업로드 중…";
+    try {
+      const r = await post(`/api/episodes/${b.dataset.upload}/upload`, {});
+      b.textContent = r.video_id ? `비공개 업로드됨 (${r.video_id})` : "대기열에 넣었다";
+    } catch (e) { alert(e.message); b.disabled = false; b.textContent = "비공개 업로드"; }
+  });
+  el("ep-list").querySelectorAll("button[data-publish]").forEach((b) => b.onclick = async () => {
+    if (!confirm("이 영상을 공개한다. 되돌리려면 YouTube에서 직접 바꿔야 한다.")) return;
+    b.disabled = true;
+    try {
+      await post(`/api/episodes/${b.dataset.publish}/upload`, { action: "publish" });
+      el("ep-load").click();
+    } catch (e) { alert(e.message); b.disabled = false; }
+  });
+  el("ep-list").querySelectorAll("button[data-plan]").forEach((b) => b.onclick = async () => {
+    const data = await api(`/api/episodes/${b.dataset.plan}/plan`);
+    el("plan-card").style.display = "";
+    el("plan-body").textContent = data.readable + "\n\n" + JSON.stringify(data.plan, null, 2);
+  });
+  el("ep-list").querySelectorAll("button[data-review]").forEach((b) => b.onclick = async () => {
+    try {
+      await post(`/api/episodes/${b.dataset.e}/review`, {
+        action: b.dataset.review, reviewer: el("reviewer").value, note: "",
+      });
+      el("ep-load").click();
+    } catch (e) { alert(e.message); }
+  });
+};
+
+// 15.2 drag and drop. A browser hands JavaScript only the file's NAME, never
+// its path — so a page that posts what it was dropped is posting a filename and
+// calling it a path. A drop from a file manager usually also carries a file://
+// URI, which does have the path; use that when it is there, and say plainly
+// what is missing when it is not.
+const drop = el("drop");
+["dragenter", "dragover"].forEach((type) => drop.addEventListener(type, (ev) => {
+  ev.preventDefault(); drop.classList.add("over");
+}));
+["dragleave", "drop"].forEach((type) => drop.addEventListener(type, () => drop.classList.remove("over")));
+drop.addEventListener("drop", (ev) => {
+  ev.preventDefault();
+  const uri = (ev.dataTransfer.getData("text/uri-list") || ev.dataTransfer.getData("text/plain") || "").trim();
+  if (uri.startsWith("file://")) {
+    el("source").value = decodeURIComponent(new URL(uri).pathname);
+    drop.textContent = "경로를 읽었다";
+    return;
+  }
+  const file = ev.dataTransfer.files[0];
+  if (!file) return;
+  el("source").value = file.name;
+  drop.textContent = `${file.name} — 브라우저는 파일명만 넘겨준다. 앞에 전체 경로를 붙여라`;
+});
+
+async function loadProfiles() {
+  const sel = el("profile-pick");
+  try {
+    const data = await api("/api/profiles");
+    const measured = data.measured.map((m) =>
+      `<option value="${esc(m.profile_id)}">${esc(m.name)} · ${esc(m.channel_ref || "채널 미지정")} · ${esc(m.measured_at || "미측정")}</option>`);
+    sel.innerHTML =
+      `<option value="">기본 프로파일 (${esc(data.default.name)})${data.default.provisional.length ? " — 추측값 포함" : ""}</option>`
+      + measured.join("");
+  } catch { sel.innerHTML = `<option value="">기본 프로파일</option>`; }
+}
+
+loadProfile();
+loadProfiles();
+loadProjects();
+</script>
+</body>
+</html>

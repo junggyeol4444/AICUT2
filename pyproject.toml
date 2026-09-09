@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aicut"
+version = "0.1.0"
+description = "AI autonomous broadcast content producer: one long livestream VOD -> N finished YouTube videos"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+# The core engine runs on the stdlib + ffmpeg CLI. Everything below is opt-in
+# per pipeline stage, so a machine that only renders does not need torch.
+stt = ["whisperx"]
+# A recogniser that needs neither GPU nor a model download: its acoustic
+# model ships in the wheel. Accuracy is poor - this exists so the pipeline
+# can be exercised against real recogniser output anywhere.
+stt-offline = ["pocketsphinx"]
+diarization = ["pyannote.audio"]
+vision = ["opencv-python", "numpy"]
+audio = ["librosa", "soundfile"]
+llm = ["anthropic"]
+# 18장 says where the program/AI line is, not which machine the AI runs on, and
+# 20.1's stack names no model service. Ollama needs no client library - the
+# provider talks to it over stdlib HTTP - so this exists only to name the choice.
+local-llm = []
+youtube = ["google-api-python-client", "google-auth-oauthlib"]
+yaml = ["PyYAML"]
+# 4.2 collects the reference video and its comments. The download is yt-dlp;
+# the comments are read from the page rather than the Data API, so collecting
+# them costs none of the quota 11.4 has to ration.
+download = ["yt-dlp"]
+browser = ["playwright"]
+
+[project.scripts]
+aicut = "aicut.cli:main"
+
+[project.gui-scripts]
+# Double-clicked rather than typed: on Windows this gets a console-less launcher.
+aicut-desktop = "aicut.desktop:main"
+
+[tool.setuptools.packages.find]
+include = ["aicut*"]
+
+[tool.setuptools.package-data]
+aicut = [
+    "db/*.sql",
+    "resources/profiles/*.json",
+    "resources/subtitle_styles/*.json",
+    "ui/static/*",
+]
