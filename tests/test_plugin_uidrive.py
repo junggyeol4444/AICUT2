@@ -541,14 +541,30 @@ class WNDCLASS(ctypes.Structure):
                 ("lpszMenuName", w.LPCWSTR), ("lpszClassName", w.LPCWSTR)]
 
 callback = WNDPROC(proc)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+# Types stated rather than left to ctypes' default int: a module handle is a
+# pointer, and on a run where it happened not to fit in 32 bits the call died
+# with "int too long to convert" - which passed on one Windows runner and failed
+# on the next.
+kernel32.GetModuleHandleW.restype = w.HMODULE
+kernel32.GetModuleHandleW.argtypes = [w.LPCWSTR]
+user32.CreateWindowExW.restype = w.HWND
+user32.CreateWindowExW.argtypes = [
+    ctypes.c_uint, w.LPCWSTR, w.LPCWSTR, ctypes.c_uint,
+    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+    w.HWND, w.HMENU, w.HINSTANCE, w.LPVOID,
+]
+user32.DefWindowProcW.restype = ctypes.c_longlong
+user32.SetForegroundWindow.argtypes = [w.HWND]
+user32.GetForegroundWindow.restype = w.HWND
+
 cls = WNDCLASS()
 cls.lpfnWndProc = callback
-cls.hInstance = ctypes.windll.kernel32.GetModuleHandleW(None)
+cls.hInstance = kernel32.GetModuleHandleW(None)
 cls.lpszClassName = "AicutStandIn"
 if not user32.RegisterClassW(ctypes.byref(cls)):
-    print("NOWINDOW register", flush=True); sys.exit(0)
+    print("NOWINDOW register", ctypes.get_last_error(), flush=True); sys.exit(0)
 
-user32.CreateWindowExW.restype = w.HWND
 hwnd = user32.CreateWindowExW(0, "AicutStandIn", "Shotcut", 0x00CF0000,
                               10, 10, 300, 200, None, None, cls.hInstance, None)
 if not hwnd:
